@@ -35,15 +35,28 @@ the UEFI memory map and the boot image header law.
   (and `&platform_raphael` in `platforms[]`). Every value is measured, not guessed:
   GIC/cores/shift/small-cluster were parsed from the phone's real 499,823-byte vendor_boot
   DTB with the same rules `common/new-device.sh` applies.
-- `uefi/files/Platforms/Xiaomi/raphaelPkg/` - derived from upstream `cepheusPkg` (SM8150)
-  in redwoodPkg's shape: `HanaPkg` include, SMBIOS "Mi 9T Pro"/raphael, framebuffer
-  1080x2340x32, ACPI tables from `cepheus/AcpiTables.inf`, `DeviceBuild.py` retargeted.
+- `uefi/files/Platforms/Xiaomi/raphaelPkg/` - the package itself: `HanaPkg` (SM8150)
+  include, SMBIOS "Mi 9T Pro"/raphael, framebuffer 1080x2340x32, ACPI tables from
+  `cepheus/AcpiTables.inf` (Silicium-ACPI), `DeviceBuild.py` retargeted, `SOC_TYPE = 0`
+  (SM8150-AB).
+- `uefi/files/Platforms/Xiaomi/raphaelPkg/Include/*.inc` - rebased **verbatim on upstream
+  `cepheusPkg`** (the authoritative, Windows-booting SM8150 set at our Mu-Silicium BASE):
+  the stage-1 versions had been shaped on redwood's lisa-derived lists and referenced 14
+  drivers that do not exist anywhere in SM8150 firmware (FeatureEnabler/GLink/IPCC/
+  PmicGlink/Xhci* and friends - those live in xbl_config on newer SoCs, not on SM8150's
+  xbl), while missing AdcDxe/CipherDxe/HashDxe/PdcDxe. Plus three raphael-new raw entries
+  (two Panel_K82 dualdsi panels, `SUNWODA.K82.BATTERY.PROVISION`) with their real FFS GUIDs.
 - `uefi/files/Platforms/Xiaomi/raphaelPkg/Library/MemoryMapLib/MemoryMapLib.c` - the
   cepheus map plus one entry: `{"XNU Payload", 0xF0000000, 0x04000000}` (free RAM in the
   cepheus map: nothing is defined between the DXE Heap end 0xC4800000 and 4 GB).
-- `uefi/files/Binaries/raphael/` - cepheus's xbl driver set (51 QcomPkg drivers,
-  `SecParti.cfg`/`uefipil.cfg`), to be replaced by raphael's own firmware when at hand;
-  see its README.
+- `uefi/files/Binaries/raphael/` - **raphael's own firmware**, extracted from the phone's
+  real `xbl.img` (7 MiB ELF; 3 MB UEFI FV at `0x9FC00000`, inner DXE FV gzip-wrapped in the
+  `1d301fe9-…` GUIDed section - the WOA-Project/UEFIReader approach, reimplemented in an
+  FFS walker). 77 PE drivers + depexes + 55 raw files, all matched by FFS GUID. Four of
+  Silicium's usual binary patches re-applied semantically onto the raphael builds
+  (ButtonsDxe keycode, DALSYSDxe UFS cache coherence, ClockDxe DAL-dispatcher stub,
+  UsbConfigDxe deinit removal); the cepheus set's rebuilt DisplayDxe is kept unreferenced
+  as `DisplayDxe.cepheus-patched.efi` fallback - see `files/Binaries/raphael/README.md`.
 - `uefi/files/Resources/DTBs/raphael.dtb` - the phone's real device tree (from the
   vendor_boot of the t12 golden image, the exact DTB the ABL chain booted).
 - `uefi/files/Resources/Configs/raphael.toml` - `header_version = 2`.
@@ -92,9 +105,15 @@ implements it under `BOOTIMG_HEADER_VERSION=2`; redwood keeps its v1 path untouc
 
 ## Open items
 
-- raphael's own `xbl.img` (from its fastboot ROM) to replace the cepheus binaries -
-   expected to be a drop-in, but verify on the phone;
-- the five usual Silicium binary patches (not applied to the cepheus set yet);
+- ~~raphael's own `xbl.img` (from its fastboot ROM) to replace the cepheus binaries~~ -
+  **DONE**: the owner's actual `xbl.img` is the source of the whole binary set now;
+  nothing of cepheus is referenced anymore.
+- ~~the five usual Silicium binary patches~~ - **DONE**: four ported onto the raphael
+  builds (see `files/Binaries/raphael/README.md`); DisplayDxe's cepheus patch is a
+  rebuild and stays as an unreferenced fallback (and is dormant anyway while
+  `USE_CUSTOM_DISPLAY_DRIVER = 0`).
+- build the UEFI (`build_uefi.py -d raphael -r RELEASE`) and run the stage-1 milestone:
+  `fastboot boot`, UEFI display over SimpleFb at `0x9C000000`, loader log over USB;
 - the loader's virtual-watchdog SMCs on raphael (kept off in stage 1);
 - `FD_BASE`/`FD_SIZE` in the profile match `MemoryMapLib`'s "UEFI FD" entry
   (0x9FC00000/0x300000) - `mkxnuimg.py` asserts the FD length, so a mismatch fails loudly.
