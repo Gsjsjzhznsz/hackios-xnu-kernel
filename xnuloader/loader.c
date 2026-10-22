@@ -1356,6 +1356,20 @@ ufs_dump_userdata(efi_block_io *bio)
                 print("ufs: userdata: its start could not be read\n");
                 return;
         }
+        /*
+         * This port's own volume images are APFS containers whose magic ("NXSB") sits at +32
+         * (build.sh's and dmg.py's output both begin that way): say whether the iOS volume is
+         * on the flash, whatever else lies there.  Zeros in the f2fs slot dumped below are the
+         * padding after the superblock's struct in such an image -- not, by themselves, a
+         * failed flash: the "head" lines (with the magic) and the verdict line above are what
+         * to read.
+         */
+        if (ufs_buffer[32] == 'N' && ufs_buffer[33] == 'X' && ufs_buffer[34] == 'S' && ufs_buffer[35] == 'B') {
+                print("ufs: userdata: an APFS container is there (NXSB at +32): the iOS volume IS on the flash\n");
+        } else {
+                print("ufs: userdata: no APFS container at its start: the iOS volume is NOT on the flash\n");
+        }
+        ufs_dump_of("userdata", "head", ufs_buffer, 128);
         ufs_dump_of("userdata", "sb", ufs_buffer + 1024, 1024);
         ufs_dump_of("userdata", "sb2", ufs_buffer + 4096 + 1024, 64);
 }
@@ -2268,6 +2282,84 @@ psci_call(uint64_t function, uint64_t a1, uint64_t a2, uint64_t a3)
 }
 
 /*
+ * The core the kernel was started on (R6): "oem gic" and "oem sgi" aim at it.  A kernel that
+ * hangs with nothing in its log ring -- single core, no driver has said a word, the message
+ * buffer only comes out at a return that never happens -- is triaged from here instead: what
+ * its interrupt controller says about it tells a spin with interrupts masked from a clock
+ * that stopped firing.
+ */
+static uint64_t running_mpidr;
+
+#define GICR_STRIDE             0x20000         /* one RD frame + one SGI frame per core */
+#define GICR_TYPER_REG          0x008
+#define GICR_TYPER_LAST         (1ull << 4)
+#define GICR_TYPER_AFF(a)       (((a) >> 40) & 0xFFFFFF)
+#define GICR_SGI_BANK           0x10000
+#define GICR_ISENABLER0_REG     (GICR_SGI_BANK + 0x100)
+#define GICR_ISPENDR0_REG       (GICR_SGI_BANK + 0x200)
+#define GICR_IACTIVER0_REG      (GICR_SGI_BANK + 0x300)
+#define GIC_VTIMER_INTID        27              /* the EL1 virtual timer, as the kernel's gic_v3_irq.c numbers it */
+
+static void
+gic_note_core(uint64_t mpidr)
+{
+        uint64_t frame = 0;
+        int found = 0;
+
+        if (PLAT->gic_redist == 0) {
+                return;
+        }
+        for (uint64_t redist = PLAT->gic_redist, i = 0; i < (uint64_t)PLAT->cores;
+            i++, redist += GICR_STRIDE) {
+                uint64_t typer = *(volatile uint64_t *)(redist + GICR_TYPER_REG);
+
+                if (GICR_TYPER_AFF(typer) == (mpidr & 0xFFFFFF)) {
+                        frame = redist;
+                        found = 1;
+                        break;
+                }
+                if (typer & GICR_TYPER_LAST) {
+                        break;
+                }
+        }
+        if (!found) {
+                print("gic: no redistributor frame says it belongs to core %x\n", mpidr);
+                return;
+        }
+        {
+                uint32_t enabled = *(volatile uint32_t *)(frame + GICR_ISENABLER0_REG);
+                uint32_t pending = *(volatile uint32_t *)(frame + GICR_ISPENDR0_REG);
+                uint32_t active = *(volatile uint32_t *)(frame + GICR_IACTIVER0_REG);
+
+                print("gic: core %x: redist frame %x: SGI+PPI enabled %x pending %x active %x\n", mpidr, frame,
+                    (uint64_t)enabled, (uint64_t)pending, (uint64_t)active);
+                if (enabled & (1u << GIC_VTIMER_INTID)) {
+                        if (active & (1u << GIC_VTIMER_INTID)) {
+                                print("gic: the kernel's clock interrupt is ACTIVE: the core is inside it\n");
+                        } else if (pending & (1u << GIC_VTIMER_INTID)) {
+                                print("gic: the kernel's clock interrupt is PENDING and never taken:"
+                                    " the core has its interrupts masked -- a spin, not a wait\n");
+                        } else {
+                                print("gic: the kernel's clock interrupt is enabled and not pending:"
+                                    " none is due since the last one it took\n");
+                        }
+                } else {
+                        print("gic: the kernel's clock interrupt is NOT enabled on that core:"
+                            " its clock cannot fire\n");
+                }
+        }
+}
+
+/* ICC_SGI1R_EL1 (S3_0_C12_C11_5): Aff1 in [23:16], the interrupt in [27:24], and in [15:0] a bit per Aff0. */
+static void
+send_sgi(uint64_t mpidr, uint64_t sgi)
+{
+        uint64_t aff0 = mpidr & 0xFF, aff1 = (mpidr >> 8) & 0xFF, value = (sgi << 24) | (aff1 << 16) | (1ull << (aff0 & 15));
+
+        __asm__ volatile ("isb\nmsr S3_0_C12_C11_5, %0\nisb" : : "r" (value));
+}
+
+/*
  * Run the kernel on the core with that MPIDR and wait until it is back. Returns 0 when it has
  * been and gone (the caller goes on as after loader_return_stub), a negative number if the
  * firmware refused to start the core, OTHER_CPU_NOT_STARTED, or OTHER_CPU_HUNG: then the kernel
@@ -2285,6 +2377,7 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
 
         running_live = live;
         running_slide = slide;
+        running_mpidr = mpidr;      /* "oem gic" / "oem sgi" aim at the core the kernel runs on */
         other_cpu_start.entry = entry;
         other_cpu_start.boot_args = boot_args_pa;
         other_cpu_stage = 0;
@@ -2370,6 +2463,7 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
                                 last_beat_at = READ_SYSREG(CNTVCT_EL0);
                         } else if (seconds_since(last_beat_at) >= SILENCE_SECONDS) {
                                 log_of_hung_kernel(live, slide);
+                                gic_note_core(mpidr);      /* what its interrupt controller says about it */
                                 status = OTHER_CPU_HUNG;
                         }
                 }
@@ -3641,7 +3735,7 @@ fb_command(char *cmd)
                         if (str_eq(var, "product")) {
                                 fb_reply("OKAY", "xnuloader");
                         } else if (str_eq(var, "version")) {
-                                fb_reply("OKAY", "0.5");
+                                fb_reply("OKAY", "0.6");
                         } else if (str_eq(var, "max-download-size")) {
                                 fb_reply("OKAY", download_to_ramdisk ? "0xffffffff" : "0x03f00000");
                         } else if (str_eq(var, "result")) {
@@ -3775,6 +3869,63 @@ fb_command(char *cmd)
                         /* the firmware's memory map into the log (then "oem log" and fetch it) */
                         print_memory_map();
                         fb_reply("OKAY", "");
+                } else if (starts_with(cmd, "oem gic")) {
+                        /* what the kernel's core looks like in the interrupt controller (R6) */
+                        if (busy) {
+                                gic_note_core(running_mpidr);
+                                fb_reply("OKAY", "");
+                        } else {
+                                fb_reply("FAIL", "no kernel is running");
+                        }
+                } else if (starts_with(cmd, "oem sgi")) {
+                        /* a software generated interrupt at the kernel's core (R6): "oem gic" before and
+                         * after says whether the core takes it.  SGI 0 is the kernel's own signal,
+                         * SGI 1 its "stop" -- which with a single core returns at once.
+                         */
+                        const char *arg = cmd + 8;
+
+                        while (*arg == ' ') {
+                                arg++;
+                        }
+                        if (!busy) {
+                                fb_reply("FAIL", "no kernel is running");
+                        } else {
+                                uint64_t sgi = parse_number(arg, 10);
+
+                                if (sgi > 15) {
+                                        fb_reply("FAIL", "0..15");
+                                } else {
+                                        send_sgi(running_mpidr, sgi);
+                                        print("sgi: %d sent to core %x (oem gic says what became of it)\n", sgi,
+                                            running_mpidr);
+                                        fb_reply("OKAY", "");
+                                }
+                        }
+                } else if (starts_with(cmd, "oem peek")) {
+                        /* stage raw memory for "get_staged" (R6): a physical address, as this loader maps it */
+                        const char *p = cmd + 9;
+
+                        while (*p == ' ') {
+                                p++;
+                        }
+                        {
+                                uint64_t addr = parse_number(p, 16), len;
+
+                                while (*p && *p != ' ') {
+                                        p++;
+                                }
+                                while (*p == ' ') {
+                                        p++;
+                                }
+                                len = parse_number(p, 16);
+                                if (len == 0 || len > (4ull << 20)) {
+                                        fb_reply("FAIL", "bad length");
+                                } else {
+                                        staged_data = (const char *)(uintptr_t)addr;
+                                        staged_len = len;
+                                        fb_reply("OKAY", "");
+                                }
+                        }
                 } else if (starts_with(cmd, "oem log")) {
                         if (busy) {
                                 compose_live_log(running_live, running_slide);

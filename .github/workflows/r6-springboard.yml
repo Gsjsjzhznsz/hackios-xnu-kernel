@@ -1,56 +1,49 @@
 # =====================================================================
-#  R5 · 纯血 hackios SpringBoard 一键流水线（GitHub Actions）
+#  R6 · 纯血 hackios SpringBoard 一键流水线（GitHub Actions）
 #  -------------------------------------------------------------------
-#  把 FLASH-R4-SPRINGBOARD.md 里需要电脑的 8 步全部搬进 CI：
-#    ① 磁盘准备     —— 清掉 Android/.NET/Haskell 等预装（~28GB 可用），
-#                        装 gcc / python3-dev / 7-Zip 23（能读 APFS）/ lzfse 模块
-#    ② 取树         —— clone 两个 fork（hackios-xnu-kernel + userland），
-#                        common/setup.sh 合成工作区
-#    ③ 取 iOS 16.5  —— ios165/fetch.sh：Apple CDN 按 Range 直取三个 dmg
-#                        （rootfs 4.7GB + cryptex-os 2.7GB + cryptex-app 10MB）
-#    ④ 转裸 APFS    —— dmg2img 不认 LZFSE 块（0x80000007），改用上游自家
-#                        tools/apfs/dmg.py（run-tests.sh 钦定路径）抽 APFS 分区
-#                        + 上游常量校验（必须正好 5,628,755,968 B = darwin blocks
-#                        0..1374207）+ NXSB 魔数 + 7z 列表确认 SpringBoard 在卷里
-#    ⑤ 造双盘     —— build.sh PREBUILT=1 FLASHBOOT=1 CRYPTEXES=flash：
-#                        userland/root.apfs（小镜像：init + LaunchDaemons，随内核走 RAM
-#                        = md1 /redwood）+ userland/flashboot.apfs（启动卷：stage0 作
-#                        /sbin/launchd + 挂载点 = md0 根，开机时经 loader 的 resident 区上传）
-#    ⑥ 打启动镜像   —— tools/r5-flash-build.sh（fork 里的打包器）：r1 固件 + r2 shim
-#                        + r4 loader + prebuilt 内核 + 小镜像(ramdisk=md1) + usb 条目
-#                        （loader 留守接收 fastboot 命令）+ cmdline "-v ufs=2 bootcpu=7
-#                        root_apfs=ufs_userdata"，打完逐项校验（v2 法则 + 出处哈希
-#                        + XNUP + cmdline）
-#    ⑦ 拼 iOS 卷    —— cat rootfs.apfs cryptex-os.dmg cryptex-app.dmg
-#                        （三容器背靠背 ≈7.8GB，内核按 ,c=0/1/2 自寻）
-#    ⑧ 切片发布     —— 1800MiB × 5 片（Release 单文件上限 2GiB）+ SHA256
-#                        + 手机端合并脚本 + 启动镜像 → Release 直链
+#  与 R5 相同的七步（磁盘准备/取树/取 iOS 16.5/转裸 APFS/造双盘/打启动镜像/
+#  拼 iOS 卷/切片发布），差异只有一处：**loader 从本仓库 xnuloader/ 现场编译**
+#  （R5 用的是 r4 硬件验证过的 prebuilt loader.efi，R6 换上了带取证能力的 0.6 版）：
+#    · oem gic      —— 读内核所在核心的 GICv3 重分发器：时钟中断 pending 未取
+#                       = 屏蔽中断自旋（驱动 bug）；未使能 = 时钟根本没起来。
+#                       loader 判内核 hung（心跳静默 50s）时也会自动打印。
+#    · oem sgi N    —— 向内核核心发软中断，前后各来一次 oem gic 即知核心
+#                       是否还响应中断（活锁 vs 死自旋）。
+#    · oem peek     —— 任意物理内存直读（get_staged 拉回）。
+#    · userdata 判定 —— UFS 巡查现在直接回答"iOS 卷在不在盘上"（APFS 容器
+#                       魔数 NXSB 在 +32；R5 的 sb 转储读的是 Android f2fs 的
+#                       +1024 槽位，其全零恰是 APFS 镜像的结构性零填充）。
+#  内核/shim/固件/DTB 保持 r1/r2/r4 硬件验证过的 prebuilt 字节不变。
 #
 #  产物（Release 里一站式拿齐）：
-#    raphael-ios-volume.img.part-*   → fastboot flash userdata（iOS 三容器卷）
-#    raphael-xnu-r5-flash.img        → fastboot boot（启动镜像：内核+小镜像 md1+usb 模式）
-#    raphael-r5-flashboot.apfs       → 启动卷（开机时 fastboot stage 上传 = resident = md0）
-#    r5-boot-volume-root.apfs        → 小镜像备份（调试用）
-#    SHA256SUMS / README.txt / r5-rejoin.sh
+#    raphael-ios-volume.img.part-*   → fastboot flash userdata（iOS 三容器卷；
+#                                      若 R5 的分片还留着，哈希相同即可复用）
+#    raphael-xnu-r6-flash.img        → fastboot boot（R6 loader + 内核 + md1 + usb）
+#    raphael-r6-flashboot.apfs       → 启动卷（开机时 fastboot stage 上传 = md0）
+#    r6-boot-volume-root.apfs        → 小镜像备份（调试用）
+#    SHA256SUMS / README.txt / r6-rejoin.sh
 #
-#  手机端刷完 userdata 后的启动序列（loader 自带 fastboot 服务，4 条命令）：
-#    fastboot boot  raphael-xnu-r5-flash.img   # loader 进 RAM，自带 USB fastboot 起来
-#    fastboot oem  ramdisk                     # 布雷：下一发下载进 resident 区
-#    fastboot stage raphael-r5-flashboot.apfs  # 启动卷 → resident 区 = md0（根）
-#    fastboot oem  run                         # 内核跑：md0=启动卷(stage0) → md1=/redwood
-#                                              # (init) → flash_root → iOS 卷 → SpringBoard
+#  手机端刷完 userdata 后（四步，loader 0.6）：
+#    fastboot boot  raphael-xnu-r6-flash.img
+#    fastboot oem  ramdisk
+#    fastboot stage raphael-r6-flashboot.apfs
+#    fastboot oem  run
+#  若再次卡死（约 60s 后 loader 判 hung），别拔线，按顺序取证：
+#    fastboot oem log && fastboot get_staged r6-klog.txt     # 含自动 gic 判读
+#    fastboot oem sgi 0 && fastboot oem gic                  # 中断针刺 + 复查
+#    fastboot oem sgi 1 && fastboot oem gic
+#    fastboot oem screenshot && fastboot get_staged screen.raw && fastboot getvar screen
 #
-#  部署：把本文件放进 fork 的 .github/workflows/r5-springboard.yml（默认分支），
-#        Actions → 「R5 · SpringBoard 一键流水线」→ Run workflow → 等 60~110 分钟。
-#  注意：重复运行前先删掉旧 Release（或换 release_tag），避免资产名冲突。
+#  部署：默认分支的 .github/workflows/r6-springboard.yml → Run workflow。
+#  注意：重复运行前先删掉旧 Release（或换 release_tag）。
 # =====================================================================
-name: R5 · SpringBoard 一键流水线
+name: R6 · SpringBoard 一键流水线
 
 on:
   workflow_dispatch:
     inputs:
       kernel_repo:
-        description: "hackios 内核树 fork（含 prebuilt/raphael 启动链 + tools/r5-flash-build.sh）"
+        description: "hackios 内核树 fork（含 xnuloader/ + tools/r6-flash-build.sh）"
         required: true
         default: "Gsjsjzhznsz/hackios-xnu-kernel"
       userland_repo:
@@ -60,13 +53,13 @@ on:
       release_tag:
         description: "Release tag（直链的一部分）"
         required: true
-        default: "r5-springboard"
+        default: "r6-springboard"
 
 permissions:
   contents: write
 
 concurrency:
-  group: r5-springboard
+  group: r6-springboard
   cancel-in-progress: true
 
 jobs:
@@ -77,21 +70,20 @@ jobs:
       REL: ${{ github.workspace }}/release
     steps:
       # ---------------------------------------------------------------
-      - name: "①/⑧ 磁盘准备与依赖"
+      - name: "①/⑧ 磁盘准备与依赖（含 R6 loader 工具链 clang/lld）"
         run: |
           set -eu
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
                        /usr/local/share/boost /opt/hostedtoolcache/CodeQL 2>/dev/null || true
           sudo docker image prune -af >/dev/null 2>&1 || true
           sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential python3-dev >/dev/null
+          sudo apt-get install -y -qq build-essential python3-dev clang lld >/dev/null
+          command -v clang && command -v lld-link
           # step ④ 的 dmg.py 需要 lzfse 模块（解 iOS 16.5 rootfs.dmg 的 LZFSE 块）
           sudo python3 -m pip install --break-system-packages lzfse >/dev/null 2>&1 \
             || python3 -m pip install --user --break-system-packages lzfse >/dev/null
           python3 -c "import lzfse; print('→ lzfse 模块就绪')"
-          # 7-Zip 23+（读 APFS）。官方 GitHub 仓库已整体下架（404），
-          # 首选 Ubuntu noble universe 的 7zip 23.01（二进制名 7zz），
-          # apt 拿不到再走 7-zip.org 官方原版 tarball 兜底。
+          # 7-Zip 23+（读 APFS）
           sudo apt-get install -y -qq 7zip >/dev/null 2>&1 \
             || echo "::warning::apt 的 7zip 不可用，改走 7-zip.org 官方原版"
           if [ -x /usr/bin/7zz ]; then
@@ -117,9 +109,22 @@ jobs:
             rm -rf .userland.git
             USERLAND_URL="https://github.com/oosexgang/hackios-xnu-userland.git" common/setup.sh
           fi
-          echo "→ raphael 启动链与打包器："
-          ls -lh prebuilt/raphael/ tools/r5-flash-build.sh
+          echo "→ raphael 启动链与 R6 打包器："
+          ls -lh prebuilt/raphael/ tools/r6-flash-build.sh
           git log -1 --format='→ kernel 树 @ %h %s'
+
+      # ---------------------------------------------------------------
+      - name: "②b/⑧ 编译门禁（R6 loader：先编译，语法错误两分钟内暴露）"
+        run: |
+          set -eu
+          cd hackios
+          bash xnuloader/build.sh
+          python3 - <<'PY'
+          d = open('xnuloader/loader.efi', 'rb').read()
+          for feat in (b'oem gic', b'oem sgi', b'oem peek', b'NXSB at +32'):
+              assert feat in d, f'loader.efi 缺 R6 特征串 {feat!r}'
+          print(f'✓ R6 loader {len(d):,} B：oem gic/sgi/peek + APFS 判定齐全')
+          PY
 
       # ---------------------------------------------------------------
       - name: "③/⑧ 取 iOS 16.5（Apple CDN：4.7GB + 2.7GB + 10MB，断点续传）"
@@ -136,9 +141,6 @@ jobs:
         run: |
           set -eu
           cd hackios/ios165
-          # dmg2img 不认 iOS 16.5 rootfs.dmg 的 LZFSE 块（0x80000007）——改用上游自家的
-          # tools/apfs/dmg.py（run-tests.sh 钦定：extract ios165/rootfs.dmg OUT.apfs --apfs），
-          # 支持 zero/raw/adc/zlib/bzip2/lzma/lzfse 全谱 chunk，未知类型直接报错不静默跳块
           python3 -c "import lzfse" || { echo "::error::lzfse 模块缺失（看 step①）"; exit 1; }
           INFO=$(python3 ../tools/apfs/dmg.py info rootfs.dmg)
           echo "$INFO"
@@ -182,24 +184,22 @@ jobs:
               d = open(f,'rb').read(36)
               assert d[32:36]==b'NXSB', f'{f} 不是 APFS 容器'
               print(f'✓ {f} 是 APFS 容器（NXSB@+32）= {what}')"
-          # 启动卷必须带 stage0：内核从 md0 exec /sbin/launchd（stage0），它再挂 md1 跑 init
           7z l userland/flashboot.apfs 2>/dev/null | grep -m1 'launchd' \
             || { echo "::error::flashboot.apfs 里没有 sbin/launchd（stage0）"; exit 1; }
           echo "✓ flashboot.apfs 带 stage0（sbin/launchd）"
-          # 释放后面用不到的：ios165 提取物 ~5.3GB、system.apfs（flashboot.apfs 是 r5 交付物，保留！）
           rm -rf ios165/rootfs ios165/cryptex ios165/cryptex-app ios165/20F66__iPhone10,3_6
           rm -f userland/system.apfs
           df -h .
 
       # ---------------------------------------------------------------
-      - name: "⑥/⑧ 打 r5 启动镜像（r1 固件 + r2 shim + r4 loader + 内核 + 小镜像 md1 + usb 模式）"
+      - name: "⑥/⑧ 打 r6 启动镜像（r1 固件 + r2 shim + 现编译 R6 loader + 内核 + 小镜像 md1 + usb 模式）"
         run: |
           set -eu
           cd hackios
-          bash tools/r5-flash-build.sh .
-          cp userland/raphael-xnu-r5-flash.img "$REL/"
-          cp userland/flashboot.apfs "$REL/raphael-r5-flashboot.apfs"
-          cp userland/root.apfs "$REL/r5-boot-volume-root.apfs"
+          bash tools/r6-flash-build.sh .
+          cp userland/raphael-xnu-r6-flash.img "$REL/"
+          cp userland/flashboot.apfs "$REL/raphael-r6-flashboot.apfs"
+          cp userland/root.apfs "$REL/r6-boot-volume-root.apfs"
           ls -lh "$REL"
           df -h .
 
@@ -242,14 +242,14 @@ jobs:
           rm -f "$IMG"
           cd "$REL"
           : > SHA256SUMS
-          for f in raphael-ios-volume.img.part-* raphael-xnu-r5-flash.img \
-                   raphael-r5-flashboot.apfs r5-boot-volume-root.apfs; do
+          for f in raphael-ios-volume.img.part-* raphael-xnu-r6-flash.img \
+                   raphael-r6-flashboot.apfs r6-boot-volume-root.apfs; do
             sha256sum "$f" >> SHA256SUMS
           done
           echo "${IMG_SHA}  raphael-ios-volume.img" >> SHA256SUMS
-          cat > r5-rejoin.sh <<'SH'
+          cat > r6-rejoin.sh <<'SH'
           #!/bin/sh
-          # R5: 合并 iOS 卷分片 + 校验（Termux；需与分片、SHA256SUMS 同目录）
+          # R6: 合并 iOS 卷分片 + 校验（Termux；需与分片、SHA256SUMS 同目录）
           set -e
           echo "[1/3] 校验分片 ..."
           sha256sum -c --ignore-missing SHA256SUMS
@@ -260,46 +260,65 @@ jobs:
           ls -lh raphael-ios-volume.img
           echo "OK → fastboot flash userdata raphael-ios-volume.img"
           SH
-          chmod +x r5-rejoin.sh
+          chmod +x r6-rejoin.sh
           REPO="${{ github.repository }}"
           TAG="${{ inputs.release_tag }}"
           PART_URLS=$(ls raphael-ios-volume.img.part-* | sed "s|^|https://github.com/${REPO}/releases/download/${TAG}/|")
           cat > README.txt <<EOF
           ============================================================
-           R5 · 纯血 hackios SpringBoard 交付包（raphael / K20 Pro）
+           R6 · 纯血 hackios SpringBoard 交付包（raphael / K20 Pro）
           ============================================================
           iOS 卷   : raphael-ios-volume.img（三容器背靠背：iOS 16.5 rootfs
                      + cryptex-os + cryptex-app，内核按 ,c=0/1/2 自寻）
                      整卷 SHA256: ${IMG_SHA}
-          启动镜像 : raphael-xnu-r5-flash.img（内核 + 小镜像 md1 + usb 模式；
-                     cmdline 带 root_apfs=ufs_userdata）
-          启动卷   : raphael-r5-flashboot.apfs（stage0 作 /sbin/launchd =
+          启动镜像 : raphael-xnu-r6-flash.img（R6 loader 0.6：oem gic/sgi/peek
+                     + userdata APFS 判定；内核/shim/固件仍是 r1/r2/r4 验证字节）
+          启动卷   : raphael-r6-flashboot.apfs（stage0 作 /sbin/launchd =
                      md0 根；每次开机经 loader 的 resident 区上传）
-          小镜像   : r5-boot-volume-root.apfs（init + LaunchDaemons，备份用）
+          小镜像   : r6-boot-volume-root.apfs（init + LaunchDaemons，备份用）
+
+          【R5 分片还在的话】先只下 SHA256SUMS，对旧分片/旧合并卷跑
+          sha256sum -c：一致就免重下免重刷（iOS 卷与 R5 字节相同）。
 
           【分片直链】共 $(ls raphael-ios-volume.img.part-* | wc -l) 片，全部下载到同一目录：
           ${PART_URLS}
-          https://github.com/${REPO}/releases/download/${TAG}/raphael-xnu-r5-flash.img
-          https://github.com/${REPO}/releases/download/${TAG}/raphael-r5-flashboot.apfs
+          https://github.com/${REPO}/releases/download/${TAG}/raphael-xnu-r6-flash.img
+          https://github.com/${REPO}/releases/download/${TAG}/raphael-r6-flashboot.apfs
           https://github.com/${REPO}/releases/download/${TAG}/SHA256SUMS
-          https://github.com/${REPO}/releases/download/${TAG}/r5-rejoin.sh
+          https://github.com/${REPO}/releases/download/${TAG}/r6-rejoin.sh
 
           【手机端（Termux）】
             termux-setup-storage
-            mkdir -p /sdcard/Download/r5 && cd /sdcard/Download/r5
-            # 分片 + r5-rejoin.sh + SHA256SUMS + 两个小文件都下载到本目录，然后：
-            sh r5-rejoin.sh
+            mkdir -p /sdcard/Download/r6 && cd /sdcard/Download/r6
+            sh r6-rejoin.sh
             fastboot flash userdata raphael-ios-volume.img
             # 刷完 userdata 重回 bootloader，四条命令点亮（loader 自带 fastboot）：
-            fastboot boot  raphael-xnu-r5-flash.img    # loader 进 RAM，自带 USB fastboot 起来
-            fastboot oem  ramdisk                      # 布雷：下一发下载进 resident 区
-            fastboot stage raphael-r5-flashboot.apfs   # 启动卷 -> resident 区 = md0（根）
-            fastboot oem  run                          # 内核跑：stage0 -> init ->
-                                                         # flash_root -> iOS 卷 -> SpringBoard
+            fastboot boot  raphael-xnu-r6-flash.img
+            fastboot oem  ramdisk
+            fastboot stage raphael-r6-flashboot.apfs
+            fastboot oem  run
+
+          【R6 判读树】
+            A. userdata 自检（每次开机自动打印，oem log 里看）：
+               "ufs: userdata: an APFS container is there (NXSB at +32)"
+                 = iOS 卷在盘上 ✓（head 转储 +0x20 行必含 4e585342；
+                   sb 窗口 +0x120 行 = 0100040008000000…、+0x160 行 =
+                   …497b438942f505… 两处非零指纹，全零才是没刷上）
+               "no APFS container at its start" = 卷不在 → 重刷 userdata
+            B. 内核卡死（约 60s 后 loader 自动打印 gic 判读行）：
+               "clock interrupt is PENDING and never taken … a spin, not a wait"
+                 = 内核屏蔽中断自旋（驱动级 bug）→ 拉完整 klog 交给我
+               "clock interrupt is NOT enabled … cannot fire" = 时钟中断没起来
+               针刺：fastboot oem sgi 0 → fastboot oem gic（pending 被取走
+                     = 核心还活着，只是线程死了）；再 oem sgi 1 → oem gic
+            C. 取证套餐（卡死态下，按序）：
+               fastboot oem log && fastboot get_staged r6-klog.txt
+               fastboot oem screenshot && fastboot get_staged screen.raw
+               fastboot getvar screen      # 记下 宽 高 每行字节（解析 raw 用）
+               fastboot oem peek <hex地址> <hex长度> && fastboot get_staged peek.bin
 
           ⚠️ 刷完 userdata 后绝不要让 MIUI 开机——Android 会把 userdata
              重格回 f2fs，iOS 卷即毁（重刷可恢复，但别折腾）。
-          ⚠️ r4 的 boot 镜像到此退役：r5 起用 raphael-xnu-r5-flash.img。
           ⚠️ 每次开机都要重复 boot/oem ramdisk/stage/oem run 四步（启动卷
              住 RAM 不落盘，这正是“不写手机闪存”设计的一部分）。
           ⚠️ 含 Apple 版权内容，仅个人研究；下载完成后请尽快删除本 Release。
@@ -313,38 +332,46 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.release_tag }}
-          name: "R5 · 纯血 hackios SpringBoard · iOS 16.5 (20F66)"
+          name: "R6 · 纯血 hackios SpringBoard · iOS 16.5 (20F66) · loader 0.6"
           body: |
             raphael (K20 Pro) SpringBoard 交付包：iOS 16.5 (iPhone10,3 / 20F66) 三容器卷
             （rootfs 5,628,755,968 B + cryptex-os + cryptex-app ≈ 7.8GB，已按上游常量校验），
-            配套启动镜像 raphael-xnu-r5-flash.img（cmdline `-v ufs=2 bootcpu=7 root_apfs=ufs_userdata`）
-            与启动卷 raphael-r5-flashboot.apfs（stage0 = md0，双盘闪存启动）。
+            配套启动镜像 raphael-xnu-r6-flash.img（cmdline `-v ufs=2 bootcpu=7 root_apfs=ufs_userdata`）
+            与启动卷 raphael-r6-flashboot.apfs（stage0 = md0，双盘闪存启动）。
 
-            手机端：`sh r5-rejoin.sh` → `fastboot flash userdata raphael-ios-volume.img`，
+            R6 新增（loader 0.6，从 xnuloader/ 现场编译；内核/shim/固件字节不变）：
+            - **userdata APFS 判定**：开机自动回答“iOS 卷在不在盘上”（R5 的 sb 全零
+              是 APFS 镜像的结构性零填充，不等于刷坏；本版直接看 NXSB@+32 魔数）
+            - **oem gic / oem sgi**：内核卡死时的中断控制器取证 + 软中断针刺
+            - **oem peek**：物理内存直读
+            - 判内核 hung 时自动打印 GIC 判读行
+
+            手机端：`sh r6-rejoin.sh` → `fastboot flash userdata raphael-ios-volume.img`，
             然后四条命令点亮：
-            `fastboot boot raphael-xnu-r5-flash.img` → `fastboot oem ramdisk` →
-            `fastboot stage raphael-r5-flashboot.apfs` → `fastboot oem run`
+            `fastboot boot raphael-xnu-r6-flash.img` → `fastboot oem ramdisk` →
+            `fastboot stage raphael-r6-flashboot.apfs` → `fastboot oem run`
 
             判读：`-- the iOS root volume on /dev/ufs_userdata as the root --` 后一串 [ ok ]，
-            然后 com.apple.SpringBoard 日志 → 锁屏 = 🎉。详见附件 README.txt。
+            然后 com.apple.SpringBoard 日志 → 锁屏 = 🎉。卡死时按 README.txt 的 R6 判读树
+            取证（oem log / oem gic / oem sgi / oem screenshot）。详见附件 README.txt。
 
             ⚠️ 含 Apple 版权内容，仅供个人研究；下载完成后请尽快删除本 Release。
           fail_on_unmatched_files: true
           files: |
             release/raphael-ios-volume.img.part-*
-            release/raphael-xnu-r5-flash.img
-            release/raphael-r5-flashboot.apfs
-            release/r5-boot-volume-root.apfs
+            release/raphael-xnu-r6-flash.img
+            release/raphael-r6-flashboot.apfs
+            release/r6-boot-volume-root.apfs
             release/SHA256SUMS
             release/README.txt
-            release/r5-rejoin.sh
+            release/r6-rejoin.sh
 
       - name: "直链汇总（跑完看这里，复制即用）"
         run: |
           set -eu
           echo "════════════ 全部下载直链 ════════════"
-          for f in "$REL"/raphael-ios-volume.img.part-* "$REL"/raphael-xnu-r5-flash.img \
-                   "$REL"/raphael-r5-flashboot.apfs "$REL"/r5-boot-volume-root.apfs \
-                   "$REL"/SHA256SUMS "$REL"/README.txt "$REL"/r5-rejoin.sh; do
+          for f in "$REL"/raphael-ios-volume.img.part-* "$REL"/raphael-xnu-r6-flash.img \
+                   "$REL"/raphael-r6-flashboot.apfs "$REL"/r6-boot-volume-root.apfs \
+                   "$REL"/SHA256SUMS "$REL"/README.txt "$REL"/r6-rejoin.sh; do
             echo "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/$(basename "$f")"
           done

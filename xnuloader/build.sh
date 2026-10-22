@@ -2,7 +2,10 @@
 # Build the XNU loader as a freestanding AArch64 UEFI application.
 set -e
 cd "$(dirname "$0")"
+# -Xclang -target-feature +el3: clang 18 gates SMC/HVC behind the (default-off) el3 target
+# feature; the loader calls the firmware through SMC, so the instruction must assemble.
 clang --target=aarch64-unknown-windows -ffreestanding -fno-builtin -fno-stack-protector -fshort-wchar \
+  -Xclang -target-feature -Xclang +el3 \
   -mgeneral-regs-only -O1 -Wall -Wextra -Wno-unused-parameter -c loader.c -o loader.obj
 # /base: UEFI loads an image at its preferred address when that is free. The PE default (0x140000000)
 # is in the middle of the phone's largest block of RAM, which XNU needs in one piece.
