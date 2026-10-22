@@ -1,0 +1,290 @@
+# =====================================================================
+#  R5 · 纯血 hackios SpringBoard 一键流水线（GitHub Actions）
+#  -------------------------------------------------------------------
+#  把 FLASH-R4-SPRINGBOARD.md 里需要电脑的 8 步全部搬进 CI：
+#    ① 磁盘准备     —— 清掉 Android/.NET/Haskell 等预装（~28GB 可用），
+#                        装 dmg2img / gcc / 7-Zip 23（能读 APFS）
+#    ② 取树         —— clone 两个 fork（hackios-xnu-kernel + userland），
+#                        common/setup.sh 合成工作区
+#    ③ 取 iOS 16.5  —— ios165/fetch.sh：Apple CDN 按 Range 直取三个 dmg
+#                        （rootfs 4.7GB + cryptex-os 2.7GB + cryptex-app 10MB）
+#    ④ 转裸 APFS    —— dmg2img + 端口常量校验（必须正好 5,628,755,968 B）
+#                        + NXSB 魔数 + 7z 列表确认 SpringBoard 在卷里
+#    ⑤ 造 boot 卷   —— build.sh PREBUILT=1 FLASHBOOT=1 CRYPTEXES=flash
+#                        → userland/root.apfs（init + LaunchDaemons，随内核走 RAM）
+#    ⑥ 打启动镜像   —— tools/r5-flash-build.sh（fork 里新提交的打包器）：
+#                        r1 固件 + r2 shim + r4 loader + prebuilt 内核 + boot 卷
+#                        + cmdline "-v ufs=2 bootcpu=7 root_apfs=ufs_userdata"，
+#                        打完逐项校验（v2 法则 + 出处哈希 + XNUP + cmdline）
+#    ⑦ 拼 iOS 卷    —— cat rootfs.apfs cryptex-os.dmg cryptex-app.dmg
+#                        （三容器背靠背 ≈7.8GB，内核按 ,c=0/1/2 自寻）
+#    ⑧ 切片发布     —— 1800MiB × 5 片（Release 单文件上限 2GiB）+ SHA256
+#                        + 手机端合并脚本 + 启动镜像 → Release 直链
+#
+#  产物（Release 里一站式拿齐）：
+#    raphael-ios-volume.img.part-*   → fastboot flash userdata
+#    raphael-xnu-r5-flash.img        → fastboot boot（这就是 r5 启动镜像！）
+#    r5-boot-volume-root.apfs        → boot 卷备份（调试用）
+#    SHA256SUMS / README.txt / r5-rejoin.sh
+#
+#  部署：把本文件放进 fork 的 .github/workflows/r5-springboard.yml（默认分支），
+#        Actions → 「R5 · SpringBoard 一键流水线」→ Run workflow → 等 60~110 分钟。
+#  注意：重复运行前先删掉旧 Release（或换 release_tag），避免资产名冲突。
+# =====================================================================
+name: R5 · SpringBoard 一键流水线
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_repo:
+        description: "hackios 内核树 fork（含 prebuilt/raphael 启动链 + tools/r5-flash-build.sh）"
+        required: true
+        default: "Gsjsjzhznsz/hackios-xnu-kernel"
+      userland_repo:
+        description: "hackios userland 树 fork"
+        required: true
+        default: "Gsjsjzhznsz/hackios-xnu-userland"
+      release_tag:
+        description: "Release tag（直链的一部分）"
+        required: true
+        default: "r5-springboard"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: r5-springboard
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      REL: ${{ github.workspace }}/release
+    steps:
+      # ---------------------------------------------------------------
+      - name: "①/⑧ 磁盘准备与依赖"
+        run: |
+          set -eu
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+                       /usr/local/share/boost /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dmg2img build-essential >/dev/null
+          # 7-Zip 23+（读 APFS；apt 的 p7zip 16 太老，用官方二进制）
+          curl -fsSL -o /tmp/7z.tar.xz \
+            https://github.com/ip7zip/7zip/releases/download/23.01/7z2301-linux-x64.tar.xz
+          sudo mkdir -p /opt/7zip && sudo tar -xJf /tmp/7z.tar.xz -C /opt/7zip
+          sudo ln -sf /opt/7zip/7zz /usr/local/bin/7z
+          echo "→ 7-Zip:"; 7z i | sed -n '2,3p'
+          mkdir -p "$REL"
+          df -h /
+
+      # ---------------------------------------------------------------
+      - name: "②/⑧ 取树（kernel fork + userland fork）"
+        run: |
+          set -eu
+          git clone --depth 1 "https://github.com/${{ inputs.kernel_repo }}.git" hackios
+          cd hackios
+          if ! USERLAND_URL="https://github.com/${{ inputs.userland_repo }}.git" common/setup.sh; then
+            echo "::warning::userland fork 拉取失败，回退上游 oosexgang/hackios-xnu-userland"
+            rm -rf .userland.git
+            USERLAND_URL="https://github.com/oosexgang/hackios-xnu-userland.git" common/setup.sh
+          fi
+          echo "→ raphael 启动链与打包器："
+          ls -lh prebuilt/raphael/ tools/r5-flash-build.sh
+          git log -1 --format='→ kernel 树 @ %h %s'
+
+      # ---------------------------------------------------------------
+      - name: "③/⑧ 取 iOS 16.5（Apple CDN：4.7GB + 2.7GB + 10MB，断点续传）"
+        run: |
+          set -eu
+          cd hackios/ios165
+          KEEP=1 ./fetch.sh
+          echo "→ 三个镜像："
+          ls -lh rootfs.dmg cryptex-os.dmg cryptex-app.dmg
+          df -h .
+
+      # ---------------------------------------------------------------
+      - name: "④/⑧ 转裸 APFS（dmg2img + 端口常量/魔数/内容三重校验）"
+        run: |
+          set -eu
+          cd hackios/ios165
+          dmg2img -i rootfs.dmg -o rootfs.apfs
+          S=$(stat -c %s rootfs.apfs)
+          echo "→ rootfs.apfs = ${S} B"
+          [ "$S" -eq 5628755968 ] || { echo "::error::尺寸不是端口常量 5,628,755,968（Apple 改 IPSW 了？）"; exit 1; }
+          python3 - <<'PY'
+          d = open('rootfs.apfs','rb').read(36)
+          assert d[32:36] == b'NXSB', f'rootfs.apfs 不是裸 APFS 容器: {d[32:36]!r}'
+          for f in ('cryptex-os.dmg','cryptex-app.dmg'):
+              m = open(f,'rb').read(36)[32:36]
+              assert m == b'NXSB', f'{f} 不是裸 APFS 容器: {m!r}'
+          print('✓ 三个镜像 NXSB 容器魔数齐全（@+32）')
+          PY
+          rm -f rootfs.dmg
+          echo "→ 内容抽检（7z 列 APFS，SpringBoard 必须在）："
+          7z l rootfs.apfs | grep -m1 'SpringBoard' || { echo "::error::rootfs.apfs 里没有 SpringBoard"; exit 1; }
+          echo "✓ SpringBoard 在卷里"
+          df -h .
+
+      # ---------------------------------------------------------------
+      - name: "⑤/⑧ 造 boot 卷（root.apfs：init + LaunchDaemons，随内核走 RAM）"
+        run: |
+          set -eu
+          cd hackios
+          BUILD_RC=0
+          PREBUILT=1 FLASHBOOT=1 CRYPTEXES=flash REST=1 WIFID=0 userland/build.sh || BUILD_RC=$?
+          if [ ! -f userland/root.apfs ]; then
+            echo "::error::userland/root.apfs 未产出（看上方日志）"
+            exit 1
+          fi
+          [ "$BUILD_RC" = 0 ] || echo "::warning::build.sh 退出码 $BUILD_RC（root.apfs 已产出，继续）"
+          ls -lh userland/root.apfs
+          python3 -c "d=open('userland/root.apfs','rb').read(36); assert d[32:36]==b'NXSB', 'root.apfs 不是 APFS 容器'; print('✓ root.apfs 是 APFS 容器（NXSB@+32）')"
+          # 释放后面用不到的：ios165 提取物 ~5.3GB、RAM 流程镜像
+          rm -rf ios165/rootfs ios165/cryptex ios165/cryptex-app ios165/20F66__iPhone10,3_6
+          rm -f userland/system.apfs userland/flashboot.apfs
+          df -h .
+
+      # ---------------------------------------------------------------
+      - name: "⑥/⑧ 打 r5 启动镜像（r1 固件 + r2 shim + r4 loader + 内核 + boot 卷）"
+        run: |
+          set -eu
+          cd hackios
+          bash tools/r5-flash-build.sh .
+          cp userland/raphael-xnu-r5-flash.img "$REL/"
+          cp userland/root.apfs "$REL/r5-boot-volume-root.apfs"
+          ls -lh "$REL"
+          df -h .
+
+      # ---------------------------------------------------------------
+      - name: "⑦/⑧ 拼 iOS 卷（三容器背靠背，rootfs + cryptex-os + cryptex-app）"
+        run: |
+          set -eu
+          cd hackios/ios165
+          cat rootfs.apfs cryptex-os.dmg cryptex-app.dmg > raphael-ios-volume.img
+          S=$(stat -c %s raphael-ios-volume.img)
+          E=$(( $(stat -c %s rootfs.apfs) + $(stat -c %s cryptex-os.dmg) + $(stat -c %s cryptex-app.dmg) ))
+          [ "$S" -eq "$E" ] || { echo "::error::拼接尺寸不符: $S != $E"; exit 1; }
+          echo "→ iOS 卷 = ${S} B"
+          python3 - <<'PY'
+          import os
+          parts = [('rootfs.apfs',), ('cryptex-os.dmg',), ('cryptex-app.dmg',)]
+          f = open('raphael-ios-volume.img','rb')
+          off = 0
+          for i, (p,) in enumerate(parts):
+              s = os.path.getsize(p)
+              f.seek(off + 32); m = f.read(4)
+              assert m == b'NXSB', f'container c={i} @ {off:#x}: magic {m!r}'
+              print(f'✓ c={i} @ {off:#010x} NXSB（{s:,} B）')
+              off += s
+          assert off == os.path.getsize('raphael-ios-volume.img'), 'total size mismatch'
+          print('✓ 三个 APFS 容器背靠背，内核按 ,c=0/1/2 依次可寻')
+          PY
+          rm -f rootfs.apfs cryptex-os.dmg cryptex-app.dmg
+          df -h .
+
+      # ---------------------------------------------------------------
+      - name: "⑧/⑧ 切片 + SHA256 + 生成手机端附件"
+        run: |
+          set -eu
+          cd hackios/ios165
+          IMG=raphael-ios-volume.img
+          IMG_SHA=$(sha256sum "$IMG" | awk '{print $1}')
+          echo "→ 整卷 SHA256 = $IMG_SHA"
+          split -b 1800m "$IMG" "$REL/raphael-ios-volume.img.part-"
+          rm -f "$IMG"
+          cd "$REL"
+          : > SHA256SUMS
+          for f in raphael-ios-volume.img.part-* raphael-xnu-r5-flash.img r5-boot-volume-root.apfs; do
+            sha256sum "$f" >> SHA256SUMS
+          done
+          echo "${IMG_SHA}  raphael-ios-volume.img" >> SHA256SUMS
+          cat > r5-rejoin.sh <<'SH'
+          #!/bin/sh
+          # R5: 合并 iOS 卷分片 + 校验（Termux；需与分片、SHA256SUMS 同目录）
+          set -e
+          echo "[1/3] 校验分片 ..."
+          sha256sum -c --ignore-missing SHA256SUMS
+          echo "[2/3] 合并（约 7.8GB，等一会）..."
+          cat raphael-ios-volume.img.part-* > raphael-ios-volume.img
+          echo "[3/3] 校验整卷 ..."
+          grep ' raphael-ios-volume.img$' SHA256SUMS | sha256sum -c -
+          ls -lh raphael-ios-volume.img
+          echo "OK → fastboot flash userdata raphael-ios-volume.img"
+          SH
+          chmod +x r5-rejoin.sh
+          REPO="${{ github.repository }}"
+          TAG="${{ inputs.release_tag }}"
+          PART_URLS=$(ls raphael-ios-volume.img.part-* | sed "s|^|https://github.com/${REPO}/releases/download/${TAG}/|")
+          cat > README.txt <<EOF
+          ============================================================
+           R5 · 纯血 hackios SpringBoard 交付包（raphael / K20 Pro）
+          ============================================================
+          iOS 卷   : raphael-ios-volume.img（三容器背靠背：iOS 16.5 rootfs
+                     + cryptex-os + cryptex-app，内核按 ,c=0/1/2 自寻）
+                     整卷 SHA256: ${IMG_SHA}
+          启动镜像 : raphael-xnu-r5-flash.img（r1 固件 + r4 loader + hackios
+                     内核 + boot 卷；cmdline 带 root_apfs=ufs_userdata）
+          boot 卷  : r5-boot-volume-root.apfs（init + LaunchDaemons，备份用）
+
+          【分片直链】共 $(ls raphael-ios-volume.img.part-* | wc -l) 片，全部下载到同一目录：
+          ${PART_URLS}
+          https://github.com/${REPO}/releases/download/${TAG}/raphael-xnu-r5-flash.img
+          https://github.com/${REPO}/releases/download/${TAG}/SHA256SUMS
+          https://github.com/${REPO}/releases/download/${TAG}/r5-rejoin.sh
+
+          【手机端（Termux）】
+            termux-setup-storage
+            mkdir -p /sdcard/Download/r5 && cd /sdcard/Download/r5
+            # 分片 + r5-rejoin.sh + SHA256SUMS 下载到本目录，然后：
+            sh r5-rejoin.sh
+            fastboot flash userdata raphael-ios-volume.img
+            fastboot boot  raphael-xnu-r5-flash.img
+
+          ⚠️ 刷完 userdata 后绝不要让 MIUI 开机——Android 会把 userdata
+             重格回 f2fs，iOS 卷即毁（重刷可恢复，但别折腾）。
+          ⚠️ r4 的 boot 镜像到此退役：r5 起用 raphael-xnu-r5-flash.img。
+          ⚠️ 含 Apple 版权内容，仅个人研究；下载完成后请尽快删除本 Release。
+          EOF
+          echo "→ SHA256SUMS："
+          cat SHA256SUMS
+          ls -lh
+
+      # ---------------------------------------------------------------
+      - name: "⑧b 发布 Release（直链交付）"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: "R5 · 纯血 hackios SpringBoard · iOS 16.5 (20F66)"
+          body: |
+            raphael (K20 Pro) SpringBoard 交付包：iOS 16.5 (iPhone10,3 / 20F66) 三容器卷
+            （rootfs 5,628,755,968 B + cryptex-os + cryptex-app ≈ 7.8GB，已按端口常量校验），
+            配套启动镜像 raphael-xnu-r5-flash.img（cmdline `-v ufs=2 bootcpu=7 root_apfs=ufs_userdata`）。
+
+            手机端三步：`sh r5-rejoin.sh` → `fastboot flash userdata raphael-ios-volume.img` →
+            `fastboot boot raphael-xnu-r5-flash.img`
+
+            判读：`-- the iOS root volume on /dev/ufs_userdata as the root --` 后一串 [ ok ]，
+            然后 com.apple.SpringBoard 日志 → 锁屏 = 🎉。详见附件 README.txt。
+
+            ⚠️ 含 Apple 版权内容，仅供个人研究；下载完成后请尽快删除本 Release。
+          fail_on_unmatched_files: true
+          files: |
+            release/raphael-ios-volume.img.part-*
+            release/raphael-xnu-r5-flash.img
+            release/r5-boot-volume-root.apfs
+            release/SHA256SUMS
+            release/README.txt
+            release/r5-rejoin.sh
+
+      - name: "直链汇总（跑完看这里，复制即用）"
+        run: |
+          set -eu
+          echo "════════════ 全部下载直链 ════════════"
+          for f in "$REL"/raphael-ios-volume.img.part-* "$REL"/raphael-xnu-r5-flash.img \
+                   "$REL"/r5-boot-volume-root.apfs "$REL"/SHA256SUMS "$REL"/README.txt "$REL"/r5-rejoin.sh; do
+            echo "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/$(basename "$f")"
+          done
