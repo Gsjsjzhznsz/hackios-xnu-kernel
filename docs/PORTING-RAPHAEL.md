@@ -112,8 +112,20 @@ implements it under `BOOTIMG_HEADER_VERSION=2`; redwood keeps its v1 path untouc
   builds (see `files/Binaries/raphael/README.md`); DisplayDxe's cepheus patch is a
   rebuild and stays as an unreferenced fallback (and is dormant anyway while
   `USE_CUSTOM_DISPLAY_DRIVER = 0`).
-- build the UEFI (`build_uefi.py -d raphael -r RELEASE`) and run the stage-1 milestone:
-  `fastboot boot`, UEFI display over SimpleFb at `0x9C000000`, loader log over USB;
+- **UEFI builds and packs (stage-1 milestone image r1)** - `raphaelPkg` compiles clean
+  (RELEASE_CLANGPDB, FD 3 MB, 1.69 MB used, 83 PE modules; provenance proven: the FD's
+  UFSDxe is byte-identical to the user's XBL module, ButtonsDxe/ClockDxe are the
+  ported-patched raphael builds). Canonical image = `mkxnuimg.py` v2 path
+  (`raphael-uefi-r1.img`, sha256 `91a9b55f…74e1844`). Toolchain notes: conda-forge
+  clang-18/lld/nasm/mono (no root needed); `mu_nasm` extdep pre-seeded with system
+  nasm per `uefi/README.md`; Mu-Silicium lives at the repo ROOT (`uefi/apply.sh`
+  clones `../Mu-Silicium`), where `mkxnuimg.py` expects it. `raphael.toml` carries the
+  full v2 argument set (dtb/dtb_offset/base `"0x0"`/cmdline/os_version) - mind that
+  `build_uefi.py`'s `if value:` drops a numeric 0 and its argument map has no
+  `pagesize`, so `Mu-raphael.img` from that path is v2-with-defaults (2048-byte
+  pages, padded tail); the byte-exact law lives in `mkxnuimg.py`.
+- on-device stage-1 test: `fastboot boot raphael-uefi-r1.img` (see
+  `download/raphael-hackios-r1/TEST-RAPHAEL-UEFI-R1.md` for the judgment tree);
 - the loader's virtual-watchdog SMCs on raphael (kept off in stage 1);
 - `FD_BASE`/`FD_SIZE` in the profile match `MemoryMapLib`'s "UEFI FD" entry
   (0x9FC00000/0x300000) - `mkxnuimg.py` asserts the FD length, so a mismatch fails loudly.

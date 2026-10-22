@@ -16,7 +16,8 @@ size = 0x300000
 #
 [boot_image_kernel]
 kernel_compression = "gzip"
-append_dtb         = true
+# v2 law: the DTB is its own segment (--dtb/--dtb_offset), never appended to the kernel
+append_dtb         = false
 
 #
 # Android Boot Image Configs
@@ -25,4 +26,17 @@ append_dtb         = true
 # raphael's ABL only accepts header v2 (verified: v1 = black screen, t8/t13/t19);
 # redwood.toml uses 1. mkxnuimg.py honours BOOTIMG_HEADER_VERSION (default 1) and
 # packs v2 with an independent DTB segment at 0x1F00000 + the truncation rule.
+# The full proven argument set (golden-image byte-identical round trip):
 header_version = 2
+# NOTE: build_uefi.py's `if value:` drops a numeric 0, so base must be the STRING "0x0"
+# to actually reach mkbootimg (else base defaults to 0x10000000 and dtb_addr lands at
+# 0x11F00000). Its argument map also has no `pagesize` (mkbootimg then uses 2048, not
+# the golden 4096) and it does not truncate the final pad - the byte-exact v2 chain
+# lives in mkxnuimg.py (BOOTIMG_HEADER_VERSION=2), which is the canonical packer for
+# this port (`./xl enter`, `common/build.sh`).
+base           = "0x0"
+dtb            = "Resources/DTBs/raphael.dtb"
+dtb_offset     = 0x01F00000
+cmdline        = "console=null"
+os_version     = "11.0.0"
+os_patch_level = "2021-10"
