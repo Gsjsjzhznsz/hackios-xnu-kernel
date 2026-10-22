@@ -72,11 +72,19 @@ jobs:
           sudo docker image prune -af >/dev/null 2>&1 || true
           sudo apt-get update -qq
           sudo apt-get install -y -qq dmg2img build-essential >/dev/null
-          # 7-Zip 23+（读 APFS；apt 的 p7zip 16 太老，用官方二进制）
-          curl -fsSL -o /tmp/7z.tar.xz \
-            https://github.com/ip7zip/7zip/releases/download/23.01/7z2301-linux-x64.tar.xz
-          sudo mkdir -p /opt/7zip && sudo tar -xJf /tmp/7z.tar.xz -C /opt/7zip
-          sudo ln -sf /opt/7zip/7zz /usr/local/bin/7z
+          # 7-Zip 23+（读 APFS）。官方 GitHub 仓库已整体下架（404），
+          # 首选 Ubuntu noble universe 的 7zip 23.01（二进制名 7zz），
+          # apt 拿不到再走 7-zip.org 官方原版 tarball 兜底。
+          sudo apt-get install -y -qq 7zip >/dev/null 2>&1 \
+            || echo "::warning::apt 的 7zip 不可用，改走 7-zip.org 官方原版"
+          if [ -x /usr/bin/7zz ]; then
+            sudo ln -sf /usr/bin/7zz /usr/local/bin/7z
+          else
+            curl -fsSL -o /tmp/7z.tar.xz https://www.7-zip.org/a/7z2301-linux-x64.tar.xz
+            sudo mkdir -p /opt/7zip && sudo tar -xJf /tmp/7z.tar.xz -C /opt/7zip
+            sudo ln -sf /opt/7zip/7zz /usr/local/bin/7z
+          fi
+          command -v 7z >/dev/null || { echo "::error::7z 仍不可用"; exit 1; }
           echo "→ 7-Zip:"; 7z i | sed -n '2,3p'
           mkdir -p "$REL"
           df -h /
