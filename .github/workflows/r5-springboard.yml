@@ -3,13 +3,15 @@
 #  -------------------------------------------------------------------
 #  把 FLASH-R4-SPRINGBOARD.md 里需要电脑的 8 步全部搬进 CI：
 #    ① 磁盘准备     —— 清掉 Android/.NET/Haskell 等预装（~28GB 可用），
-#                        装 dmg2img / gcc / 7-Zip 23（能读 APFS）
+#                        装 gcc / python3-dev / 7-Zip 23（能读 APFS）/ lzfse 模块
 #    ② 取树         —— clone 两个 fork（hackios-xnu-kernel + userland），
 #                        common/setup.sh 合成工作区
 #    ③ 取 iOS 16.5  —— ios165/fetch.sh：Apple CDN 按 Range 直取三个 dmg
 #                        （rootfs 4.7GB + cryptex-os 2.7GB + cryptex-app 10MB）
-#    ④ 转裸 APFS    —— dmg2img + 端口常量校验（必须正好 5,628,755,968 B）
-#                        + NXSB 魔数 + 7z 列表确认 SpringBoard 在卷里
+#    ④ 转裸 APFS    —— dmg2img 不认 LZFSE 块（0x80000007），改用上游自家
+#                        tools/apfs/dmg.py（run-tests.sh 钦定路径）抽 APFS 分区
+#                        + 上游常量校验（必须正好 5,628,755,968 B = darwin blocks
+#                        0..1374207）+ NXSB 魔数 + 7z 列表确认 SpringBoard 在卷里
 #    ⑤ 造 boot 卷   —— build.sh PREBUILT=1 FLASHBOOT=1 CRYPTEXES=flash
 #                        → userland/root.apfs（init + LaunchDaemons，随内核走 RAM）
 #    ⑥ 打启动镜像   —— tools/r5-flash-build.sh（fork 里新提交的打包器）：
@@ -71,7 +73,11 @@ jobs:
                        /usr/local/share/boost /opt/hostedtoolcache/CodeQL 2>/dev/null || true
           sudo docker image prune -af >/dev/null 2>&1 || true
           sudo apt-get update -qq
-          sudo apt-get install -y -qq dmg2img build-essential >/dev/null
+          sudo apt-get install -y -qq build-essential python3-dev >/dev/null
+          # step ④ 的 dmg.py 需要 lzfse 模块（解 iOS 16.5 rootfs.dmg 的 LZFSE 块）
+          sudo python3 -m pip install --break-system-packages lzfse >/dev/null 2>&1 \
+            || python3 -m pip install --user --break-system-packages lzfse >/dev/null
+          python3 -c "import lzfse; print('→ lzfse 模块就绪')"
           # 7-Zip 23+（读 APFS）。官方 GitHub 仓库已整体下架（404），
           # 首选 Ubuntu noble universe 的 7zip 23.01（二进制名 7zz），
           # apt 拿不到再走 7-zip.org 官方原版 tarball 兜底。
@@ -115,14 +121,25 @@ jobs:
           df -h .
 
       # ---------------------------------------------------------------
-      - name: "④/⑧ 转裸 APFS（dmg2img + 端口常量/魔数/内容三重校验）"
+      - name: "④/⑧ 转裸 APFS（dmg.py 解 LZFSE 抽 APFS 分区 + 常量/魔数/内容三重校验）"
         run: |
           set -eu
           cd hackios/ios165
-          dmg2img -i rootfs.dmg -o rootfs.apfs
+          # dmg2img 不认 iOS 16.5 rootfs.dmg 的 LZFSE 块（0x80000007）——改用上游自家的
+          # tools/apfs/dmg.py（run-tests.sh 钦定：extract ios165/rootfs.dmg OUT.apfs --apfs），
+          # 支持 zero/raw/adc/zlib/bzip2/lzma/lzfse 全谱 chunk，未知类型直接报错不静默跳块
+          python3 -c "import lzfse" || { echo "::error::lzfse 模块缺失（看 step①）"; exit 1; }
+          INFO=$(python3 ../tools/apfs/dmg.py info rootfs.dmg)
+          echo "$INFO"
+          if echo "$INFO" | grep -q '^GPT,'; then
+            python3 ../tools/apfs/dmg.py extract rootfs.dmg rootfs.apfs --apfs
+          else
+            echo "（无 GPT —— 整镜像即裸 APFS，整卷抽出）"
+            python3 ../tools/apfs/dmg.py extract rootfs.dmg rootfs.apfs
+          fi
           S=$(stat -c %s rootfs.apfs)
           echo "→ rootfs.apfs = ${S} B"
-          [ "$S" -eq 5628755968 ] || { echo "::error::尺寸不是端口常量 5,628,755,968（Apple 改 IPSW 了？）"; exit 1; }
+          [ "$S" -eq 5628755968 ] || { echo "::error::尺寸不是上游常量 5,628,755,968（= darwin blocks 0..1374207，见 tools/darwin-write.py；Apple 改 IPSW 了？）"; exit 1; }
           python3 - <<'PY'
           d = open('rootfs.apfs','rb').read(36)
           assert d[32:36] == b'NXSB', f'rootfs.apfs 不是裸 APFS 容器: {d[32:36]!r}'
