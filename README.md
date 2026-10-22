@@ -145,6 +145,10 @@ common/new-device.sh <codename> path/to/device.dtb   # profile + loader platform
 Then follow [docs/PORTING.md](docs/PORTING.md): the UEFI port, the loader's platform description, the kernel's
 drivers, the firmware. Device profiles live in `common/devices/` (`redwood.conf`, `qemu-virt.conf`, `_template.conf`).
 
+A first port is in progress: **raphael (Xiaomi Mi 9T Pro / K20 Pro, SM8150)** - device profile, loader
+platform, `raphaelPkg` UEFI (from cepheus), its real device tree, and the v2 boot-header law its ABL
+requires: [docs/PORTING-RAPHAEL.md](docs/PORTING-RAPHAEL.md).
+
 ## How it works
 
 ```

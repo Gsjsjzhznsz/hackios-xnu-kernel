@@ -1,0 +1,28 @@
+#
+# Boot Shim Configs
+#
+[boot_shim]
+requires_kernel_header = true
+
+#
+# UEFI FD Configs
+#
+[uefi_fd]
+base = 0x9FC00000
+size = 0x300000
+
+#
+# Android Boot Image Kernel Configs
+#
+[boot_image_kernel]
+kernel_compression = "gzip"
+append_dtb         = true
+
+#
+# Android Boot Image Configs
+#
+[boot_image]
+# raphael's ABL only accepts header v2 (verified: v1 = black screen, t8/t13/t19);
+# redwood.toml uses 1. mkxnuimg.py honours BOOTIMG_HEADER_VERSION (default 1) and
+# packs v2 with an independent DTB segment at 0x1F00000 + the truncation rule.
+header_version = 2

@@ -27,6 +27,12 @@ def env_int(name, default):
 TARGET = os.environ.get('UEFI_TARGET') or 'redwood'
 FD_BASE, FD_SIZE = env_int('FD_BASE', 0x9FD00000), env_int('FD_SIZE', 0x200000)
 PAYLOAD_BASE, PAYLOAD_MAX = env_int('PAYLOAD_BASE', 0xF0000000), 0x04000000
+# Android boot header version. 1 = upstream behaviour (redwood: gzip(kernel)+DTB in the
+# kernel segment). 2 = raphael's law: its ABL refuses v1 with a black screen (verified t8/t13/t19),
+# accepts v2 with an independent DTB segment at BOOTIMG_DTB_ADDR, file truncated exactly at
+# the DTB's end - the chain proven byte-identical against the golden raphael boot image.
+HDR = env_int('BOOTIMG_HEADER_VERSION', 1)
+DTB_ADDR = env_int('BOOTIMG_DTB_ADDR', 0x1F00000)
 
 ap = argparse.ArgumentParser()
 ap.add_argument('-p', '--payload')
@@ -67,10 +73,41 @@ if args.payload:
 if os.environ.get('DTB'): parts['dtb'] = os.environ['DTB']
 dtb = open(parts['dtb'], 'rb').read()
 kernel = args.output + '.kernel~'
-open(kernel, 'wb').write(gzip.compress(blob, 6) + dtb)
-try:
-    subprocess.check_call([sys.executable, parts['mkbootimg'], '--kernel', kernel, '--ramdisk', parts['ramdisk'],
-                           '--header_version', '1', '-o', args.output])
-finally:
-    os.unlink(kernel)
-print(f'{args.output}: {os.path.getsize(args.output)} bytes (shim {len(shim)}, uncompressed {len(blob)})')
+if HDR == 2:
+    # ---- raphael (v2): kernel segment = gzip(blob) only; DTB is its own segment; the file
+    # stops at the DTB's end. The exact mkbootimg argument set is the proven one (golden-image
+    # byte-identical round trip), not tunable guesses: base 0, pagesize 4096, console=null.
+    open(kernel, 'wb').write(gzip.compress(blob, 6))
+    try:
+        subprocess.check_call([sys.executable, parts['mkbootimg'], '--kernel', kernel, '--ramdisk', parts['ramdisk'],
+                               '--dtb', parts['dtb'], '--dtb_offset', hex(DTB_ADDR),
+                               '--header_version', '2', '--base', '0', '--pagesize', '4096',
+                               '--cmdline', 'console=null', '--os_version', '11.0.0',
+                               '--os_patch_level', '2021-10', '-o', args.output])
+    finally:
+        os.unlink(kernel)
+    img = open(args.output, 'rb').read()
+    import struct as _s
+    _h = _s.unpack_from('<10I', img, 8)          # v2 layout: kernel_size, kernel_addr, rd_size, rd_addr, ...
+    k_size, r_size = _h[0], _h[2]
+    page = _s.unpack_from('<I', img, 36)[0]
+    dtb_size = _s.unpack_from('<I', img, 1648)[0]
+    k_off = page
+    r_off = (k_off + k_size + page - 1) // page * page
+    d_off = (r_off + r_size + page - 1) // page * page
+    end = d_off + dtb_size
+    assert img[:8] == b'ANDROID!' and _s.unpack_from('<Q', img, 1652)[0] == DTB_ADDR
+    # mkbootimg pads the final page; the raphael law is the file stops exactly at the DTB's end:
+    if len(img) > end:
+        open(args.output, 'wb').write(img[:end])
+        img = img[:end]
+    assert len(img) == end, 'v2 truncation law'
+    print(f'{args.output}: {len(img)} bytes (shim {len(shim)}, uncompressed {len(blob)}, v2 hdr, DTB @{DTB_ADDR:#x} {dtb_size}B)')
+else:
+    open(kernel, 'wb').write(gzip.compress(blob, 6) + dtb)
+    try:
+        subprocess.check_call([sys.executable, parts['mkbootimg'], '--kernel', kernel, '--ramdisk', parts['ramdisk'],
+                               '--header_version', '1', '-o', args.output])
+    finally:
+        os.unlink(kernel)
+    print(f'{args.output}: {os.path.getsize(args.output)} bytes (shim {len(shim)}, uncompressed {len(blob)}, v1 hdr)')
