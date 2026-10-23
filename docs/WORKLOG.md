@@ -353,3 +353,29 @@ Stage Summary:
   免重刷；flashboot 与 R9/R10 字节相同（14485e7c）= 固件/shim 铁证未动
 - 交付：download/r11/（双镜像 + flashboot + 小镜像备份 + SUMS/README/
   rejoin + VOLUME-NOTE；卷分片不落盘——与 R10 同字节且无需重刷）
+
+## R12（进行中）
+
+- R11 真机判决：触摸/按键/清屏全胜（GT9886 normandy 选中；1257 次总线读
+  7us 零失败）；GPU 卡 step 5 频率计数器（`did not finish`），软渲染回退
+- 病理定案（三权威源逐行对日志）：计数器=被测时钟驱动的计数+晶体/4 做窗，
+  DONE 等被测时钟边沿——链上任何一环静止则永不来；R11 断链全在移植层：
+  ① 0x152000 bit16 是 GPLL vote 保留位（真地址 0x152004 bit16，vendor
+  gcc-sm8150.c：gcc_gpu_gpll0_div_clk_src），写丢与日志逐字吻合
+  ② hub 家族（hub_clk_src/hub_aon/hub_cx_int/cb）是 SC7280 的（gpucc-sc7280.c）；
+  mainline gpucc-sm8150.c 全表没有——0x1170/0x117c/0x1178/0x1180/0x1204
+  在 SM8150 是未实现洞（读 0 写丢）；SMMU 时钟真身=sm8150.dtsi adreno_smmu
+  的 ahb+memnoc+snoc_dvm（R11 日志显示全在跑）
+  ③ 计数器本就不该是门禁（Linux debugfs-only；频率=半分频 3/2×300MHz=
+  200MHz 整；硬握手证人=Rcg UPDATE 清零+GDSCR PWR_ON，R11 双双通过）
+- 修复（tools/host/r12_fix_adreno.py，锚定替换+T() tab 归一）：
+  GCC_PLL_VOTE 0x52000→0x52004；删四条幽灵写入+hub clock_source；
+  补 cxo_aon@0x1004；measure_clocks/cx_ready/step22 三处降级为证人
+  （新日志串 "going on with the configured rates" 作内核标记）；
+  measure 列表只留本 SoC 真有的四个时钟
+- 工具事故记录：Edit 工具对整文件做过一次 tab→8 空格重排（git checkout
+  恢复后全部经脚本重放解决）；脚本 T() 正则 ^((?: {8})+) 每组 8 空格
+  →等量 tab，measure_clocks 尾块用字面 tab 直写（3tab+12sp 续行）
+- 流水线：r12-springboard.yml（骨架=r11；②c 标记+R12 串）、
+  tools/r12-flash-build.sh（sed 派生）；双镜像 cmdline 与 R11 相同
+  （对照实验：只换内核源码）

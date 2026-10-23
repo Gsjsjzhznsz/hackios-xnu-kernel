@@ -287,8 +287,8 @@ wait_for(struct block *b, uint32_t offset, uint32_t mask, uint32_t value, uint32
  * gcc-sc7280.c. The touch screen driver uses this controller too.
  */
 static struct block gcc = { "gcc", 0x00100000, 0x80000 };
-#define GCC_PLL_VOTE            0x52000         /* bit 15: gcc_gpu_gpll0_clk_src (600 MHz), bit 16: ..._div_clk_src (300 MHz) */
-#define GCC_PLL_VOTE_GPU_DIV    (1u << 16)
+#define GCC_PLL_VOTE            0x52004         /* gcc-sm8150.c (the phone's own): gcc_gpu_gpll0_div_clk_src, enable_reg 0x52004 BIT(16); next door 0x15200 is the GPLL vote register (bit 0 gpll0 -- R11 wrote bit 16 THERE and the log watched it drop: "= 0x1" before and after) */
+#define GCC_PLL_VOTE_GPU_DIV    (1u << 16)      /* the 300 MHz tap the gmu_clk_src's table takes at 1.5 */
 #define GCC_GPU_CFG_AHB_CBCR    0x71004
 #define GCC_GPU_MEMNOC_GFX_CBCR 0x7100c
 #define GCC_GPU_SNOC_DVM_GFX_CBCR 0x71018
@@ -474,11 +474,16 @@ static struct block gpucc = { "gpucc", 0x02c90000, 0x9000 };    /* dt sm8150: cl
 #define GPUCC_AHB_CBCR          0x1078          /* gpu_cc_ahb_clk: the register bus inside the GPU block */
 #define GPUCC_CX_GMU_CBCR       0x1098          /* gpu_cc_cx_gmu_clk: the GMU */
 #define GPUCC_CXO_CBCR          0x109c          /* gpu_cc_cxo_clk: the crystal, for the GMU's timers */
-#define GPUCC_GMU_RCGR          0x1120          /* gpu_cc_gmu_clk_src: +0 command, +4 source and divider */
-#define GPUCC_CB_CBCR           0x1170          /* gpu_cc_cb_clk: Linux keeps it on always */
-#define GPUCC_HUB_AON_CBCR      0x1178          /* gpu_cc_hub_aon_clk */
-#define GPUCC_HUB_RCGR          0x117c          /* gpu_cc_hub_clk_src */
-#define GPUCC_HUB_CX_INT_CBCR   0x1204          /* gpu_cc_hub_cx_int_clk */
+#define GPUCC_GMU_RCGR          0x1120          /* gpu_cc_gmu_clk_src (gpucc-sm8150.c: cmd_rcgr 0x1120): +0 command, +4 source and divider */
+/*
+ * Not here, whatever redwood's (sc7280's) driver says: gpu_cc_hub_clk_src, hub_aon,
+ * hub_cx_int and cb are sc7280's clocks (gpucc-sc7280.c); SM8150's list
+ * (gpucc-sm8150.c) has none of them, and the R11 run wrote their sc7280 offsets
+ * (0x1170/0x117c/0x1178/0x1180/0x1204) into unimplemented holes -- read 0, write
+ * dropped, the log agrees word for word. The SMMU's clocks on this SoC are
+ * sm8150.dtsi's adreno_smmu list: this gpucc's ahb + gcc's memnoc_gfx and
+ * snoc_dvm_gfx, all three already running in that same log.
+ */
 #define GPUCC_CX_HW_CTRL        0x1540          /* dt: gpu_cx_hw_ctrl: bit 31 is where the vendor's driver sees CX come on */
 #define GPUCC_GX_DOMAIN_MISC    0x158c          /* dt: gpu_gx_domain_addr */
 #define GPUCC_SMMU_VOTE_CBCR    0x5000          /* gpu_cc_hlos1_vote_gpu_smmu_clk: our vote for the SMMU's clock */
@@ -510,16 +515,11 @@ step_gpucc(void)
 	get(&gpucc, "pll1 multiplier", GPUCC_PLL1_MODE + 4);
 	get(&gpucc, "gmu_clk_src command", GPUCC_GMU_RCGR);
 	get(&gpucc, "gmu_clk_src source", GPUCC_GMU_RCGR + 4);
-	get(&gpucc, "hub_clk_src command", GPUCC_HUB_RCGR);
-	get(&gpucc, "hub_clk_src source", GPUCC_HUB_RCGR + 4);
 	get(&gpucc, "cxo_aon", GPUCC_CXO_AON_CBCR);
 	get(&gpucc, "gx_gmu", GPUCC_GX_GMU_CBCR);
 	get(&gpucc, "ahb", GPUCC_AHB_CBCR);
 	get(&gpucc, "cx_gmu", GPUCC_CX_GMU_CBCR);
 	get(&gpucc, "cxo", GPUCC_CXO_CBCR);
-	get(&gpucc, "cb", GPUCC_CB_CBCR);
-	get(&gpucc, "hub_aon", GPUCC_HUB_AON_CBCR);
-	get(&gpucc, "hub_cx_int", GPUCC_HUB_CX_INT_CBCR);
 	get(&gpucc, "smmu vote", GPUCC_SMMU_VOTE_CBCR);
 	return true;
 }
@@ -648,10 +648,11 @@ clock_source(const char *name, uint32_t rcgr, uint32_t source)
 static bool measure_clocks(void);
 
 /*
- * The clocks the device tree gives the GMU and the SMMU, at the rates both the vendor's driver
- * and Linux bring the GMU up with: 200 MHz for the GMU, 150 MHz for the "hub" (a6xx_gmu_resume).
- * Both come from the 300 MHz tap of the global 600 MHz PLL, which runs anyway: no PLL of the
- * GPU's own has to be started.
+ * The clock the device tree gives the GMU, at the rate both the vendor's driver and
+ * Linux bring the GMU up with (a6xx_gmu_resume): 200 MHz. It comes from the 300 MHz
+ * tap of the global 600 MHz PLL, which runs anyway: no PLL of the GPU's own has to
+ * be started. The SMMU's clocks (sm8150.dtsi, adreno_smmu) are gcc's memnoc_gfx and
+ * snoc_dvm_gfx plus this controller's ahb; the sc7280 "hub" family does not exist here.
  */
 static bool
 step_clocks(void)
@@ -671,18 +672,22 @@ step_clocks(void)
 		return false;
 	}
 
-	announce("in the GPU's clock controller: the GMU's clock to 200 MHz, the hub's to 150 MHz");
-	if (!clock_source("gmu_clk_src", GPUCC_GMU_RCGR, RCG_GPLL0_DIV(3)) ||       /* 300 MHz / 1.5 */
-	    !clock_source("hub_clk_src", GPUCC_HUB_RCGR, RCG_GPLL0_DIV(4))) {       /* 300 MHz / 2 */
+	announce("in the GPU's clock controller: the GMU's clock to 200 MHz (the rate its table has)");
+	if (!clock_source("gmu_clk_src", GPUCC_GMU_RCGR, RCG_GPLL0_DIV(3))) {       /* 300 MHz / 1.5: F(200000000, P_GPLL0_OUT_MAIN_DIV, 1.5) */
 		return false;
 	}
 
+	/*
+	 * The SMMU's clocks on this SoC (sm8150.dtsi, adreno_smmu): gpucc's ahb, gcc's
+	 * memnoc_gfx and snoc_dvm_gfx -- the two gcc ones are on above, ahb below. The
+	 * sc7280 "hub" family does not exist here (see the macro block); cxo_aon
+	 * (0x1004, mainline gpucc-sm8150.c) is added: the always-on half's crystal
+	 * buffer, which the R11 log found off.
+	 */
 	announce("in the GPU's clock controller: the clocks of the GMU and of the SMMU on");
-	if (!clock_on(&gpucc, "cb", GPUCC_CB_CBCR, false) ||
-	    !clock_on(&gpucc, "cxo", GPUCC_CXO_CBCR, true) ||
-	    !clock_on(&gpucc, "ahb", GPUCC_AHB_CBCR, false) ||
-	    !clock_on(&gpucc, "hub_aon", GPUCC_HUB_AON_CBCR, true) ||
-	    !clock_on(&gpucc, "hub_cx_int", GPUCC_HUB_CX_INT_CBCR, true) ||
+	if (!clock_on(&gpucc, "cxo", GPUCC_CXO_CBCR, true) ||
+	    !clock_on(&gpucc, "ahb", GPUCC_AHB_CBCR, true) ||
+	    !clock_on(&gpucc, "cxo_aon", GPUCC_CXO_AON_CBCR, false) ||
 	    !clock_on(&gpucc, "cx_gmu", GPUCC_CX_GMU_CBCR, true) ||
 	    !clock_on(&gpucc, "smmu vote", GPUCC_SMMU_VOTE_CBCR, false)) {
 		return false;
@@ -808,23 +813,31 @@ measure_clocks(void)
 		const char *name;
 		uint32_t select;
 	} clocks[] = {
-		{ "cx_gmu (200 MHz was asked for)", GPUCC_DEBUG_CX_GMU }, { "hub_cx_int (from 150 MHz)", GPUCC_DEBUG_HUB_CX_INT },
-		{ "hub_aon", GPUCC_DEBUG_HUB_AON }, { "cb", GPUCC_DEBUG_CB }, { "cxo_aon", GPUCC_DEBUG_CXO_AON },
+		{ "cx_gmu (200 MHz was asked for)", GPUCC_DEBUG_CX_GMU }, { "cxo (the crystal, 19.2 MHz)", GPUCC_DEBUG_CXO },
 		{ "gx_gmu (should be off)", GPUCC_DEBUG_GX_GMU }, { "ahb, THE ONE IN QUESTION,", GPUCC_DEBUG_AHB },
 	};
 	uint32_t hz, ahb_hz = MEASURE_FAILED;
 
 	announce("measure the GPU block's clocks with the SoC's frequency counter (debug registers at gcc 0x162000.., "
-	    "gpucc 0x3d910fc, 0x3d91100, 0x3d91568)");
+	    "gpucc 0x2c910fc, 0x2c91100, 0x2c91568 -- sc7280's offsets, unverified here; a witness, not a gate)");
 	hz = measure(GPUCC_DEBUG_CXO);
 	if (hz == MEASURE_FAILED) {
-		printf("adreno: %u: the counter did not finish: it cannot be used as it is set up here\n", step);
-		return false;
-	}
-	printf("adreno: %u: measured: cxo runs at %u Hz (the crystal: 19200000)\n", step, hz);
-	if (hz < 18600000 || hz > 19800000) {
-		printf("adreno: %u: the counter does not show the crystal's rate: nothing it says can be used\n", step);
-		return false;
+		/*
+		 * The counter is a witness, not a gate (Linux's bring-up never waits on
+		 * one; the rates are arithmetic: the half-divider written is 3/2 of the
+		 * 300 MHz tap = 200 MHz exactly). Its input chain here still carries
+		 * sc7280's debug-mux value (0x146) and two debug branches at sc7280's
+		 * offsets, none of them verified for this SoC, and one dead link holds
+		 * DONE off forever -- the R11 run watched it for 200 ms a time. So: say
+		 * so, and go on with the configured rates.
+		 */
+		printf("adreno: %u: the counter did not finish (the mux and the debug branches are the sc7280's,\n"
+		    "    unverified here): going on with the configured rates\n", step);
+	} else {
+		printf("adreno: %u: measured: cxo runs at %u Hz (the crystal: 19200000)\n", step, hz);
+		if (hz < 18600000 || hz > 19800000) {
+			printf("adreno: %u: the counter does not show the crystal's rate: its word is not one to use\n", step);
+		}
 	}
 	for (unsigned i = 0; i < sizeof(clocks) / sizeof(clocks[0]); i++) {
 		hz = measure_quietly(clocks[i].select);
@@ -841,18 +854,14 @@ measure_clocks(void)
 		printf("adreno: %u: THE REGISTER BUS OF THE GPU BLOCK HAS ITS CLOCK, whatever its control register says\n", step);
 		return true;
 	}
-	/* for study: what else is there in the clock controller that could be its switch */
-	printf("adreno: %u: the register bus of the GPU block has no clock; what is not 0 in gpucc 0x1000..0x15fc:\n", step);
-	for (uint32_t offset = 0x1000; offset < 0x1600; offset += 16) {
-		uint32_t row[4] = { rd(gpucc.base + offset), rd(gpucc.base + offset + 4), rd(gpucc.base + offset + 8),
-			            rd(gpucc.base + offset + 12) };
-
-		if (row[0] | row[1] | row[2] | row[3]) {
-			printf("adreno: %u: gpucc %#x: %#x %#x %#x %#x\n", step, gpucc.phys + offset, row[0], row[1], row[2],
-			    row[3]);
-		}
-	}
-	return false;
+	/*
+	 * Not measured: the AHB control register's own bits are the evidence now (the
+	 * R11 log read 0x1 there: enable set, off clear) -- the counter's word was
+	 * never needed to go on, and the step is not failed for lack of a witness.
+	 */
+	printf("adreno: %u: the register bus's clock is not measured; its control register says %#x; going on\n",
+	    step, rd(gpucc.base + GPUCC_AHB_CBCR));
+	return true;
 }
 
 /*
@@ -873,15 +882,22 @@ cx_ready(void)
 		    cx_is_on() ? "on" : "off", gmu_clock);
 		return false;
 	}
+	/*
+	 * The register bus's evidence is the control register's own bits (enable set,
+	 * off clear -- BRANCH_HALT_SKIP is Linux's name for not trusting this one's
+	 * status; the R11 log read 0x1: bit 0 on, bit 31 clear). The counter, where it
+	 * works, is quoted as a bonus; it is no longer a gate anywhere.
+	 */
+	if ((rd(gpucc.base + GPUCC_AHB_CBCR) & (CBCR_ENABLE | CBCR_OFF)) != CBCR_ENABLE) {
+		printf("adreno: %u: the register bus's clock is off (%#x): without it a register of the GPU block would not answer\n",
+		    step, rd(gpucc.base + GPUCC_AHB_CBCR));
+		return false;
+	}
 	ahb_hz = measure_quietly(GPUCC_DEBUG_AHB);
 	if (ahb_hz == MEASURE_FAILED) {
-		printf("adreno: %u: the frequency counter did not finish (step 5 shows whether it works)\n", step);
+		printf("adreno: %u: the frequency counter did not finish (step 5 says why); the control register's word stands\n", step);
 	} else {
 		printf("adreno: %u: the GPU block's register bus clock (ahb) measures %u Hz\n", step, ahb_hz);
-	}
-	if (ahb_hz == MEASURE_FAILED || ahb_hz < 1000000) {
-		printf("adreno: %u: without that clock a register of the GPU block would not answer: not touching it\n", step);
-		return false;
 	}
 	return true;
 }
@@ -2503,7 +2519,8 @@ step_core_power(void)
 	if (!hfi_send("\"start\"", HFI_START, start, 1)) {
 		return false;
 	}
-	printf("adreno: %u: measured: the 3D core's clock runs at %u Hz (%u MHz was asked for), the GMU's in it at %u Hz\n", step,
+	/* the counter, where it works, is quoted; it is not waited on anywhere (step 5 says why) */
+	printf("adreno: %u: the 3D core's clock measured %u Hz (%u MHz was asked for), the GMU's in it %u Hz\n", step,
 	    measure_quietly(GPUCC_DEBUG_GX_GFX3D), core_khz / 1000, measure_quietly(GPUCC_DEBUG_GX_GMU));
 
 	announce("read registers of the 3D core itself (0x2c00000): the first time it has power");
