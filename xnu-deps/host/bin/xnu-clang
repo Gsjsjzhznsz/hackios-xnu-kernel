@@ -14,5 +14,13 @@ for a in "$@"; do
     *) args+=("$a");;
   esac
 done
+# XNU_CCACHE=1 (with ccache on the PATH): compile through ccache. The wrapper always adds the
+# same flags for the same tree, so a rebuild of an unchanged kernel is nearly all cache hits;
+# ccache runs the compiler itself when it is not compiling, so the link passes through too.
+# Nothing changes unless the variable is set: local builds stay exactly as they were.
+if [ -n "${XNU_CCACHE:-}" ] && command -v ccache >/dev/null 2>&1; then
+  exec ccache /usr/bin/$drv -include "$HB/../../hostinc/xnu_clang_compat.h" -target arm64-apple-ios${XNU_SDK_VERSION:-16.5} --ld-path="$HB/ld64" \
+    -w "${extra[@]}" "${args[@]}"
+fi
 exec /usr/bin/$drv -include "$HB/../../hostinc/xnu_clang_compat.h" -target arm64-apple-ios${XNU_SDK_VERSION:-16.5} --ld-path="$HB/ld64" \
   -w "${extra[@]}" "${args[@]}"
