@@ -23,7 +23,7 @@
 #       cmd-db@85f20000), the a630 family's firmware (fw/a630_gmu.bin, fw/a630_sqe.fw)
 #       and flows (DTCM at 0x40000, the GPU RSC inside the GMU window at +0x23000, the
 #       PDC that nobody has programmed on this SoC: the full a6xx_load_pdc/rsc_ucode),
-#       and raphael's own zap shader (fw/a640_zap.mdt + .b02).  The 22-step ladder and
+#       and the zap shader (fw/a640_zap.mbn).  The 22-step ladder and
 #       every gate of the original stay (boot-arg gpu=1 for the lot, adreno=N for the
 #       first N steps)
 #     - MiniIOMobileFramebuffer: software dimming (boot-arg fbdim=10..100; a type-6 record
@@ -183,7 +183,7 @@ if b'\x08\x01\xa0\x52' not in k:                 # movz w8, #0x8, lsl #16 = 1<<1
 #  the r9 round's own lesson, commit a3aed36)
 # the round's own markers
 for feat in (b'RAPHAEL TOUCH', b'GT9886', b'buttons: step 1', b'PMIC arbiter',
-             b'a630_gmu.bin', b'a640_zap.mdt', b'the panel dimmed to'):
+             b'a640_gmu.bin', b'a640_zap.mbn', b'the panel dimmed to'):
         if feat not in k:
                 fail(f'the built kernel lacks the R11 marker {feat!r}')
 if ents['ramdisk'] != open(rootapfs_path, 'rb').read():
