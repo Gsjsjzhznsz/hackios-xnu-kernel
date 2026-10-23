@@ -1,0 +1,407 @@
+# =====================================================================
+#  R8 · 纯血 hackios SpringBoard 一键流水线（GitHub Actions）
+#  -------------------------------------------------------------------
+#  与 R7 相同的七步（磁盘准备/取树/取 iOS 16.5/转裸 APFS/造双盘/打启动镜像/
+#  拼 iOS 卷/切片发布），差异只有 loader：R8 把 R7 的判决变成一次活体实验。
+#    · R7 判决：时钟中断 enabled+pending 从未被取，帧说 group 0；对已交付内核的
+#      反汇编证明 gic_v3_irq_cpu_init() **写了** GICR_IGROUPR0|=(1<<27)，就在
+#      那条明显落地的 ISENABLER0 写（dump 里 0x08000000）前四条指令——非安全
+#      写被丢弃而邻近写都生效 = GIC 运行在安全态（DS=0），组寄存器 secure-only：
+#      写被丢、读是盲的。R7 的 "group 0" 行是瞎着读出来的。
+#    · gic_group_repair()：把内核核整块 SGI+PPI 银行置于 Group 1
+#      （IGROUPR0=0xffffffff、IGRPMODR0=0），settle 后相信回读。三个时机调用：
+#      CPU_ON 前（预置——若帧状态能穿过上电，内核第一条指令起时钟就是 Group 1）、
+#      hung 判定时刻一次（预置可能在上电丢失/内核自己的写被丢时兑底）、
+#      以及 oem gicgroup 手动。
+#    · oem gicgroup：THE 实验——修 + 回读 + 判词。回读 0xffffffff = 写能粘住
+#      （这世界不需要别的，卡在等时钟上的内核当场复活：盯 heartbeat，再 oem sgi 1）；
+#      回读 0 = GIC 丢弃非安全组写：这条链上任何 EL1 软件都拿不到它作 IRQ，
+#      只能以本内核不接的 Group 0 FIQ 永远 pending——修复属于 EL3 或 FIQ 路线（R9）。
+#    · oem gic/sgi/gicset/peek：如 R7（判词行带上 R8 的盲读告警）。
+#  内核/shim/固件/DTB 保持 r1/r2/r4 硬件验证过的 prebuilt 字节不变。
+#
+#  产物（Release 里一站式拿齐）：
+#    raphael-ios-volume.img.part-*   → fastboot flash userdata（iOS 三容器卷；
+#                                      若 R6 的分片还留着，哈希相同即可复用）
+#    raphael-xnu-r8-flash.img        → fastboot boot（R8 loader + 内核 + md1 + usb）
+#    raphael-r8-flashboot.apfs       → 启动卷（开机时 fastboot stage 上传 = md0）
+#    r8-boot-volume-root.apfs        → 小镜像备份（调试用）
+#    SHA256SUMS / README.txt / r8-rejoin.sh
+#
+#  手机端刷完 userdata 后（四步）：
+#    fastboot boot  raphael-xnu-r8-flash.img
+#    fastboot oem  ramdisk
+#    fastboot stage raphael-r8-flashboot.apfs
+#    fastboot oem  run
+#  若再次卡死（约 60s 后 loader 判 hung，自动打印 R8 全量 GIC 判读），按序：
+#    fastboot oem log && fastboot get_staged r8-klog.txt     # 判读行就在里面
+#    fastboot oem sgi 1 && fastboot oem gic                  # 中断针刺 + 回读
+#    fresh boot → fastboot oem run 16 / 17 / 18 / 21         # checkpoint 天梯
+#    fresh boot → fastboot oem gicset && fastboot oem run    # H1 实验
+#
+#  部署：默认分支的 .github/workflows/r8-springboard.yml → Run workflow。
+#  注意：重复运行前先删掉旧 Release（或换 release_tag）。
+# =====================================================================
+name: R8 · SpringBoard 一键流水线
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_repo:
+        description: "hackios 内核树 fork（含 xnuloader/ + tools/r8-flash-build.sh）"
+        required: true
+        default: "Gsjsjzhznsz/hackios-xnu-kernel"
+      userland_repo:
+        description: "hackios userland 树 fork"
+        required: true
+        default: "Gsjsjzhznsz/hackios-xnu-userland"
+      release_tag:
+        description: "Release tag（直链的一部分）"
+        required: true
+        default: "r8-springboard"
+permissions:
+  contents: write
+
+concurrency:
+  group: r8-springboard
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      REL: ${{ github.workspace }}/release
+    steps:
+      # ---------------------------------------------------------------
+      - name: "①/⑧ 磁盘准备与依赖（含 R8 loader 工具链 clang/lld）"
+        run: |
+          set -eu
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+                       /usr/local/share/boost /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential python3-dev clang lld >/dev/null
+          command -v clang && command -v lld-link
+          # step ④ 的 dmg.py 需要 lzfse 模块（解 iOS 16.5 rootfs.dmg 的 LZFSE 块）
+          sudo python3 -m pip install --break-system-packages lzfse >/dev/null 2>&1 \
+            || python3 -m pip install --user --break-system-packages lzfse >/dev/null
+          python3 -c "import lzfse; print('→ lzfse 模块就绪')"
+          # 7-Zip 23+（读 APFS）
+          sudo apt-get install -y -qq 7zip >/dev/null 2>&1 \
+            || echo "::warning::apt 的 7zip 不可用，改走 7-zip.org 官方原版"
+          if [ -x /usr/bin/7zz ]; then
+            sudo ln -sf /usr/bin/7zz /usr/local/bin/7z
+          else
+            curl -fsSL -o /tmp/7z.tar.xz https://www.7-zip.org/a/7z2301-linux-x64.tar.xz
+            sudo mkdir -p /opt/7zip && sudo tar -xJf /tmp/7z.tar.xz -C /opt/7zip
+            sudo ln -sf /opt/7zip/7zz /usr/local/bin/7z
+          fi
+          command -v 7z >/dev/null || { echo "::error::7z 仍不可用"; exit 1; }
+          echo "→ 7-Zip:"; 7z i | sed -n '2,3p'
+          mkdir -p "$REL"
+          df -h /
+
+      # ---------------------------------------------------------------
+      - name: "②/⑧ 取树（kernel fork + userland fork）"
+        run: |
+          set -eu
+          git clone --depth 1 "https://github.com/${{ inputs.kernel_repo }}.git" hackios
+          cd hackios
+          if ! USERLAND_URL="https://github.com/${{ inputs.userland_repo }}.git" common/setup.sh; then
+            echo "::warning::userland fork 拉取失败，回退上游 oosexgang/hackios-xnu-userland"
+            rm -rf .userland.git
+            USERLAND_URL="https://github.com/oosexgang/hackios-xnu-userland.git" common/setup.sh
+          fi
+          echo "→ raphael 启动链与 R8 打包器："
+          ls -lh prebuilt/raphael/ tools/r8-flash-build.sh
+          git log -1 --format='→ kernel 树 @ %h %s'
+
+      # ---------------------------------------------------------------
+      - name: "②b/⑧ 编译门禁（R8 loader：先编译，语法错误两分钟内暴露）"
+        run: |
+          set -eu
+          cd hackios
+          bash xnuloader/build.sh
+          python3 - <<'PY'
+          d = open('xnuloader/loader.efi', 'rb').read()
+          for feat in (b'oem gic', b'oem sgi', b'oem peek', b'NXSB at +32',
+                     b'as the firmware left it', b'never showed up as pending', b'oem gicset',
+                     b'oem gicgroup', b'group repair', b'pre-arm before CPU_ON',
+                     b'at the hung verdict'):
+              assert feat in d, f'loader.efi 缺 R8 特征串 {feat!r}'
+          print(f'✓ R8 loader {len(d):,} B：gic 组修复 + oem gicgroup + 三时机预置齐全')
+          PY
+
+      # ---------------------------------------------------------------
+      - name: "③/⑧ 取 iOS 16.5（Apple CDN：4.7GB + 2.7GB + 10MB，断点续传）"
+        run: |
+          set -eu
+          cd hackios/ios165
+          KEEP=1 ./fetch.sh
+          echo "→ 三个镜像："
+          ls -lh rootfs.dmg cryptex-os.dmg cryptex-app.dmg
+          df -h .
+
+      # ---------------------------------------------------------------
+      - name: "④/⑧ 转裸 APFS（dmg.py 解 LZFSE 抽 APFS 分区 + 常量/魔数/内容三重校验）"
+        run: |
+          set -eu
+          cd hackios/ios165
+          python3 -c "import lzfse" || { echo "::error::lzfse 模块缺失（看 step①）"; exit 1; }
+          INFO=$(python3 ../tools/apfs/dmg.py info rootfs.dmg)
+          echo "$INFO"
+          if echo "$INFO" | grep -q '^GPT,'; then
+            python3 ../tools/apfs/dmg.py extract rootfs.dmg rootfs.apfs --apfs
+          else
+            echo "（无 GPT —— 整镜像即裸 APFS，整卷抽出）"
+            python3 ../tools/apfs/dmg.py extract rootfs.dmg rootfs.apfs
+          fi
+          S=$(stat -c %s rootfs.apfs)
+          echo "→ rootfs.apfs = ${S} B"
+          [ "$S" -eq 5628755968 ] || { echo "::error::尺寸不是上游常量 5,628,755,968（= darwin blocks 0..1374207，见 tools/darwin-write.py；Apple 改 IPSW 了？）"; exit 1; }
+          python3 - <<'PY'
+          d = open('rootfs.apfs','rb').read(36)
+          assert d[32:36] == b'NXSB', f'rootfs.apfs 不是裸 APFS 容器: {d[32:36]!r}'
+          for f in ('cryptex-os.dmg','cryptex-app.dmg'):
+              m = open(f,'rb').read(36)[32:36]
+              assert m == b'NXSB', f'{f} 不是裸 APFS 容器: {m!r}'
+          print('✓ 三个镜像 NXSB 容器魔数齐全（@+32）')
+          PY
+          rm -f rootfs.dmg
+          echo "→ 内容抽检（7z 列 APFS，SpringBoard 必须在）："
+          7z l rootfs.apfs | grep -m1 'SpringBoard' || { echo "::error::rootfs.apfs 里没有 SpringBoard"; exit 1; }
+          echo "✓ SpringBoard 在卷里"
+          df -h .
+
+      # ---------------------------------------------------------------
+      - name: "⑤/⑧ 造双盘（root.apfs=小镜像 md1 + flashboot.apfs=启动卷 md0）"
+        run: |
+          set -eu
+          cd hackios
+          BUILD_RC=0
+          PREBUILT=1 FLASHBOOT=1 CRYPTEXES=flash REST=1 WIFID=0 userland/build.sh || BUILD_RC=$?
+          for f in userland/root.apfs userland/flashboot.apfs; do
+            [ -f "$f" ] || { echo "::error::$f 未产出（看上方日志）"; exit 1; }
+          done
+          [ "$BUILD_RC" = 0 ] || echo "::warning::build.sh 退出码 $BUILD_RC（两个镜像已产出，继续）"
+          ls -lh userland/root.apfs userland/flashboot.apfs
+          python3 -c "
+          for f, what in (('userland/root.apfs','小镜像 = md1 /redwood'), ('userland/flashboot.apfs','启动卷 = md0 根')):
+              d = open(f,'rb').read(36)
+              assert d[32:36]==b'NXSB', f'{f} 不是 APFS 容器'
+              print(f'✓ {f} 是 APFS 容器（NXSB@+32）= {what}')"
+          7z l userland/flashboot.apfs 2>/dev/null | grep -m1 'launchd' \
+            || { echo "::error::flashboot.apfs 里没有 sbin/launchd（stage0）"; exit 1; }
+          echo "✓ flashboot.apfs 带 stage0（sbin/launchd）"
+          rm -rf ios165/rootfs ios165/cryptex ios165/cryptex-app ios165/20F66__iPhone10,3_6
+          rm -f userland/system.apfs
+          df -h .
+
+      # ---------------------------------------------------------------
+      - name: "⑥/⑧ 打 r8 启动镜像（r1 固件 + r2 shim + 现编译 R8 loader + 内核 + 小镜像 md1 + usb 模式）"
+        run: |
+          set -eu
+          cd hackios
+          bash tools/r8-flash-build.sh .
+          cp userland/raphael-xnu-r8-flash.img "$REL/"
+          cp userland/flashboot.apfs "$REL/raphael-r8-flashboot.apfs"
+          cp userland/root.apfs "$REL/r8-boot-volume-root.apfs"
+          ls -lh "$REL"
+          df -h .
+
+      # ---------------------------------------------------------------
+      - name: "⑦/⑧ 拼 iOS 卷（三容器背靠背，rootfs + cryptex-os + cryptex-app）"
+        run: |
+          set -eu
+          cd hackios/ios165
+          cat rootfs.apfs cryptex-os.dmg cryptex-app.dmg > raphael-ios-volume.img
+          S=$(stat -c %s raphael-ios-volume.img)
+          E=$(( $(stat -c %s rootfs.apfs) + $(stat -c %s cryptex-os.dmg) + $(stat -c %s cryptex-app.dmg) ))
+          [ "$S" -eq "$E" ] || { echo "::error::拼接尺寸不符: $S != $E"; exit 1; }
+          echo "→ iOS 卷 = ${S} B"
+          python3 - <<'PY'
+          import os
+          parts = [('rootfs.apfs',), ('cryptex-os.dmg',), ('cryptex-app.dmg',)]
+          f = open('raphael-ios-volume.img','rb')
+          off = 0
+          for i, (p,) in enumerate(parts):
+              s = os.path.getsize(p)
+              f.seek(off + 32); m = f.read(4)
+              assert m == b'NXSB', f'container c={i} @ {off:#x}: magic {m!r}'
+              print(f'✓ c={i} @ {off:#010x} NXSB（{s:,} B）')
+              off += s
+          assert off == os.path.getsize('raphael-ios-volume.img'), 'total size mismatch'
+          print('✓ 三个 APFS 容器背靠背，内核按 ,c=0/1/2 依次可寻')
+          PY
+          rm -f rootfs.apfs cryptex-os.dmg cryptex-app.dmg
+          df -h .
+
+      # ---------------------------------------------------------------
+      - name: "⑧/⑧ 切片 + SHA256 + 生成手机端附件"
+        run: |
+          set -eu
+          cd hackios/ios165
+          IMG=raphael-ios-volume.img
+          IMG_SHA=$(sha256sum "$IMG" | awk '{print $1}')
+          echo "→ 整卷 SHA256 = $IMG_SHA"
+          split -b 1800m "$IMG" "$REL/raphael-ios-volume.img.part-"
+          rm -f "$IMG"
+          cd "$REL"
+          : > SHA256SUMS
+          for f in raphael-ios-volume.img.part-* raphael-xnu-r8-flash.img \
+                   raphael-r8-flashboot.apfs r8-boot-volume-root.apfs; do
+            sha256sum "$f" >> SHA256SUMS
+          done
+          echo "${IMG_SHA}  raphael-ios-volume.img" >> SHA256SUMS
+          cat > r8-rejoin.sh <<'SH'
+          #!/bin/sh
+          # R8: 合并 iOS 卷分片 + 校验（Termux；需与分片、SHA256SUMS 同目录）
+          set -e
+          echo "[1/3] 校验分片 ..."
+          sha256sum -c --ignore-missing SHA256SUMS
+          echo "[2/3] 合并（约 7.8GB，等一会）..."
+          cat raphael-ios-volume.img.part-* > raphael-ios-volume.img
+          echo "[3/3] 校验整卷 ..."
+          grep ' raphael-ios-volume.img$' SHA256SUMS | sha256sum -c -
+          ls -lh raphael-ios-volume.img
+          echo "OK → fastboot flash userdata raphael-ios-volume.img"
+          SH
+          chmod +x r8-rejoin.sh
+          REPO="${{ github.repository }}"
+          TAG="${{ inputs.release_tag }}"
+          PART_URLS=$(ls raphael-ios-volume.img.part-* | sed "s|^|https://github.com/${REPO}/releases/download/${TAG}/|")
+          cat > README.txt <<EOF
+          ============================================================
+           R8 · 纯血 hackios SpringBoard 交付包（raphael / K20 Pro）
+          ============================================================
+          iOS 卷   : raphael-ios-volume.img（三容器背靠背：iOS 16.5 rootfs
+                     + cryptex-os + cryptex-app，内核按 ,c=0/1/2 自寻）
+                     整卷 SHA256: ${IMG_SHA}
+          启动镜像 : raphael-xnu-r8-flash.img（R8 loader 0.8：oem gic/sgi/peek
+                     + gicset + **gicgroup 三时机修复**；内核/shim/固件仍是 r1/r2/r4 验证字节）
+          启动卷   : raphael-r8-flashboot.apfs（stage0 作 /sbin/launchd =
+                     md0 根；每次开机经 loader 的 resident 区上传）
+          小镜像   : r8-boot-volume-root.apfs（init + LaunchDaemons，备份用）
+
+          【R5/R6 分片还在的话】先只下 SHA256SUMS，对旧分片/旧合并卷跑
+          sha256sum -c：一致就免重下免重刷（iOS 卷与 R5/R6 字节相同）。
+
+          【分片直链】共 $(ls raphael-ios-volume.img.part-* | wc -l) 片，全部下载到同一目录：
+          ${PART_URLS}
+          https://github.com/${REPO}/releases/download/${TAG}/raphael-xnu-r8-flash.img
+          https://github.com/${REPO}/releases/download/${TAG}/raphael-r8-flashboot.apfs
+          https://github.com/${REPO}/releases/download/${TAG}/SHA256SUMS
+          https://github.com/${REPO}/releases/download/${TAG}/r8-rejoin.sh
+
+          【手机端（Termux）】
+            termux-setup-storage
+            mkdir -p /sdcard/Download/r8 && cd /sdcard/Download/r8
+            sh r8-rejoin.sh
+            fastboot flash userdata raphael-ios-volume.img
+            # 刷完 userdata 重回 bootloader，四条命令点亮（loader 自带 fastboot）：
+            fastboot boot  raphael-xnu-r8-flash.img
+            fastboot oem  ramdisk
+            fastboot stage raphael-r8-flashboot.apfs
+            fastboot oem  run
+
+          【R8 判读树】
+            A. 每次开机的三行基线（oem log 里）：
+               "gic: distributor ctlr <hex> as the firmware left it: G1NS _ ARE _ RWP _"
+                 G1NS=1 ARE=1 → 内核不会进 GICD RWP 等待（RWP 假设排除）
+                 G1NS=0 或 ARE=0 → oem gicset 实验
+               "gic: group repair (pre-arm before CPU_ON): ..." → 开机预置的结果
+                 IGROUPR0 .. -> ffffffff：预置粘住了，内核的时钟从一开始就是 Group 1
+                 .. -> ..：写没粘住（见 B）
+            B. **THE R8 实验**（卡死后 ~60s loader 自动修一次，也可手动随时）：
+               fastboot oem gicgroup   → 判词行二选一：
+               "IGROUPR0 .. -> ffffffff: every SGI+PPI is Group 1 now"
+                 → 写能粘住。卡在等时钟上的内核当场复活：
+                   盯 oem log 里的 heartbeat（应从 1 变 2 变 3…），
+                   fastboot oem sgi 1 → "was taken" = 中断回来了；
+                   若复活后仍卡 → 剩余问题在天梯 C 里。
+               ".. -> ..: the write did not stick"
+                 → GIC 丢弃非安全组写（安全态 DS=0，组寄存器 secure-only）：
+                   这条链上任何 EL1 软件（内核或 loader）都拿不到这个中断作 IRQ，
+                   它只能以本内核不接的 Group 0 FIQ 永远 pending。修复属于：
+                   EL3（monitor 设置组）或内核接 FIQ（R9 重编内核路线）。
+            C. SGI 针刺（gicgroup 之后）：
+               fastboot oem sgi 1 → 回读行：
+               "never showed up as pending" → ICC_SGI1R 写入被吞/路由错
+               "pends and is never taken" → 仍盲/仍屏蔽
+               "was taken" → 核还取中断 → 复活或纯自旋
+            D. checkpoint 天梯（每次 fresh boot 一条，二分）：
+               fastboot oem run 15 → 应回（心跳=1 已证明过了 15）
+               fastboot oem run 16 → 若 HUNG：冻结在 cpu_init 的 GIC 段
+               fastboot oem run 17 / 18 / 19 / 20 / 21 → 首个不回的 N，
+                 冻结就在 N-1 与 N 之间（16=cpu_init 后、17=arm_vm_init 后、
+                 18=serial 后、19=kprintf 后、20=console 后、21=arm_init 完）
+            E. 取证套餐（卡死态下，按序）：
+               fastboot oem gicgroup && fastboot oem sgi 1 && fastboot oem gic
+               fastboot oem log && fastboot get_staged r8-klog.txt
+               fastboot oem screenshot && fastboot get_staged screen.raw
+               fastboot getvar screen
+               fastboot oem peek <hex地址> <hex长度> && fastboot get_staged peek.bin
+
+          ⚠️ 刷完 userdata 后绝不要让 MIUI 开机——Android 会把 userdata
+             重格回 f2fs，iOS 卷即毁（重刷可恢复，但别折腾）。
+          ⚠️ 每次开机都要重复 boot/oem ramdisk/stage/oem run 四步（启动卷
+             住 RAM 不落盘，这正是“不写手机闪存”设计的一部分）。
+          ⚠️ 含 Apple 版权内容，仅个人研究；下载完成后请尽快删除本 Release。
+          EOF
+          echo "→ SHA256SUMS："
+          cat SHA256SUMS
+          ls -lh
+
+      # ---------------------------------------------------------------
+      - name: "⑧b 发布 Release（直链交付）"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: "R8 · 纯血 hackios SpringBoard · iOS 16.5 (20F66) · loader 0.8"
+          body: |
+            raphael (K20 Pro) SpringBoard 交付包：iOS 16.5 (iPhone10,3 / 20F66) 三容器卷
+            （rootfs 5,628,755,968 B + cryptex-os + cryptex-app ≈ 7.8GB，已按上游常量校验），
+            配套启动镜像 raphael-xnu-r8-flash.img（cmdline `-v ufs=2 bootcpu=7 root_apfs=ufs_userdata`）
+            与启动卷 raphael-r8-flashboot.apfs（stage0 = md0，双盘闪存启动）。
+
+            R8 新增（loader 0.8，从 xnuloader/ 现场编译；内核/shim/固件字节不变）：
+            - **R7 判决闭环 + 反汇编取证**：内核的 gic_v3_irq_cpu_init() 本来就写了
+              GICR_IGROUPR0|=(1<<27)（就在明显落地的 ISENABLER0 写前四条指令）——
+              非安全写被 GIC 丢弃而邻近写生效 = GIC 安全态运行、组寄存器 secure-only，
+              R7 的 "group 0" 是盲读
+            - **gic_group_repair()**：把内核核整块 SGI+PPI 银行置于 Group 1，
+              三个时机自动执行（CPU_ON 前预置 / hung 判定一次 / oem gicgroup 手动）
+            - **oem gicgroup（THE 实验）**：写 + settle + 回读 + 判词——回读
+              0xffffffff = 写粘住（卡在等时钟上的内核当场复活）；回读 0 = 这条
+              链上任何 EL1 软件都拿不到 IRQ，修复属于 EL3 或 FIQ 路线（R9）
+            - 判读行全部更新盲读告警；其余 R7 能力不变
+
+            手机端：`sh r8-rejoin.sh` → `fastboot flash userdata raphael-ios-volume.img`，
+            然后四条命令点亮：
+            `fastboot boot raphael-xnu-r8-flash.img` → `fastboot oem ramdisk` →
+            `fastboot stage raphael-r8-flashboot.apfs` → `fastboot oem run`
+
+            判读：见附件 README.txt 的 R8 判读树（基线 / gicgroup 实验 / SGI 针刺 /
+            checkpoint 天梯）。目标是让内核当场复活，或当场钉死“非 EL1 可修”。
+
+            ⚠️ 含 Apple 版权内容，仅供个人研究；下载完成后请尽快删除本 Release。
+          fail_on_unmatched_files: true
+          files: |
+            release/raphael-ios-volume.img.part-*
+            release/raphael-xnu-r8-flash.img
+            release/raphael-r8-flashboot.apfs
+            release/r8-boot-volume-root.apfs
+            release/SHA256SUMS
+            release/README.txt
+            release/r8-rejoin.sh
+
+      - name: "直链汇总（跑完看这里，复制即用）"
+        run: |
+          set -eu
+          echo "════════════ 全部下载直链 ════════════"
+          for f in "$REL"/raphael-ios-volume.img.part-* "$REL"/raphael-xnu-r8-flash.img \
+                   "$REL"/raphael-r8-flashboot.apfs "$REL"/r8-boot-volume-root.apfs \
+                   "$REL"/SHA256SUMS "$REL"/README.txt "$REL"/r8-rejoin.sh; do
+            echo "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/$(basename "$f")"
+          done

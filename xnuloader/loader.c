@@ -2425,7 +2425,8 @@ gic_note_core(uint64_t mpidr)
         }
         if (!(group & (1u << GIC_VTIMER_INTID))) {
                 print("gic: the kernel's clock interrupt is enabled but in Group 0: it signals as FIQ,"
-                    " which this kernel never takes\n");
+                    " which this kernel never takes (R8: a Non-secure read of this register is blind"
+                    " when the GIC runs secure; oem gicgroup is the test that tells stuck from blind)\n");
         }
         if (active & (1u << GIC_VTIMER_INTID)) {
                 print("gic: the kernel's clock interrupt is ACTIVE: the core is inside it\n");
@@ -2437,6 +2438,67 @@ gic_note_core(uint64_t mpidr)
                     " never fired, or the core froze past its gic bring-up -- the checkpoint ladder"
                     " (oem run 17, 18, 19, 20, 21) says which\n");
         }
+}
+
+/*
+ * R8: put the kernel core's whole SGI+PPI bank in Group 1.  The R7 verdict -- the clock
+ * interrupt enabled and pending, never taken, the frame saying group 0 -- is explained
+ * by the disassembly of the shipped kernel: gic_v3_irq_cpu_init() DOES write
+ * GICR_IGROUPR0 |= (1 << 27) (ldr/orr/str at gicr+0x10080), four instructions before the
+ * GICR_ISENABLER0 write that plainly landed (the dump sees exactly its 0x08000000).  A
+ * Non-secure write that does not take effect while its neighbours do means the GIC runs
+ * secure (DS=0) and the group registers are secure-only: Non-secure writes are dropped
+ * and Non-secure reads answer 0 whatever the truth is -- the R7 "group 0" line was
+ * reading with its eyes shut.  This repair is therefore the live test, and in the world
+ * where the write sticks it is also the fix.  Returns 1 when the bank reads back
+ * all-Group-1 (whether it already did or this call made it so).
+ */
+static int
+gic_group_repair(uint64_t mpidr, const char *why)
+{
+        uint64_t frame;
+        uint32_t before, after;
+
+        if (PLAT->gic_redist == 0) {
+                return 0;
+        }
+        frame = gicr_frame_of(mpidr);
+        if (frame == 0) {
+                print("gic: group repair (%s): no redistributor frame for core %x\n", why, mpidr);
+                return 0;
+        }
+        before = *(volatile uint32_t *)(frame + GICR_IGROUPR0_REG);
+        if (before == 0xffffffffu) {
+                print("gic: group repair (%s): core %x frame %x already all Group 1; nothing to do\n",
+                    why, mpidr, frame);
+                return 1;
+        }
+        *(volatile uint32_t *)(frame + GICR_IGRPMODR0_REG) = 0;          /* Group 1 Non-Secure, never Secure */
+        *(volatile uint32_t *)(frame + GICR_IGROUPR0_REG) = 0xffffffffu;
+        after = before;
+        for (int i = 0; i < 20; i++) {                                  /* settle, then believe the readback */
+                __asm__ volatile ("isb");
+                after = *(volatile uint32_t *)(frame + GICR_IGROUPR0_REG);
+                if (after == 0xffffffffu) {
+                        break;
+                }
+                BS->stall(1000);
+        }
+        if (after == 0xffffffffu) {
+                print("gic: group repair (%s): core %x frame %x IGROUPR0 %x -> %x: every SGI+PPI is Group 1 now.\n"
+                    "    If the kernel was only waiting for its clock it ticks from this line on: watch the\n"
+                    "    heartbeat, and oem sgi 1 to prove interrupts are taken again\n",
+                    why, mpidr, frame, (uint64_t)before, (uint64_t)after);
+                return 1;
+        }
+        print("gic: group repair (%s): core %x frame %x IGROUPR0 %x -> %x: the write did not stick.\n"
+            "    Non-secure writes to the group registers are dropped while their neighbours (the\n"
+            "    enable, four instructions later in the kernel's own bring-up) carry through: the GIC\n"
+            "    runs secure, the groups are EL3's, and no EL1 software -- loader or kernel -- can\n"
+            "    have this interrupt as an IRQ on this chain.  It pends as a Group 0 FIQ; either the\n"
+            "    monitor sets the bank, or the kernel has to take it as FIQ (R9)\n",
+            why, mpidr, frame, (uint64_t)before, (uint64_t)after);
+        return 0;
 }
 
 /* ICC_SGI1R_EL1 (S3_0_C12_C11_5): Aff1 in [23:16], the interrupt in [27:24], and in [15:0] a bit per Aff0. */
@@ -2462,7 +2524,7 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
 {
         uint64_t daif = 0, group1 = 0, started, last_pet, last_battery, last_beat_at, last_beat = 0, noted = 0;
         int64_t status;
-        int arrived = 0, watching_only = 0;
+        int arrived = 0, watching_only = 0, hung_repaired = 0;
 
         running_live = live;
         running_slide = slide;
@@ -2479,6 +2541,12 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
         clean_dcache((uint64_t)(uintptr_t)&psci_by_hvc, (uint64_t)(uintptr_t)&psci_by_hvc + 8);
         clean_dcache((uint64_t)(uintptr_t)&other_cpu_entry, (uint64_t)(uintptr_t)&other_cpu_entry + 0x1000);
         clean_dcache((uint64_t)(uintptr_t)loader_ctx, (uint64_t)(uintptr_t)loader_ctx + sizeof(loader_ctx));
+
+        /* R8: the bank the kernel will find on this core, before the firmware is asked to
+         * start it.  If the frame keeps its state through the power-up, the kernel's clock
+         * is Group 1 from its first instruction; if it does not, the repair at the hung
+         * verdict and oem gicgroup cover it.  The readback here says which world it is. */
+        gic_group_repair(mpidr, "pre-arm before CPU_ON");
 
         /* the last argument arrives in that core's x0 */
         status = psci_call(PSCI_CPU_ON, mpidr, (uint64_t)(uintptr_t)&other_cpu_entry, (uint64_t)(uintptr_t)&other_cpu_start);
@@ -2551,6 +2619,14 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
                                 last_beat = live->heartbeat;
                                 last_beat_at = READ_SYSREG(CNTVCT_EL0);
                         } else if (seconds_since(last_beat_at) >= SILENCE_SECONDS) {
+                                /* R8: the R7 verdict (clock enabled, pending, never taken, the frame
+                                 * saying group 0) is repaired here once, in case the pre-arm was lost
+                                 * in the core's power-up or the kernel's own write was dropped: the
+                                 * readback says which, then the usual hung handling. */
+                                if (!hung_repaired) {
+                                        hung_repaired = 1;
+                                        gic_group_repair(mpidr, "at the hung verdict");
+                                }
                                 log_of_hung_kernel(live, slide);
                                 gic_note_core(mpidr);      /* what its interrupt controller says about it */
                                 status = OTHER_CPU_HUNG;
@@ -3995,6 +4071,22 @@ fb_command(char *cmd)
                                         " (this is the wait the kernel hangs in)" : "");
                                 fb_reply("OKAY", "");
                         }
+                } else if (starts_with(cmd, "oem gicgroup")) {
+                        /* R8: the live experiment the R7 verdict called for -- put the kernel core's
+                         * whole SGI+PPI bank in Group 1 from here, and let the readback say which
+                         * world we are in: one where the write sticks (then this is also the fix,
+                         * and a wedged kernel that was only waiting for its clock comes back to
+                         * life), or one where the GIC drops Non-secure group writes (then no EL1
+                         * software can have this interrupt as an IRQ on this chain, and the FIQ
+                         * route is the only one left).  Follow it with oem sgi 1 and oem gic.
+                         */
+                        if (!busy) {
+                                fb_reply("FAIL", "no kernel is running");
+                        } else {
+                                gic_group_repair(running_mpidr, "oem gicgroup");
+                                gic_note_core(running_mpidr);
+                                fb_reply("OKAY", "");
+                        }
                 } else if (starts_with(cmd, "oem gic")) {
                         /* what the kernel's core looks like in the interrupt controller (R7: all of it) */
                         if (busy) {
@@ -4053,7 +4145,8 @@ fb_command(char *cmd)
                                                 } else if (pended && !taken) {
                                                         print("sgi: %d pends and is never taken: the core has its"
                                                             " interrupts masked (a spin) or the CPU interface refuses"
-                                                            " Group 1\n", sgi);
+                                                            " Group 1 (R8: with the bank in Group 0 every SGI is an"
+                                                            " FIQ too -- oem gicgroup first)\n", sgi);
                                                 } else {
                                                         print("sgi: %d was taken: the core still takes interrupts --"
                                                             " the freeze is a spin with them enabled, or past the GIC\n", sgi);
