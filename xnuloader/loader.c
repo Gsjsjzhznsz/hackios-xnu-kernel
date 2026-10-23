@@ -2309,13 +2309,18 @@ static uint64_t running_mpidr;
 #define GICR_IGROUPR0_REG       (GICR_SGI_BANK + 0x080)
 #define GICR_IGRPMODR0_REG      (GICR_SGI_BANK + 0xd00)
 #define GICR_ISENABLER0_REG     (GICR_SGI_BANK + 0x100)
+#define GICR_ICENABLER0_REG     (GICR_SGI_BANK + 0x180)
 #define GICR_ISPENDR0_REG       (GICR_SGI_BANK + 0x200)
+#define GICR_ICPENDR0_REG       (GICR_SGI_BANK + 0x280)
 #define GICR_IACTIVER0_REG      (GICR_SGI_BANK + 0x300)
 #define GICD_CTLR_REG           0x0000
 #define GICD_CTLR_ENABLE_G1NS   (1u << 1)
 #define GICD_CTLR_ARE_NS        (1u << 4)
 #define GICD_CTLR_RWP           (1u << 31)
-#define GIC_VTIMER_INTID        27              /* the EL1 virtual timer, as the kernel's gic_v3_irq.c numbers it */
+#define GIC_VTIMER_INTID        19              /* SM8150 wires the EL1 virtual timer at GIC_PPI 3 = INTID 19 (mainline sm8150.dtsi).
+                                                 * R9: the shipped kernel was born on QEMU/bcm2837, whose vtimer is INTID 27 -- it rang
+                                                 * doorbell 27 while the silicon wired the bell at 19 (R7/R8: pending bits 19+28, enabled 27,
+                                                 * tick never taken).  tools/r9-kernel-patch.py retargets the kernel to 19; the loader follows. */
 
 /* The redistributor frame that belongs to that MPIDR, 0 if none (R7). */
 static uint64_t
@@ -2390,7 +2395,7 @@ gic_note_core(uint64_t mpidr)
             (uint64_t)!!(ctlr & GICD_CTLR_RWP));
         if (ctlr & GICD_CTLR_RWP) {
                 print("gic: the distributor's RWP is STUCK: a write is settling forever --"
-                    " the kernel's gic bring-up waits exactly there, right after enabling PPI 27\n");
+                    " the kernel's gic bring-up waits exactly there, right after enabling PPI 19\n");
         }
 
         frame = gicr_frame_of(mpidr);
@@ -2414,7 +2419,7 @@ gic_note_core(uint64_t mpidr)
 
         if (waker & GICR_WAKER_CHILDASLEEP) {
                 print("gic: this redistributor never woke: the kernel's gic bring-up spins in its"
-                    " GICR_WAKER wait, before it ever enables PPI 27\n");
+                    " GICR_WAKER wait, before it ever enables PPI 19\n");
                 return;
         }
         if (!(enabled & (1u << GIC_VTIMER_INTID))) {
@@ -2424,9 +2429,10 @@ gic_note_core(uint64_t mpidr)
                 return;
         }
         if (!(group & (1u << GIC_VTIMER_INTID))) {
-                print("gic: the kernel's clock interrupt is enabled but in Group 0: it signals as FIQ,"
-                    " which this kernel never takes (R8: a Non-secure read of this register is blind"
-                    " when the GIC runs secure; oem gicgroup is the test that tells stuck from blind)\n");
+                print("gic: the clock interrupt's group bit reads 0 -- but R8 proved this read is BLIND"
+                    " when the GIC runs secure (Linux writes the same register from Non-secure every"
+                    " boot and runs daily): the bit is probably set underneath.  R9 says the real bug"
+                    " was the doorbell number, not the group (oem irqtest settles delivery live)\n");
         }
         if (active & (1u << GIC_VTIMER_INTID)) {
                 print("gic: the kernel's clock interrupt is ACTIVE: the core is inside it\n");
@@ -2441,16 +2447,17 @@ gic_note_core(uint64_t mpidr)
 }
 
 /*
- * R8: put the kernel core's whole SGI+PPI bank in Group 1.  The R7 verdict -- the clock
- * interrupt enabled and pending, never taken, the frame saying group 0 -- is explained
- * by the disassembly of the shipped kernel: gic_v3_irq_cpu_init() DOES write
- * GICR_IGROUPR0 |= (1 << 27) (ldr/orr/str at gicr+0x10080), four instructions before the
- * GICR_ISENABLER0 write that plainly landed (the dump sees exactly its 0x08000000).  A
- * Non-secure write that does not take effect while its neighbours do means the GIC runs
- * secure (DS=0) and the group registers are secure-only: Non-secure writes are dropped
- * and Non-secure reads answer 0 whatever the truth is -- the R7 "group 0" line was
- * reading with its eyes shut.  This repair is therefore the live test, and in the world
- * where the write sticks it is also the fix.  Returns 1 when the bank reads back
+ * R8: put the kernel core's whole SGI+PPI bank in Group 1.  The R8 experiment measured
+ * "IGROUPR0 0 -> 0", which read as "the write did not stick" -- R9 corrects that reading:
+ * the register READS blind from Non-secure when the GIC runs secure (RAZ), so a 0 readback
+ * cannot distinguish a dropped write from a landed one, and Linux mainline writes this very
+ * register from Non-secure EL1 on every boot (irq-gic-v3.c "Configure SGIs/PPIs as
+ * non-secure Group-1") with raphael-Linux running daily on this SoC -- the write works.
+ * The real R7/R8 bug was the doorbell number: the kernel enabled INTID 27 (QEMU/bcm2837
+ * vtimer) while SM8150 wired the EL1 virtual timer at INTID 19 (pending 10080000 since R7).
+ * The repair stays as belt-and-braces (and its readback still distinguishes a single-security
+ * GIC, where reads are not blind, from the secure world); the R9 fix itself is the kernel
+ * patch, and oem irqtest is the live delivery test.  Returns 1 when the bank reads back
  * all-Group-1 (whether it already did or this call made it so).
  */
 static int
@@ -2491,14 +2498,146 @@ gic_group_repair(uint64_t mpidr, const char *why)
                     why, mpidr, frame, (uint64_t)before, (uint64_t)after);
                 return 1;
         }
-        print("gic: group repair (%s): core %x frame %x IGROUPR0 %x -> %x: the write did not stick.\n"
-            "    Non-secure writes to the group registers are dropped while their neighbours (the\n"
-            "    enable, four instructions later in the kernel's own bring-up) carry through: the GIC\n"
-            "    runs secure, the groups are EL3's, and no EL1 software -- loader or kernel -- can\n"
-            "    have this interrupt as an IRQ on this chain.  It pends as a Group 0 FIQ; either the\n"
-            "    monitor sets the bank, or the kernel has to take it as FIQ (R9)\n",
+        print("gic: group repair (%s): core %x frame %x IGROUPR0 %x -> %x: the readback reads 0.\n"
+            "    R9 correction: this register READS blind from Non-secure when the GIC runs secure\n"
+            "    (RAZ) -- a 0 readback cannot tell a dropped write from a landed one, and Linux\n"
+            "    writes this very register from Non-secure on every boot on this SoC.  Whether the\n"
+            "    bank DELIVERS is answered live by oem irqtest; the R9 kernel patch points the\n"
+            "    kernel at the real doorbell (INTID 19) either way\n",
             why, mpidr, frame, (uint64_t)before, (uint64_t)after);
         return 0;
+}
+
+/*
+ * R9: the delivery experiment, on the loader's OWN core -- no kernel needed, safe to run
+ * before oem run or while one hangs on another core.  The R7/R8 dumps caught the tick
+ * pending on INTID 19 (bit 19 of pending 10080000) while the kernel enabled 27: SM8150
+ * wires the EL1 virtual timer at GIC_PPI 3 = INTID 19 (mainline sm8150.dtsi), the prebuilt
+ * kernel was born on QEMU/bcm2837 whose vtimer is 27.  The one thing no dump can say is
+ * whether this bank will DELIVER 19 to Non-secure EL1 as an IRQ (the group registers read
+ * blind); this answers it with a live ack:
+ *
+ *   - save this core's bank + CPU interface + timer state, take the before-picture
+ *   - group-write the doorbell bit (belt-and-braces; the readback is blind, noted not judged)
+ *   - clean slate: disable + unpend INTID 19; PMR = 0xff, ICC_IGRPEN1 = 1 (the same pair the
+ *     kernel's own bring-up writes)
+ *   - arm THIS core's CNTV for ~50 ms, then enable INTID 19
+ *   - poll ISPENDR0 until bit 19 pends, then read ICC_IAR1_EL1 once: an ack works even with
+ *     PSTATE.I set -- it is the GIC's signalling state that feeds it, not the exception
+ *   - verdict A: IAR1 answers 19 -> delivery works, the kernel patch is sufficient
+ *     verdict B: pends but IAR1 answers spurious -> the bank will not signal it as an IRQ;
+ *                the fix is the monitor's or the FIQ route (R10)
+ *     verdict C: nothing pends on 19 after a fresh CNTV arm -> the vtimer is wired somewhere
+ *                else after all; the full pending line says where
+ *   - restore everything (disable + unpend 19, timer, PMR, ICC_IGRPEN1)
+ */
+#define ICC_IAR1_EL1_asm   "S3_0_C12_C12_0"
+#define ICC_EOIR1_EL1_asm  "S3_0_C12_C12_1"
+#define ICC_IGRPEN1_EL1_asm "S3_0_C12_C12_7"
+#define ICC_PMR_EL1_asm    "S3_4_C4_C6_0"
+#define CNTV_CTL_EL0_asm   "S3_3_C14_C3_1"
+#define CNTV_CVAL_EL0_asm  "S3_3_C14_C3_2"
+#define CNTV_TVAL_EL0_asm  "S3_3_C14_C3_0"
+
+static void
+irqtest(void)
+{
+        uint64_t mpidr = READ_SYSREG(MPIDR_EL1) & 0xFFFFFF;
+        uint64_t frame = gicr_frame_of(mpidr);
+        uint64_t freq = READ_SYSREG(CNTFRQ_EL0);
+        uint64_t pmr0, grpen0, ctl0, cval0, iar, started;
+        uint32_t enabled0, pending0, group0, bit = 1u << GIC_VTIMER_INTID, pend;
+        uint32_t acked_other = 0;
+        int verdict = 0;
+
+        if (frame == 0) {
+                print("irqtest: no redistributor frame for this core (%x)\n", mpidr);
+                return;
+        }
+        enabled0 = *(volatile uint32_t *)(frame + GICR_ISENABLER0_REG);
+        pending0 = *(volatile uint32_t *)(frame + GICR_ISPENDR0_REG);
+        group0 = *(volatile uint32_t *)(frame + GICR_IGROUPR0_REG);
+        __asm__ volatile ("mrs %0, " ICC_PMR_EL1_asm : "=r" (pmr0));
+        __asm__ volatile ("mrs %0, " ICC_IGRPEN1_EL1_asm : "=r" (grpen0));
+        ctl0 = READ_SYSREG(CNTV_CTL_EL0);
+        cval0 = READ_SYSREG(CNTV_CVAL_EL0);
+        print("irqtest: core %x frame %x freq %d Hz; before: enabled %x pending %x group %x (blind read)"
+            " pmr %x igrpen1 %x cntv_ctl %x\n",
+            mpidr, frame, (uint64_t)(freq / 1000), (uint64_t)enabled0, (uint64_t)pending0,
+            (uint64_t)group0, (uint64_t)(uint32_t)pmr0, (uint64_t)(uint32_t)grpen0, (uint64_t)(uint32_t)ctl0);
+
+        /* belt-and-braces group write for the doorbell bit; the readback is blind, so noted, not judged */
+        *(volatile uint32_t *)(frame + GICR_IGRPMODR0_REG) &= ~bit;
+        *(volatile uint32_t *)(frame + GICR_IGROUPR0_REG) = group0 | bit;
+
+        /* clean slate for the doorbell, then the CPU interface exactly as the kernel sets it */
+        *(volatile uint32_t *)(frame + GICR_ICENABLER0_REG) = bit;
+        *(volatile uint32_t *)(frame + GICR_ICPENDR0_REG) = bit;
+        __asm__ volatile ("msr " ICC_PMR_EL1_asm ", %0\nisb" : : "r" ((uint64_t)0xff));
+        __asm__ volatile ("msr " ICC_IGRPEN1_EL1_asm ", %0\nisb" : : "r" ((uint64_t)1));
+
+        /* arm this core's virtual timer ~50 ms out, then ring the doorbell */
+        __asm__ volatile ("msr " CNTV_CTL_EL0_asm ", xzr\nisb");
+        __asm__ volatile ("msr " CNTV_TVAL_EL0_asm ", %0\nisb" : : "r" (freq / 20));
+        __asm__ volatile ("msr " CNTV_CTL_EL0_asm ", %0\nisb" : : "r" ((uint64_t)1));
+        *(volatile uint32_t *)(frame + GICR_ISENABLER0_REG) = bit;
+
+        started = READ_SYSREG(CNTVCT_EL0);
+        for (;;) {
+                pend = *(volatile uint32_t *)(frame + GICR_ISPENDR0_REG);
+                if (pend & bit) {
+                        __asm__ volatile ("isb\nmrs %0, " ICC_IAR1_EL1_asm "\nisb" : "=r" (iar));
+                        if ((iar & 0xffffff) == GIC_VTIMER_INTID) {
+                                __asm__ volatile ("msr " ICC_EOIR1_EL1_asm ", %0\nisb" : : "r" (iar));
+                                verdict = 1;               /* delivered */
+                                break;
+                        } else if ((iar & 0xffffff) >= 0x3fe) {
+                                verdict = 2;                /* pends, will not signal */
+                                break;
+                        } else {
+                                /* some other INTID was signalled (a leftover SPI, say): hand it back and keep polling */
+                                __asm__ volatile ("msr " ICC_EOIR1_EL1_asm ", %0\nisb" : : "r" (iar));
+                                acked_other++;
+                        }
+                }
+                if ((READ_SYSREG(CNTVCT_EL0) - started) > 2 * freq) {
+                        verdict = 3;                        /* nothing pended on the doorbell */
+                        break;
+                }
+                BS->stall(1000);
+        }
+
+        if (verdict == 1) {
+                print("irqtest: INTID %d acked from ICC_IAR1 (IAR %x) while pending read %x: the tick"
+                    " DELIVERS as a Group 1 NS IRQ from this chain.\n"
+                    "    The R9 kernel patch (doorbell 27 -> 19) is sufficient: run the kernel and watch"
+                    " the heartbeat (1 -> 2 -> 3 ...)\n",
+                    (uint64_t)GIC_VTIMER_INTID, iar & 0xffffff, (uint64_t)pend);
+        } else if (verdict == 2) {
+                print("irqtest: INTID %d pends (pending %x) but ICC_IAR1 answers spurious (%x): the bank"
+                    " will NOT signal it as an IRQ to Non-secure.\n"
+                    "    The group story is real after all: the fix is the monitor's (EL3 sets the bank)"
+                    " or the kernel taking FIQ -- the R10 branch\n",
+                    (uint64_t)GIC_VTIMER_INTID, (uint64_t)pend, iar & 0xffffff);
+        } else {
+                print("irqtest: INTID %d never pended after a fresh CNTV arm (pending %x, was %x): the"
+                    " virtual timer is not wired where mainline says -- the full pending line above is"
+                    " the evidence, oem peek the frames if it moved\n",
+                    (uint64_t)GIC_VTIMER_INTID, (uint64_t)pend, (uint64_t)pending0);
+        }
+        if (acked_other) {
+                print("irqtest: %d unrelated INTIDs were acked and handed back along the way\n", (uint64_t)acked_other);
+        }
+
+        /* put everything back: doorbell off + unpended, the timer as it was, the interface as it was */
+        *(volatile uint32_t *)(frame + GICR_ICENABLER0_REG) = bit;
+        *(volatile uint32_t *)(frame + GICR_ICPENDR0_REG) = bit;
+        __asm__ volatile ("msr " CNTV_CTL_EL0_asm ", xzr\nisb");
+        __asm__ volatile ("msr " CNTV_CVAL_EL0_asm ", %0\nisb" : : "r" (cval0));
+        __asm__ volatile ("msr " CNTV_CTL_EL0_asm ", %0\nisb" : : "r" (ctl0));
+        __asm__ volatile ("msr " ICC_PMR_EL1_asm ", %0\nisb" : : "r" (pmr0));
+        __asm__ volatile ("msr " ICC_IGRPEN1_EL1_asm ", %0\nisb" : : "r" (grpen0));
+        print("irqtest: restored (doorbell disabled + unpended, timer/interface back as found)\n");
 }
 
 /* ICC_SGI1R_EL1 (S3_0_C12_C11_5): Aff1 in [23:16], the interrupt in [27:24], and in [15:0] a bit per Aff0. */
@@ -4085,6 +4224,23 @@ fb_command(char *cmd)
                         } else {
                                 gic_group_repair(running_mpidr, "oem gicgroup");
                                 gic_note_core(running_mpidr);
+                                fb_reply("OKAY", "");
+                        }
+                } else if (starts_with(cmd, "oem irqtest")) {
+                        /* R9: the delivery experiment on THIS core (no kernel needed -- run it
+                         * before oem run, or while one hangs elsewhere).  R7/R8 caught the tick
+                         * pending on INTID 19 while the kernel enabled 27: SM8150 wires the EL1
+                         * virtual timer at GIC_PPI 3 = INTID 19 (mainline sm8150.dtsi), the
+                         * prebuilt kernel is a QEMU/bcm2837 native (vtimer 27).  This arm's the
+                         * loader's own CNTV, enables INTID 19 in its own bank, and asks
+                         * ICC_IAR1_EL1 for a live ack: 19 = the tick DELIVERS as a Group 1 NS
+                         * IRQ (the R9 kernel patch is sufficient); spurious while pended = the
+                         * bank will not signal it (the group story is real; R10 = EL3/FIQ).
+                         */
+                        if (PLAT->gic_redist == 0) {
+                                fb_reply("FAIL", "no GIC on this platform");
+                        } else {
+                                irqtest();
                                 fb_reply("OKAY", "");
                         }
                 } else if (starts_with(cmd, "oem gic")) {

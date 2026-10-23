@@ -69,7 +69,7 @@ def parse_macho(data):
                 name = sect[0:16].rstrip(b'\0').decode()
                 seg = sect[16:32].rstrip(b'\0').decode()
                 addr, size = struct.unpack_from('<2Q', sect, 32)
-                foff = struct.unpack_from('<I', sect, 64)[0]
+                foff = struct.unpack_from('<I', sect, 48)[0]   # offset@48; 64 is the flags field!
                 sections.append((name, seg, addr, size, foff))
                 so += 80
         elif cmd == 0x2:                                  # LC_SYMTAB

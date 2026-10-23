@@ -108,3 +108,67 @@ R8 发布记录 (Task 25 补, 会话恢复后核实):
   release 可省重下; 需清理时按用户指令)
 - 待办: 等用户按 docs/FLASH-R8.md 协议实测, 回传 r8-klog.txt /
   gicgroup 判词行 → 按 R9 分支表定下一轮
+
+---
+Task ID: R9
+Agent: Z.ai (main)
+Task: R8 实测判决（r8-klog.txt：IGROUPR0 0->0 ×2，heartbeat 卡 1，sgi pends）→ R9 门铃轮
+
+Work Log:
+- R8 实测归档：pre-arm 与 oem gicgroup 两次回读均 0 -> 0；内核 heartbeat 恒 1；
+  sgi 1 pends never taken；帧拓扑/distributor ctlr 12 与 R7 一致
+- **R8 判词修正（本轮核心认知翻转）**：R8 用"写→回读 0"判"写被丢"，但 R7/R8
+  已证明该寄存器非安全读是盲的（RAZ）——盲仪器验证不了写入，回读 0 区分不了
+  "被丢"与"落了看不见"；且 Linux 主线 gic_cpu_init() 每次开机都从非安全 EL1
+  写 GICR_IGROUPR0=~0（irq-gic-v3.c:1293），raphael-Linux 日用正常 = 写有效
+- **真凶定位（一直写在 R7/R8 dump 的 pending 行里）**：enabled 8000000（内核
+  使能 INTID 27 = QEMU/bcm2837 出生的 prebuilt 硬编码门牌，反汇编 movz #0x800
+  lsl#16）vs pending 10080000（时钟实际打 bit 28+19）——主线 sm8150.dtsi：
+  EL1 虚拟定时器 = GIC_PPI 3 = INTID 19 = bit 19。**内核敲 27 号门，硅片把铃
+  接在 19**。组从来不是故事（bit 28 = SM8150 PPI 12，主线无设备认领，引导链
+  遗留杂散，未使能无害）
+- 内核取证（tools/host/r9-kernel-forensics.py：修 r8 工具的节偏移 bug [offset@48
+  非 64=flags] + 全 __TEXT 断点续扫 [capstone 遇坏字静默停] + 符号归属）：
+  * _gic_v3_irq_cpu_init 全函数还原：探针是 _ml_get_cpu_count（>=2 走
+    SGI0/1+vtimer 组合使能 0x08000003，<2 只 vtimer 0x08000000；本链 cpus=1
+    走后者，与 dump enabled=8000000 吻合）；IGROUPR0/IGRPMODR0/IPRIORITYR/
+    ISENABLER0 四连写用同一 w8 位；随后 GICD_CTLR|=0x12 + RWP 等待 +
+    ICC_AP1R0=0 + **ICC_PMR=0xff + ICC_IGRPEN1=1**（CPU 接口齐装）
+  * _gic_irq_handler 分发还原：IAR1 应答 → INTID 0→cpu_signal_handler、
+    1→psci_smp_stop_here、**0x1b→_rtclock_intr（时钟路径）**、>=0x20→SPI 表、
+    其余→通用 PPI 路径；处理后 EOIR1 + 排空循环
+  * CNTV 布防（_ml_set_decrementer 写 CNTV_TVAL）与 INTID 无关 ✓；
+    _fiq_context_init 只是保证 CNTV_CTL 使能，无真 FIQ 路线；
+    _step_core_start 的 movk #0x800 是 0x0800020c 常量的一部分，无关排除
+- R9 内核补丁（tools/r9-kernel-patch.py，字节锚定 ×4 + capstone 双端语义断言 +
+  全文件 diff 审计恰 4 字 6 字节）：
+  * S1 @0xfffffff00747493c movk w8,#0x800,lsl#16 → #0x008（多核路径）
+  * S2 @0xfffffff007474944 mov w8,#0x8000000 → #0x80000（单核路径，本链实走）
+  * S3 @0xfffffff007474968 strb [x9,#0x39b] → #0x393（IPRIORITYR(19)）
+  * S4 @0xfffffff007474b04 cmp w20,#0x1b → #0x13（分发比较）
+  * IGROUPR0/IGRPMODR0/ISENABLER0 写用同一 w8 位免费跟随
+  * 内核 sha256: 9239d4ad…(原) → b9fe82ca…(r9)
+- R9 loader 0.9（zig cc 本地编译预检零警告，CI 用真 clang/lld）：
+  * GIC_VTIMER_INTID 27→19 + 判词行改 R9 修正读法 + gic_group_repair 保留
+  * **oem irqtest**：loader 自己核上的交付实验（不需内核）：布防自己 CNTV
+    ~50ms → 使能 INTID 19 → PMR=0xff/IGRPEN1=1 → 等 pending → 读一次
+    ICC_IAR1_EL1（PSTATE.I 掩着也能应答）→ 判词三选一（DELIVERS/spurious/
+    never pended）→ 全量还原（含无关 INTID 代答代还）
+- 交付链：tools/r9-flash-build.sh（内核补丁步骤 + 门禁：loader 特征串 ×15 +
+  补丁字节在镜像内二次验证 [cmp w20,#0x13 = 9f4e0071 / movz w8,#0x8 lsl16 =
+  0801a052]）；.github/workflows/r9-springboard.yml（②b 装 capstone + 编译
+  门禁，⑥ 打 r9 镜像，⑧ README R9 判读树，⑧b release 正文 R9 故事）；
+  docs/FLASH-R9.md（证据链 + 协议 + R10 分支表）
+- 立规落实：tools/host/r8-kernel-disasm.py 偏移 bug 修复入库；R9 工具
+  （r9-kernel-forensics.py / r9-kernel-patch.py）随轮入库
+
+Stage Summary:
+- R9 = 门铃轮：内核 4 字补丁（27→19）+ loader 0.9 交付实验（oem irqtest）
+- 胜利条件：oem run 后 klog heartbeat 1→2→3 = 时钟中断回来，内核活了；
+  之后的新冻结（launchd/用户态）归 R10 天梯
+- R10 分支表：心跳活→继续天梯追剩余冻结；卡 1 + irqtest DELIVERS→嫌疑在
+  内核侧（PMR/优先级/掩码）；卡 1 + irqtest spurious→组的事是真的，EL3
+  monitor 或内核接 FIQ；irqtest never pends→按 pending 行实测接线改常量
+- 方法论：dump 的"回读验证"只在读不盲时有效——R8 的教训是拿盲仪器下了
+  "写被丢"的结论；R9 用 Linux 主线同款写法 + 活体应答（ICC_IAR1 实测）
+  取代回读判读
