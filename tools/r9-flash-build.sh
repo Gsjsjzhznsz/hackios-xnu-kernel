@@ -191,11 +191,12 @@ for feat in (b'oem irqtest', b'DELIVERS as a Group 1 NS IRQ', b'R10 branch'):
         fail(f'packed loader lacks the R9 marker {feat!r}')
 if ents['kernel'] != open(kernel_path, 'rb').read():
     fail('kernel identity broken (not the patched r9 kernel this build just made)')
-# the doorbell patch itself, verified inside the packed image (cmp w20,#0x13 + mov w8,#0x80000)
+# the doorbell patch itself, verified inside the packed image (whole file: the sites sit at
+# file offset ~0x470xxx, far beyond any small window)
 k = ents['kernel']
-if b'\x9f\x4e\x00\x71' not in k[:0x200000]:          # cmp w20, #0x13  (S4, little endian)
+if b'\x9f\x4e\x00\x71' not in k:                 # cmp w20, #0x13  (S4, little endian)
     fail('packed kernel does not carry the S4 dispatch patch')
-if b'\x08\x01\xa0\x52' not in k[:0x200000]:          # movz w8, #0x8, lsl #16 = 0x80000 (S2)
+if b'\x08\x01\xa0\x52' not in k:                 # movz w8, #0x8, lsl #16 = 0x80000 (S2)
     fail('packed kernel does not carry the S2 doorbell patch')
 if ents['ramdisk'] != open(rootapfs_path, 'rb').read():
     fail('ramdisk identity broken')
