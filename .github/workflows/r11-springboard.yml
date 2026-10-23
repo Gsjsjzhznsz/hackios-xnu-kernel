@@ -74,7 +74,7 @@ jobs:
           sudo apt-get update -qq
           # 内核构建（xnu-deps/setup.sh 的需求清单 + theos 工具链运行库）：
           sudo apt-get install -y -qq build-essential python3-dev clang lld \
-                       flex bison m4 perl python3 autoconf automake libtinfo6 xz-utils >/dev/null
+                       flex bison m4 perl python3 autoconf automake libtinfo6 xz-utils uuid-dev >/dev/null
           command -v clang && command -v lld-link
           # iOS 管线原有依赖：lzfse（dmg.py 解 LZFSE）+ 7-Zip 23+（读 APFS）
           sudo python3 -m pip install --break-system-packages lzfse >/dev/null 2>&1 \
@@ -150,13 +150,13 @@ jobs:
           # 内核树：Apple xnu-8796.121.2 + redwood.patch + files/（含 R11 的 raphael_*）
           cd hackios
           xnu/apply.sh
-          bash xnu-deps/setup.sh
+          bash xnu-deps/setup.sh || { echo "::error::setup.sh 失败——exporthdrs.log 尾部："; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
           df -h /
           # make：-k 必须——构建在链接后报导出表检查错（上游 README 的已知行为），
           # 内核文件在那时已经就绪；看文件不看退出码。
           ./xnu-build.sh -j4 -k || echo "（make 退出码 $?——上游文档：链接后的检查，内核若已产出即成功）"
           K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
-          ls -la "$K" || { echo "::error::内核没有产出——看上方编译日志"; exit 1; }
+          ls -la "$K" || { echo "::error::内核没有产出——exporthdrs.log 与 make 日志尾部："; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
           python3 - "$K" <<'PY'
           import sys
           d = open(sys.argv[1], 'rb').read()
