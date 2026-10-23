@@ -2282,71 +2282,160 @@ psci_call(uint64_t function, uint64_t a1, uint64_t a2, uint64_t a3)
 }
 
 /*
- * The core the kernel was started on (R6): "oem gic" and "oem sgi" aim at it.  A kernel that
+ * The core the kernel was started on (R6/R7): "oem gic" and "oem sgi" aim at it.  A kernel that
  * hangs with nothing in its log ring -- single core, no driver has said a word, the message
- * buffer only comes out at a return that never happens -- is triaged from here instead: what
- * its interrupt controller says about it tells a spin with interrupts masked from a clock
- * that stopped firing.
+ * buffer only comes out at a return that never happens -- is triaged from here instead.
+ *
+ * R7: the R6 probe was blind.  GICR_TYPER packs the affinity in bits [63:32], the same bytes
+ * as MPIDR (the kernel's own gic_find_redistributor() reads >> 32); the R6 macro read >> 40,
+ * so no frame could ever match any core and every look answered "no redistributor frame".
+ * Beyond fixing that, the whole window is dumped now, with the registers that say WHERE in
+ * gic_v3_irq_cpu_init() a stuck core sits: the redistributor wake (GICR_WAKER's CHILDASLEEP
+ * never clearing), the PPI 27 enable, and the distributor's RWP -- the wait the kernel enters
+ * only when the firmware left G1NS|ARE off, which is what can tell raphael (its own locally
+ * built UEFI) apart from redwood (upstream's, which leaves them set and the wait never runs).
  */
 static uint64_t running_mpidr;
 
 #define GICR_STRIDE             0x20000         /* one RD frame + one SGI frame per core */
 #define GICR_TYPER_REG          0x008
 #define GICR_TYPER_LAST         (1ull << 4)
-#define GICR_TYPER_AFF(a)       (((a) >> 40) & 0xFFFFFF)
+#define GICR_TYPER_AFF(a)       (((a) >> 32) & 0xFFFFFF)     /* R7: [63:32]; R6 read >> 40 and matched nothing */
+#define GICR_TYPER_CPUID(a)     (((a) >> 16) & 0xFF)
+#define GICR_WAKER_REG          0x014
+#define GICR_WAKER_PROCSLEEP    (1u << 1)
+#define GICR_WAKER_CHILDASLEEP  (1u << 2)
 #define GICR_SGI_BANK           0x10000
+#define GICR_IGROUPR0_REG       (GICR_SGI_BANK + 0x080)
+#define GICR_IGRPMODR0_REG      (GICR_SGI_BANK + 0xd00)
 #define GICR_ISENABLER0_REG     (GICR_SGI_BANK + 0x100)
 #define GICR_ISPENDR0_REG       (GICR_SGI_BANK + 0x200)
 #define GICR_IACTIVER0_REG      (GICR_SGI_BANK + 0x300)
+#define GICD_CTLR_REG           0x0000
+#define GICD_CTLR_ENABLE_G1NS   (1u << 1)
+#define GICD_CTLR_ARE_NS        (1u << 4)
+#define GICD_CTLR_RWP           (1u << 31)
 #define GIC_VTIMER_INTID        27              /* the EL1 virtual timer, as the kernel's gic_v3_irq.c numbers it */
 
-static void
-gic_note_core(uint64_t mpidr)
+/* The redistributor frame that belongs to that MPIDR, 0 if none (R7). */
+static uint64_t
+gicr_frame_of(uint64_t mpidr)
 {
-        uint64_t frame = 0;
-        int found = 0;
-
         if (PLAT->gic_redist == 0) {
-                return;
+                return 0;
         }
         for (uint64_t redist = PLAT->gic_redist, i = 0; i < (uint64_t)PLAT->cores;
             i++, redist += GICR_STRIDE) {
                 uint64_t typer = *(volatile uint64_t *)(redist + GICR_TYPER_REG);
 
                 if (GICR_TYPER_AFF(typer) == (mpidr & 0xFFFFFF)) {
-                        frame = redist;
-                        found = 1;
-                        break;
+                        return redist;
                 }
                 if (typer & GICR_TYPER_LAST) {
                         break;
                 }
         }
-        if (!found) {
+        return 0;
+}
+
+/* One line at every run: the state the firmware hands the kernel's GIC bring-up (R7).
+ * The bits the kernel's gic_v3_irq_cpu_init() wants already in place mean its GICD_CTLR
+ * wait never runs at all -- the difference between a UEFI that leaves them set and one
+ * that does not is the difference between redwood and this port's freeze, if it is. */
+static void
+gic_print_baseline(void)
+{
+        uint32_t ctlr;
+
+        if (PLAT->gic_dist == 0) {
+                return;
+        }
+        ctlr = *(volatile uint32_t *)(PLAT->gic_dist + GICD_CTLR_REG);
+        print("gic: distributor ctlr %x as the firmware left it: G1NS %d ARE %d RWP %d\n",
+            (uint64_t)ctlr, (uint64_t)!!(ctlr & GICD_CTLR_ENABLE_G1NS),
+            (uint64_t)!!(ctlr & GICD_CTLR_ARE_NS), (uint64_t)!!(ctlr & GICD_CTLR_RWP));
+        if ((ctlr & (GICD_CTLR_ENABLE_G1NS | GICD_CTLR_ARE_NS)) != (GICD_CTLR_ENABLE_G1NS | GICD_CTLR_ARE_NS)) {
+                print("gic: the kernel will have to write G1NS|ARE itself and wait for RWP --"
+                    " if it never comes back from that, oem gicset (before oem run) does the write first\n");
+        }
+}
+
+static void
+gic_note_core(uint64_t mpidr)
+{
+        uint64_t frame;
+        uint32_t ctlr, waker, group, mod, enabled, pending, active;
+
+        if (PLAT->gic_redist == 0 || PLAT->gic_dist == 0) {
+                return;
+        }
+
+        /* the whole window, every frame's own word about itself */
+        print("gic: the redistributor window at %x, %d frames:\n", PLAT->gic_redist, (uint64_t)PLAT->cores);
+        for (uint64_t redist = PLAT->gic_redist, i = 0; i < (uint64_t)PLAT->cores;
+            i++, redist += GICR_STRIDE) {
+                uint64_t typer = *(volatile uint64_t *)(redist + GICR_TYPER_REG);
+
+                print("gic: frame %d @%x: typer %x aff %x cpuid %x%s\n", i, redist,
+                    typer, GICR_TYPER_AFF(typer), GICR_TYPER_CPUID(typer),
+                    (typer & GICR_TYPER_LAST) ? "  LAST" : "");
+                if (typer & GICR_TYPER_LAST) {
+                        break;
+                }
+        }
+
+        ctlr = *(volatile uint32_t *)(PLAT->gic_dist + GICD_CTLR_REG);
+        print("gic: distributor ctlr %x: G1NS %d ARE %d RWP %d\n", (uint64_t)ctlr,
+            (uint64_t)!!(ctlr & GICD_CTLR_ENABLE_G1NS), (uint64_t)!!(ctlr & GICD_CTLR_ARE_NS),
+            (uint64_t)!!(ctlr & GICD_CTLR_RWP));
+        if (ctlr & GICD_CTLR_RWP) {
+                print("gic: the distributor's RWP is STUCK: a write is settling forever --"
+                    " the kernel's gic bring-up waits exactly there, right after enabling PPI 27\n");
+        }
+
+        frame = gicr_frame_of(mpidr);
+        if (frame == 0) {
                 print("gic: no redistributor frame says it belongs to core %x\n", mpidr);
                 return;
         }
-        {
-                uint32_t enabled = *(volatile uint32_t *)(frame + GICR_ISENABLER0_REG);
-                uint32_t pending = *(volatile uint32_t *)(frame + GICR_ISPENDR0_REG);
-                uint32_t active = *(volatile uint32_t *)(frame + GICR_IACTIVER0_REG);
 
-                print("gic: core %x: redist frame %x: SGI+PPI enabled %x pending %x active %x\n", mpidr, frame,
-                    (uint64_t)enabled, (uint64_t)pending, (uint64_t)active);
-                if (enabled & (1u << GIC_VTIMER_INTID)) {
-                        if (active & (1u << GIC_VTIMER_INTID)) {
-                                print("gic: the kernel's clock interrupt is ACTIVE: the core is inside it\n");
-                        } else if (pending & (1u << GIC_VTIMER_INTID)) {
-                                print("gic: the kernel's clock interrupt is PENDING and never taken:"
-                                    " the core has its interrupts masked -- a spin, not a wait\n");
-                        } else {
-                                print("gic: the kernel's clock interrupt is enabled and not pending:"
-                                    " none is due since the last one it took\n");
-                        }
-                } else {
-                        print("gic: the kernel's clock interrupt is NOT enabled on that core:"
-                            " its clock cannot fire\n");
-                }
+        waker = *(volatile uint32_t *)(frame + GICR_WAKER_REG);
+        group = *(volatile uint32_t *)(frame + GICR_IGROUPR0_REG);
+        mod = *(volatile uint32_t *)(frame + GICR_IGRPMODR0_REG);
+        enabled = *(volatile uint32_t *)(frame + GICR_ISENABLER0_REG);
+        pending = *(volatile uint32_t *)(frame + GICR_ISPENDR0_REG);
+        active = *(volatile uint32_t *)(frame + GICR_IACTIVER0_REG);
+        print("gic: core %x: frame %x: waker %x (PROCSLEEP %d CHILDASLEEP %d)\n", mpidr, frame,
+            (uint64_t)waker, (uint64_t)!!(waker & GICR_WAKER_PROCSLEEP),
+            (uint64_t)!!(waker & GICR_WAKER_CHILDASLEEP));
+        print("gic: core %x: SGI+PPI group %x grpmod %x enabled %x pending %x active %x\n",
+            mpidr, (uint64_t)group, (uint64_t)mod, (uint64_t)enabled, (uint64_t)pending,
+            (uint64_t)active);
+
+        if (waker & GICR_WAKER_CHILDASLEEP) {
+                print("gic: this redistributor never woke: the kernel's gic bring-up spins in its"
+                    " GICR_WAKER wait, before it ever enables PPI 27\n");
+                return;
+        }
+        if (!(enabled & (1u << GIC_VTIMER_INTID))) {
+                print("gic: the kernel's clock interrupt is NOT enabled on that core: it froze before"
+                    " finishing its gic bring-up (between kernel checkpoints 15 and 16 -- oem run 15"
+                    " stops there and comes back)\n");
+                return;
+        }
+        if (!(group & (1u << GIC_VTIMER_INTID))) {
+                print("gic: the kernel's clock interrupt is enabled but in Group 0: it signals as FIQ,"
+                    " which this kernel never takes\n");
+        }
+        if (active & (1u << GIC_VTIMER_INTID)) {
+                print("gic: the kernel's clock interrupt is ACTIVE: the core is inside it\n");
+        } else if (pending & (1u << GIC_VTIMER_INTID)) {
+                print("gic: the kernel's clock interrupt is PENDING and never taken:"
+                    " the core has its interrupts masked -- a spin, not a wait\n");
+        } else {
+                print("gic: the kernel's clock interrupt is enabled and not pending: either the timer"
+                    " never fired, or the core froze past its gic bring-up -- the checkpoint ladder"
+                    " (oem run 17, 18, 19, 20, 21) says which\n");
         }
 }
 
@@ -3382,6 +3471,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
         ba->deviceTreeLength = dt_len;
         print("device tree %x len %x, boot_args %x, top %x\n", dt_pa, (uint64_t)dt_len, ba_pa, top);
         print("cmdline: %s\n", ba->commandLine);
+        gic_print_baseline();
         if (kernel_mpidr != this_mpidr) {
                 print("the kernel will run on core %x (this is core %x)\n", kernel_mpidr, this_mpidr);
         }
@@ -3529,6 +3619,12 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 /*   fastboot oem run [N]          run its kernel (optionally stop at N)    */
 /*   fastboot getvar result        blocks until the kernel is back          */
 /*   fastboot get_staged log.txt   fetch loader + kernel log                */
+/*   fastboot oem gic             the kernel's core in the GIC, all of it   */
+/*                                  (R7: every frame, WAKER, PPI 27, RWP)   */
+/*   fastboot oem sgi N           an SGI at the kernel's core, and the      */
+/*                                  frame's answer: pended? taken? (R7)     */
+/*   fastboot oem gicset          write G1NS|ARE into GICD_CTLR before a   */
+/*                                  run, so the kernel need not (R7)        */
 /*   fastboot oem hang             stop petting the watchdog (test)         */
 /*   fastboot reboot               cold reset                               */
 
@@ -3869,8 +3965,38 @@ fb_command(char *cmd)
                         /* the firmware's memory map into the log (then "oem log" and fetch it) */
                         print_memory_map();
                         fb_reply("OKAY", "");
+                } else if (starts_with(cmd, "oem gicset")) {
+                        /* R7: write G1NS|ARE into the distributor here, before a run, so that the
+                         * kernel's gic bring-up finds them in place and never enters its RWP wait.
+                         * A manual experiment, not policy: the write is what the kernel itself
+                         * would do, only earlier and with a verdict instead of a hang.
+                         */
+                        if (PLAT->gic_dist == 0) {
+                                fb_reply("FAIL", "no GIC on this platform");
+                        } else {
+                                uint32_t before = *(volatile uint32_t *)(PLAT->gic_dist + GICD_CTLR_REG);
+                                uint32_t after = before;
+
+                                *(volatile uint32_t *)(PLAT->gic_dist + GICD_CTLR_REG) =
+                                    before | GICD_CTLR_ENABLE_G1NS | GICD_CTLR_ARE_NS;
+                                for (int i = 0; i < 100; i++) {
+                                        after = *(volatile uint32_t *)(PLAT->gic_dist + GICD_CTLR_REG);
+                                        if (!(after & GICD_CTLR_RWP)) {
+                                                break;
+                                        }
+                                        BS->stall(10000);
+                                }
+                                print("gic: distributor ctlr %x -> %x: G1NS %d ARE %d RWP %d%s\n",
+                                    (uint64_t)before, (uint64_t)after,
+                                    (uint64_t)!!(after & GICD_CTLR_ENABLE_G1NS),
+                                    (uint64_t)!!(after & GICD_CTLR_ARE_NS),
+                                    (uint64_t)!!(after & GICD_CTLR_RWP),
+                                    (after & GICD_CTLR_RWP) ? "  RWP STILL SET: the write does not settle"
+                                        " (this is the wait the kernel hangs in)" : "");
+                                fb_reply("OKAY", "");
+                        }
                 } else if (starts_with(cmd, "oem gic")) {
-                        /* what the kernel's core looks like in the interrupt controller (R6) */
+                        /* what the kernel's core looks like in the interrupt controller (R7: all of it) */
                         if (busy) {
                                 gic_note_core(running_mpidr);
                                 fb_reply("OKAY", "");
@@ -3878,9 +4004,12 @@ fb_command(char *cmd)
                                 fb_reply("FAIL", "no kernel is running");
                         }
                 } else if (starts_with(cmd, "oem sgi")) {
-                        /* a software generated interrupt at the kernel's core (R6): "oem gic" before and
-                         * after says whether the core takes it.  SGI 0 is the kernel's own signal,
-                         * SGI 1 its "stop" -- which with a single core returns at once.
+                        /* a software generated interrupt at the kernel's core (R6/R7): the frame's
+                         * own registers say what became of it -- never pended (the write did not
+                         * reach the GIC), pended and never taken (interrupts masked, or the CPU
+                         * interface refuses Group 1), or taken (the core still takes interrupts).
+                         * SGI 0 is the kernel's own signal, SGI 1 its "stop" -- which with a
+                         * single core returns at once.
                          */
                         const char *arg = cmd + 8;
 
@@ -3895,9 +4024,42 @@ fb_command(char *cmd)
                                 if (sgi > 15) {
                                         fb_reply("FAIL", "0..15");
                                 } else {
+                                        uint64_t frame = gicr_frame_of(running_mpidr);
+                                        uint32_t bit = 1u << sgi;
+                                        int pended = 0, taken = 0;
+
                                         send_sgi(running_mpidr, sgi);
-                                        print("sgi: %d sent to core %x (oem gic says what became of it)\n", sgi,
-                                            running_mpidr);
+                                        print("sgi: %d sent to core %x\n", sgi, running_mpidr);
+                                        if (frame == 0) {
+                                                print("sgi: no redistributor frame for that core"
+                                                    " (oem gic lists them)\n");
+                                        } else {
+                                                for (int i = 0; i < 8; i++) {
+                                                        uint32_t p = *(volatile uint32_t *)(frame + GICR_ISPENDR0_REG);
+                                                        uint32_t a = *(volatile uint32_t *)(frame + GICR_IACTIVER0_REG);
+
+                                                        if (p & bit) {
+                                                                pended = 1;
+                                                        }
+                                                        if (a & bit) {
+                                                                taken = 1;
+                                                        }
+                                                        BS->stall(2000);
+                                                }
+                                                if (!pended && !taken) {
+                                                        print("sgi: %d never showed up as pending: the write did not"
+                                                            " reach the GIC, the routing is wrong, or a live kernel"
+                                                            " took and ended it between two looks\n", sgi);
+                                                } else if (pended && !taken) {
+                                                        print("sgi: %d pends and is never taken: the core has its"
+                                                            " interrupts masked (a spin) or the CPU interface refuses"
+                                                            " Group 1\n", sgi);
+                                                } else {
+                                                        print("sgi: %d was taken: the core still takes interrupts --"
+                                                            " the freeze is a spin with them enabled, or past the GIC\n", sgi);
+                                                }
+                                        }
+                                        gic_note_core(running_mpidr);
                                         fb_reply("OKAY", "");
                                 }
                         }
