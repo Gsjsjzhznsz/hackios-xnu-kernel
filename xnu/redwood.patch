@@ -71,8 +71,8 @@ index 44274016a4cf..9cd24b42caca 100644
  bsd/dev/monotonic.c optional monotonic
 +bsd/dev/redwood_input.c		standard
 +bsd/dev/redwood_virtio_input.c	standard
-+bsd/dev/redwood_goodix.c	standard
-+bsd/dev/redwood_buttons.c	standard
++bsd/dev/raphael_touch.c	standard
++bsd/dev/raphael_buttons.c	standard
 +bsd/dev/redwood_battery.c	standard
 +bsd/dev/redwood_ufs.c	standard
 +bsd/dev/redwood_ufshc.c	standard
@@ -80,7 +80,7 @@ index 44274016a4cf..9cd24b42caca 100644
 +bsd/dev/redwood_virtio_net.c	standard
 +bsd/dev/redwood_apple80211.c	standard
 +bsd/dev/redwood_cpufreq.c	standard
-+bsd/dev/redwood_adreno.c	standard
++bsd/dev/raphael_adreno.c	standard
 +bsd/dev/redwood_audio.c		standard
 +bsd/dev/redwood_virtio_sound.c	standard
 +bsd/dev/redwood_speaker.c	standard

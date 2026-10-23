@@ -14,6 +14,7 @@
 !/xnuloader/
 !/qemu/
 !/tools/
+!/fw-gpu-raphael/
 !/xnu/
 !/xnu-deps/
 !/uefi/

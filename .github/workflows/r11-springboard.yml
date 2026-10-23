@@ -1,0 +1,434 @@
+# =====================================================================
+#  R11 · 纯血 hackios SpringBoard 一键流水线（GitHub Actions）
+#  -------------------------------------------------------------------
+#  R11 = 驱动轮，也是第一个源码构建内核的轮次。R5-R10 用上游 prebuilt +
+#  R9 门铃字节补丁；R11 的内核来自本仓库（xnu/apply.sh + xnu-deps +
+#  xnu-build.sh），带着四件新驱动进 payload：
+#
+#    · 触摸（绝对优先）：bsd/dev/raphael_touch.c + gt9886_cfg.h —— SWEET
+#      赛道 GT9886/GENI-SE19-I2C 驱动的移植（同机 t13 真机验证过的上电
+#      时序：TLMM GPIO 98/100 供轨、54 复位、122 中断、57/58 SDA/SCL，
+#      784B 面板配置下发，0x4100 轮询）→ /dev/redwood-touch（touchscreen=1）
+#    · 按键（急需）：bsd/dev/raphael_buttons.c —— PMIC 仲裁器只读轮询：
+#      PM8150 PON（KPDPWR=电源，RESIN=音量下，按 subtype 选位）+
+#      GPIO6=音量上 → REDWOOD_BUTTON_* 记录（buttons=1）
+#    · GPU：bsd/dev/raphael_adreno.c —— redwood_adreno.c 移植到 Adreno 640：
+#      sm8150 地址表 + a640_gmu.bin/a630_sqe.fw/a640_zap.mbn（linux-firmware，
+#      入库 fw-gpu-raphael/）+ a630 家族流程（DTCM 0x40000、RSC 在 GMU 窗内
+#      +0x23000、PDC 完整 uCode 加载、GEN2 icache/dcache 池）+ 22 步梯子
+#      原样保留（gpu=1 全走 / adreno=N 前 N 步）
+#    · 背光（软件）：fbdim=10..100 boot-arg + /dev/redwood-touch type-6 记录
+#      运行时调节（AMOLED 的真背光走 DSI/DCS，内核未驱动——软调光先行，
+#      省电是真的）
+#    · 门铃进源码：GIC_INTID_VTIMER 27→19（R9 字节补丁的源码版）
+#
+#  双镜像发布：
+#    raphael-xnu-r11-flash.img       touchscreen=1 buttons=1（主镜像）
+#    raphael-xnu-r11-gpu-flash.img   同上 + gpu=1（GPU 实验镜像）
+#
+#  顺序设计：内核构建放在最前（②c）——编译错误两分钟内暴露，不等
+#  7.4GB IPSW 下载完才发现。
+#
+#  部署：默认分支 .github/workflows/r11-springboard.yml → Run workflow。
+#  注意：重复运行前先删掉旧 Release（或换 release_tag）。
+# =====================================================================
+name: R11 · SpringBoard 一键流水线
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_repo:
+        description: "hackios 内核树 fork（含 xnu/ + tools/r11-flash-build.sh）"
+        required: true
+        default: "Gsjsjzhznsz/hackios-xnu-kernel"
+      userland_repo:
+        description: "hackios userland 树 fork"
+        required: true
+        default: "Gsjsjzhznsz/hackios-xnu-userland"
+      release_tag:
+        description: "Release tag（直链的一部分）"
+        required: true
+        default: "r11-springboard"
+permissions:
+  contents: write
+
+concurrency:
+  group: r11-springboard
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      REL: ${{ github.workspace }}/release
+      THEOS: $HOME/theos
+    steps:
+      # ---------------------------------------------------------------
+      - name: "①/⑨ 磁盘准备与依赖（内核构建工具链 + iOS 管线）"
+        run: |
+          set -eu
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+                       /usr/local/share/boost /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          sudo apt-get update -qq
+          # 内核构建（xnu-deps/setup.sh 的需求清单 + theos 工具链运行库）：
+          sudo apt-get install -y -qq build-essential python3-dev clang lld \
+                       flex bison m4 perl python3 autoconf automake libtinfo6 xz-utils >/dev/null
+          command -v clang && command -v lld-link
+          # iOS 管线原有依赖：lzfse（dmg.py 解 LZFSE）+ 7-Zip 23+（读 APFS）
+          sudo python3 -m pip install --break-system-packages lzfse >/dev/null 2>&1 \
+            || python3 -m pip install --user --break-system-packages lzfse >/dev/null
+          python3 -c "import lzfse; print('→ lzfse 模块就绪')"
+          sudo apt-get install -y -qq 7zip >/dev/null 2>&1 \
+            || echo "::warning::apt 的 7zip 不可用，改走 7-zip.org 官方原版"
+          if [ -x /usr/bin/7zz ]; then
+            sudo ln -sf /usr/bin/7zz /usr/local/bin/7z
+          else
+            curl -fsSL -o /tmp/7z.tar.xz https://www.7-zip.org/a/7z2301-linux-x64.tar.xz
+            sudo mkdir -p /opt/7zip && sudo tar -xJf /tmp/7z.tar.xz -C /opt/7zip
+            sudo ln -sf /opt/7zip/7zz /usr/local/bin/7z
+          fi
+          command -v 7z >/dev/null || { echo "::error::7z 仍不可用"; exit 1; }
+          mkdir -p "$REL"
+          df -h /
+
+      # ---------------------------------------------------------------
+      - name: "②/⑨ 取树（kernel fork + userland fork）"
+        run: |
+          set -eu
+          git clone --depth 1 "https://github.com/${{ inputs.kernel_repo }}.git" hackios
+          cd hackios
+          if ! USERLAND_URL="https://github.com/${{ inputs.userland_repo }}.git" common/setup.sh; then
+            echo "::warning::userland fork 拉取失败，回退上游 oosexgang/hackios-xnu-userland"
+            rm -rf .userland.git
+            USERLAND_URL="https://github.com/oosexgang/hackios-xnu-userland.git" common/setup.sh
+          fi
+          echo "→ raphael 启动链与 R11 打包器："
+          ls -lh prebuilt/raphael/ tools/r11-flash-build.sh fw-gpu-raphael/
+          git log -1 --format='→ kernel 树 @ %h %s'
+
+      # ---------------------------------------------------------------
+      - name: "②b/⑨ 编译门禁（R10 loader：编译 + 特征串全验，内核构建前快速失败）"
+        run: |
+          set -eu
+          cd hackios
+          bash xnuloader/build.sh
+          python3 - <<'PY'
+          d = open('xnuloader/loader.efi', 'rb').read()
+          for feat in (b'oem gic', b'oem sgi', b'oem peek', b'NXSB at +32',
+                     b'as the firmware left it', b'never showed up as pending', b'oem gicset',
+                     b'oem gicgroup', b'group repair', b'pre-arm before CPU_ON',
+                     b'at the hung verdict',
+                     b'oem irqtest', b'DELIVERS as a Group 1 NS IRQ', b'R10 branch',
+                     b'the readback reads 0',
+                     b'R10 clean screen round', b'screen cleared for the handoff'):
+              assert feat in d, f'loader.efi 缺特征串 {feat!r}'
+          assert b'debug=0x8' not in d, 'loader.efi 仍带 debug=0x8'
+          print(f'✓ R11 loader（R10 0.10 原样）{len(d):,} B')
+          PY
+
+      # ---------------------------------------------------------------
+      - name: "②c/⑨ 内核源码构建（theos + xnu/apply.sh + xnu-deps + make：R11 的内核从本仓库编译）"
+        run: |
+          set -eu
+          # theos：cctools（ld64）与 sdks/iPhoneOS16.5.sdk
+          git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
+          mkdir -p "$THEOS/toolchain"
+          curl -sL https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-x86_64.tar.xz | tar -xJ -C "$THEOS/toolchain/"
+          $THEOS/toolchain/linux/iphone/bin/ld64 --version || true
+          test -d "$THEOS/sdks/iPhoneOS16.5.sdk" || { echo "::error::theos 缺 iPhoneOS16.5.sdk"; exit 1; }
+          df -h /
+          # 内核树：Apple xnu-8796.121.2 + redwood.patch + files/（含 R11 的 raphael_*）
+          cd hackios
+          xnu/apply.sh
+          bash xnu-deps/setup.sh
+          df -h /
+          # make：-k 必须——构建在链接后报导出表检查错（上游 README 的已知行为），
+          # 内核文件在那时已经就绪；看文件不看退出码。
+          ./xnu-build.sh -j4 -k || echo "（make 退出码 $?——上游文档：链接后的检查，内核若已产出即成功）"
+          K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
+          ls -la "$K" || { echo "::error::内核没有产出——看上方编译日志"; exit 1; }
+          python3 - "$K" <<'PY'
+          import sys
+          d = open(sys.argv[1], 'rb').read()
+          for marker, what in ((b'\x9f\x4e\x00\x71', 'cmp w20,#0x13（门铃 19 分发）'),
+                               (b'\x08\x01\xa0\x52', 'movz w8,#0x8,lsl#16（门铃 19 使能）'),
+                               (b'RAPHAEL TOUCH', '触摸驱动'),
+                               (b'buttons: step 1', '按键驱动'),
+                               (b'a640_gmu.bin', 'GPU 驱动（a640 固件名）'),
+                               (b'a640_zap.mbn', 'GPU 驱动（zap mbn）'),
+                               (b'the panel dimmed to', 'fbdim 调光')):
+              assert marker in d, f'源码构建的内核缺 {what}'
+          print(f'✓ 源码构建的内核带齐 R11 全部标记（{len(d):,} B）')
+          PY
+          df -h /
+
+      # ---------------------------------------------------------------
+      - name: "③/⑨ 取 iOS 16.5（Apple CDN：4.7GB + 2.7GB + 10MB，断点续传）"
+        run: |
+          set -eu
+          cd hackios/ios165
+          KEEP=1 ./fetch.sh
+          echo "→ 三个镜像："
+          ls -lh rootfs.dmg cryptex-os.dmg cryptex-app.dmg
+          df -h .
+
+      # ---------------------------------------------------------------
+      - name: "④/⑨ 转裸 APFS（dmg.py 解 LZFSE 抽 APFS 分区 + 常量/魔数/内容三重校验）"
+        run: |
+          set -eu
+          cd hackios/ios165
+          python3 -c "import lzfse" || { echo "::error::lzfse 模块缺失（看 step①）"; exit 1; }
+          INFO=$(python3 ../tools/apfs/dmg.py info rootfs.dmg)
+          echo "$INFO"
+          if echo "$INFO" | grep -q '^GPT,'; then
+            python3 ../tools/apfs/dmg.py extract rootfs.dmg rootfs.apfs --apfs
+          else
+            echo "（无 GPT —— 整镜像即裸 APFS，整卷抽出）"
+            python3 ../tools/apfs/dmg.py extract rootfs.dmg rootfs.apfs
+          fi
+          S=$(stat -c %s rootfs.apfs)
+          echo "→ rootfs.apfs = ${S} B"
+          [ "$S" -eq 5628755968 ] || { echo "::error::尺寸不是上游常量 5,628,755,968（Apple 改 IPSW 了？）"; exit 1; }
+          python3 - <<'PY'
+          d = open('rootfs.apfs','rb').read(36)
+          assert d[32:36] == b'NXSB', f'rootfs.apfs 不是裸 APFS 容器: {d[32:36]!r}'
+          for f in ('cryptex-os.dmg','cryptex-app.dmg'):
+              m = open(f,'rb').read(36)[32:36]
+              assert m == b'NXSB', f'{f} 不是裸 APFS 容器: {m!r}'
+          print('✓ 三个镜像 NXSB 容器魔数齐全（@+32）')
+          PY
+          rm -f rootfs.dmg
+          echo "→ 内容抽检（7z 列 APFS，SpringBoard 必须在）："
+          7z l rootfs.apfs | grep -m1 'SpringBoard' || { echo "::error::rootfs.apfs 里没有 SpringBoard"; exit 1; }
+          echo "✓ SpringBoard 在卷里"
+          df -h .
+
+      # ---------------------------------------------------------------
+      - name: "⑤/⑨ 造双盘（GPU 固件从 fw-gpu-raphael/ 进 fw/ + root.apfs=md1 + flashboot.apfs=md0）"
+        run: |
+          set -eu
+          cd hackios
+          # 小镜像的 fw/：raphael 的 GPU 三件（userland/build.sh 读 ../fw-gpu/）
+          mkdir -p fw-gpu
+          cp fw-gpu-raphael/a640_gmu.bin fw-gpu-raphael/a630_sqe.fw fw-gpu-raphael/a640_zap.mbn fw-gpu/
+          sha256sum fw-gpu/*
+          BUILD_RC=0
+          PREBUILT=1 FLASHBOOT=1 CRYPTEXES=flash REST=1 WIFID=0 userland/build.sh || BUILD_RC=$?
+          for f in userland/root.apfs userland/flashboot.apfs; do
+            [ -f "$f" ] || { echo "::error::$f 未产出（看上方日志）"; exit 1; }
+          done
+          [ "$BUILD_RC" = 0 ] || echo "::warning::build.sh 退出码 $BUILD_RC（两个镜像已产出，继续）"
+          ls -lh userland/root.apfs userland/flashboot.apfs
+          python3 -c "
+          for f, what in (('userland/root.apfs','小镜像 = md1 /redwood'), ('userland/flashboot.apfs','启动卷 = md0 根')):
+              d = open(f,'rb').read(36)
+              assert d[32:36]==b'NXSB', f'{f} 不是 APFS 容器'
+              print(f'✓ {f} 是 APFS 容器（NXSB@+32）= {what}')"
+          7z l userland/flashboot.apfs 2>/dev/null | grep -m1 'launchd' \
+            || { echo "::error::flashboot.apfs 里没有 sbin/launchd（stage0）"; exit 1; }
+          7z l userland/root.apfs 2>/dev/null | grep -m1 'fw/a640_gmu.bin' \
+            || { echo "::error::root.apfs 里没有 fw/a640_gmu.bin（fw-gpu 没进小镜像）"; exit 1; }
+          echo "✓ flashboot.apfs 带 stage0，root.apfs 带 GPU 固件"
+          rm -rf ios165/rootfs ios165/cryptex ios165/cryptex-app ios165/20F66__iPhone10,3_6
+          rm -f userland/system.apfs
+          df -h .
+
+      # ---------------------------------------------------------------
+      - name: "⑥/⑨ 打 r11 双启动镜像（r1 固件 + r2 shim + R10 loader + 本仓库源码构建的内核 + 小镜像 md1）"
+        run: |
+          set -eu
+          cd hackios
+          bash tools/r11-flash-build.sh .
+          cp userland/raphael-xnu-r11-flash.img "$REL/"
+          cp userland/raphael-xnu-r11-gpu-flash.img "$REL/"
+          cp userland/flashboot.apfs "$REL/raphael-r11-flashboot.apfs"
+          cp userland/root.apfs "$REL/r11-boot-volume-root.apfs"
+          ls -lh "$REL"
+          df -h .
+
+      # ---------------------------------------------------------------
+      - name: "⑦/⑨ 拼 iOS 卷（三容器背靠背，rootfs + cryptex-os + cryptex-app）"
+        run: |
+          set -eu
+          cd hackios/ios165
+          cat rootfs.apfs cryptex-os.dmg cryptex-app.dmg > raphael-ios-volume.img
+          S=$(stat -c %s raphael-ios-volume.img)
+          E=$(( $(stat -c %s rootfs.apfs) + $(stat -c %s cryptex-os.dmg) + $(stat -c %s cryptex-app.dmg) ))
+          [ "$S" -eq "$E" ] || { echo "::error::拼接尺寸不符: $S != $E"; exit 1; }
+          echo "→ iOS 卷 = ${S} B"
+          python3 - <<'PY'
+          import os
+          parts = [('rootfs.apfs',), ('cryptex-os.dmg',), ('cryptex-app.dmg',)]
+          f = open('raphael-ios-volume.img','rb')
+          off = 0
+          for i, (p,) in enumerate(parts):
+              s = os.path.getsize(p)
+              f.seek(off + 32); m = f.read(4)
+              assert m == b'NXSB', f'container c={i} @ {off:#x}: magic {m!r}'
+              print(f'✓ c={i} @ {off:#010x} NXSB（{s:,} B）')
+              off += s
+          assert off == os.path.getsize('raphael-ios-volume.img'), 'total size mismatch'
+          print('✓ 三个 APFS 容器背靠背，内核按 ,c=0/1/2 依次可寻')
+          PY
+          rm -f rootfs.apfs cryptex-os.dmg cryptex-app.dmg
+          df -h .
+
+      # ---------------------------------------------------------------
+      - name: "⑧/⑨ 切片 + SHA256 + 生成手机端附件"
+        run: |
+          set -eu
+          cd hackios/ios165
+          IMG=raphael-ios-volume.img
+          IMG_SHA=$(sha256sum "$IMG" | awk '{print $1}')
+          echo "→ 整卷 SHA256 = $IMG_SHA"
+          split -b 1800m "$IMG" "$REL/raphael-ios-volume.img.part-"
+          rm -f "$IMG"
+          cd "$REL"
+          : > SHA256SUMS
+          for f in raphael-ios-volume.img.part-* raphael-xnu-r11-flash.img \
+                   raphael-xnu-r11-gpu-flash.img raphael-r11-flashboot.apfs r11-boot-volume-root.apfs; do
+            sha256sum "$f" >> SHA256SUMS
+          done
+          echo "${IMG_SHA}  raphael-ios-volume.img" >> SHA256SUMS
+          cat > r11-rejoin.sh <<'SH'
+          #!/bin/sh
+          # R11: 合并 iOS 卷分片 + 校验（Termux；需与分片、SHA256SUMS 同目录）
+          set -e
+          echo "[1/3] 校验分片 ..."
+          sha256sum -c --ignore-missing SHA256SUMS
+          echo "[2/3] 合并（约 7.8GB，等一会）..."
+          cat raphael-ios-volume.img.part-* > raphael-ios-volume.img
+          echo "[3/3] 校验整卷 ..."
+          grep ' raphael-ios-volume.img$' SHA256SUMS | sha256sum -c -
+          ls -lh raphael-ios-volume.img
+          echo "OK → fastboot flash userdata raphael-ios-volume.img"
+          SH
+          chmod +x r11-rejoin.sh
+          REPO="${{ github.repository }}"
+          TAG="${{ inputs.release_tag }}"
+          PART_URLS=$(ls raphael-ios-volume.img.part-* | sed "s|^|https://github.com/${REPO}/releases/download/${TAG}/|")
+          cat > README.txt <<EOF
+          ============================================================
+           R11 · 纯血 hackios SpringBoard 交付包（raphael / K20 Pro）
+          ============================================================
+          iOS 卷   : raphael-ios-volume.img（三容器背靠背：iOS 16.5 rootfs
+                     + cryptex-os + cryptex-app，内核按 ,c=0/1/2 自寻）
+                     整卷 SHA256: ${IMG_SHA}
+          主镜像   : raphael-xnu-r11-flash.img（触摸 + 按键 + 调光；
+                     cmdline touchscreen=1 buttons=1）
+          GPU 镜像 : raphael-xnu-r11-gpu-flash.img（同上 + gpu=1：
+                     Adreno 640 二十二步梯子全走，实验性）
+          内核     : 本仓库源码构建（xnu/apply.sh + xnu-build.sh），非
+                     prebuilt —— R9 门铃补丁进了源码（GIC_INTID_VTIMER
+                     27→19），四个新驱动编译进内核
+          启动卷   : raphael-r11-flashboot.apfs（stage0 = md0；含 GPU 固件
+                     fw/a640_gmu.bin 等）
+          小镜像   : r11-boot-volume-root.apfs（备份用）
+
+          【R5-R10 分片还在的话】先只下 SHA256SUMS，对旧分片/旧合并卷跑
+          sha256sum -c：一致就免重下免重刷（iOS 卷跨轮字节相同）。
+
+          【分片直链】共 $(ls raphael-ios-volume.img.part-* | wc -l) 片，全部下载到同一目录：
+          ${PART_URLS}
+          https://github.com/${REPO}/releases/download/${TAG}/raphael-xnu-r11-flash.img
+          https://github.com/${REPO}/releases/download/${TAG}/raphael-xnu-r11-gpu-flash.img
+          https://github.com/${REPO}/releases/download/${TAG}/raphael-r11-flashboot.apfs
+          https://github.com/${REPO}/releases/download/${TAG}/SHA256SUMS
+          https://github.com/${REPO}/releases/download/${TAG}/r11-rejoin.sh
+
+          【手机端（Termux）】
+            termux-setup-storage
+            mkdir -p /sdcard/Download/r11 && cd /sdcard/Download/r11
+            sh r11-rejoin.sh
+            fastboot flash userdata raphael-ios-volume.img
+            # 刷完 userdata 重回 bootloader（loader 自带 fastboot）：
+            # —— 主镜像（触摸 + 按键）：
+            fastboot boot  raphael-xnu-r11-flash.img
+            fastboot oem  ramdisk
+            fastboot stage raphael-r11-flashboot.apfs
+            fastboot oem  run         # 黑屏 → 桌面 → +5s 触摸上电 → 可滑动！
+            # —— GPU 实验镜像（第二次开机）：
+            fastboot boot  raphael-xnu-r11-gpu-flash.img
+            fastboot oem  ramdisk
+            fastboot stage raphael-r11-flashboot.apfs
+            fastboot oem  run         # adreno: 1..22 每步一行
+
+          【R11 = 驱动轮，四件】
+          ① 触摸：GT9886 on GENI SE19 I2C（t13 已验证的上电时序，同款移植）
+             判读：klog 里 "RAPHAEL TOUCH: starting in 5 s" → "bus idle"
+             → "bus live" → "GT9886 pid ... [39 38 38 36]" → "cfg send
+             sensorN 784B err=0" → 桌面上手指滑动生效
+          ② 按键：PM8150 PON + GPIO6（只读轮询）
+             判读："buttons: PMIC arbiter version 5..." → "buttons: step 5:
+             watching power volume-up volume-down" → 按键有 "PRESSED/released"
+          ③ GPU（实验镜像）：Adreno 640 梯子
+             判读："adreno: N: ..." 步数推进；22 = 全通 = CoreAnimation 硬件
+             加速（动画丝滑）；卡在某步 = 拍 klog 回传，R12 定位
+          ④ 背光：软件调光 fbdim=10..100（boot-arg）+ type-6 记录运行时调；
+             AMOLED 真·背光（DCS 0x51 over DSI）是 R12+ 的事
+          回退：R10 镜像（raphael-xnu-r10-flash.img）随时可回（干净桌面、
+          无驱动）；R9 = verbose 版。
+
+          ⚠️ 刷完 userdata 后绝不要让 MIUI 开机——Android 会把 userdata
+             重格回 f2fs，iOS 卷即毁（重刷可恢复，但别折腾）。
+          ⚠️ 每次开机都要重复 boot/oem ramdisk/stage/oem run 四步（启动卷
+             住 RAM 不落盘，这正是"不写手机闪存"设计的一部分）。
+          ⚠️ 含 Apple 版权内容，仅个人研究；下载完成后请尽快删除本 Release。
+          EOF
+          echo "→ SHA256SUMS："
+          cat SHA256SUMS
+          ls -lh
+
+      # ---------------------------------------------------------------
+      - name: "⑧b/⑨ 发布 Release（直链交付）"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: "R11 · 纯血 hackios SpringBoard · iOS 16.5 (20F66) · 驱动轮（触摸/按键/GPU/调光）"
+          body: |
+            raphael (K20 Pro) SpringBoard 交付包：iOS 16.5 三容器卷（≈7.8GB，上游常量校验），
+            双启动镜像（主 = 触摸+按键，GPU 实验 = +gpu=1）与启动卷 raphael-r11-flashboot.apfs。
+
+            R11 = 驱动轮，**内核首次从本仓库源码构建**（不再是 prebuilt + 字节补丁）：
+            - **门铃进源码**：GIC_INTID_VTIMER 27→19（R9 四处二进制补丁的源码版）
+            - **触摸（绝对优先）**：raphael_touch.c —— SWEET 赛道 GT9886/GENI-SE19-I2C
+              驱动移植（同机 t13 真机验证：TLMM 98/100 供轨、784B 配置下发、0x4100 轮询）
+              → /dev/redwood-touch，touchscreen=1
+            - **按键（急需）**：raphael_buttons.c —— PMIC 仲裁器只读轮询 PM8150
+              PON（电源/音量下）+ GPIO6（音量上），buttons=1
+            - **GPU（实验镜像）**：raphael_adreno.c —— redwood 驱动移植到 Adreno 640
+              （sm8150 地址 + a640_gmu.bin/a630_sqe.fw/a640_zap.mbn + a630 家族流程），
+              22 步梯子保留，gpu=1
+            - **背光（软件）**：fbdim boot-arg + type-6 记录运行时调光；DCS 硬件背光 R12+
+            - iOS 卷与 R5-R10 字节相同（分片可复用）；loader = R10 0.10 原样
+
+            手机端：主镜像四步开机后，**黑屏 → 桌面 → +5 秒触摸上电 → 滑动解锁**。
+            GPU 实验镜像第二刷：klog 里 adreno: 1..22 每步一行，22 = 硬件加速全通。
+
+            判读树与回退链：见附件 README.txt。
+
+            ⚠️ 含 Apple 版权内容，仅供个人研究；下载完成后请尽快删除本 Release。
+
+          fail_on_unmatched_files: true
+          files: |
+            release/raphael-ios-volume.img.part-*
+            release/raphael-xnu-r11-flash.img
+            release/raphael-xnu-r11-gpu-flash.img
+            release/raphael-r11-flashboot.apfs
+            release/r11-boot-volume-root.apfs
+            release/SHA256SUMS
+            release/README.txt
+            release/r11-rejoin.sh
+
+      - name: "直链汇总（跑完看这里，复制即用）"
+        run: |
+          set -eu
+          echo "════════════ 全部下载直链 ════════════"
+          for f in "$REL"/raphael-ios-volume.img.part-* "$REL"/raphael-xnu-r11-flash.img \
+                   "$REL"/raphael-xnu-r11-gpu-flash.img "$REL"/raphael-r11-flashboot.apfs \
+                   "$REL"/r11-boot-volume-root.apfs \
+                   "$REL"/SHA256SUMS "$REL"/README.txt "$REL"/r11-rejoin.sh; do
+            echo "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/$(basename "$f")"
+          done

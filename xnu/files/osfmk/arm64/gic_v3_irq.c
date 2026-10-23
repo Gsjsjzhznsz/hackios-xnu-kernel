@@ -72,7 +72,7 @@
 
 #define GIC_SGI_SIGNAL          0           /* cpu_signal(): another processor wants this one's attention */
 #define GIC_SGI_STOP            1           /* psci_smp_stop_here(): the system is going back to the boot loader */
-#define GIC_INTID_VTIMER        27          /* EL1 virtual timer PPI */
+#define GIC_INTID_VTIMER        19          /* EL1 virtual timer PPI: SM8150 wires it at GIC_PPI 3 = INTID 16+3 (mainline sm8150.dtsi timer node); the QEMU/bcm2837 birthplace of this configuration had it at 27 -- R9's binary patch, now in the source */
 #define GIC_INTID_SPI_MIN       32
 #define GIC_INTID_SPURIOUS_MIN  1020
 #define GIC_SPI_MOST            48          /* attached at a time */
@@ -100,11 +100,11 @@ uint32_t        gic_last_unhandled;
  * without a lock.
  */
 struct gic_spi {
-	uint32_t intid;                     /* 0: a free slot */
-	void   (*handler)(void *context, uint32_t intid);
-	void    *context;
-	uint32_t busy;                      /* handlers of it running now */
-	uint64_t count;
+        uint32_t intid;                     /* 0: a free slot */
+        void   (*handler)(void *context, uint32_t intid);
+        void    *context;
+        uint32_t busy;                      /* handlers of it running now */
+        uint64_t count;
 };
 static struct gic_spi gic_spi[GIC_SPI_MOST];
 static decl_simple_lock_data(, gic_spi_lock);
@@ -123,23 +123,23 @@ void gic_v3_irq_signal_stop(uint32_t phys_id);
 static inline uint32_t
 gic_read32(vm_offset_t addr)
 {
-	return *(volatile uint32_t *)addr;
+        return *(volatile uint32_t *)addr;
 }
 
 static inline void
 gic_write32(vm_offset_t addr, uint32_t value)
 {
-	*(volatile uint32_t *)addr = value;
+        *(volatile uint32_t *)addr = value;
 }
 
 static void
 gic_mask(uint32_t intid)
 {
-	if (intid < 32) {
-		gic_write32(gicr_cpu_base[cpu_number()] + GICR_ICENABLER0, 1u << intid);
-	} else {
-		gic_write32(gicd_base + GICD_ICENABLER(intid / 32), 1u << (intid % 32));
-	}
+        if (intid < 32) {
+                gic_write32(gicr_cpu_base[cpu_number()] + GICR_ICENABLER0, 1u << intid);
+        } else {
+                gic_write32(gicd_base + GICD_ICENABLER(intid / 32), 1u << (intid % 32));
+        }
 }
 
 /*
@@ -151,68 +151,68 @@ gic_mask(uint32_t intid)
 static void
 gic_send_sgi(uint32_t phys_id, uint32_t sgi)
 {
-	uint64_t aff0 = phys_id & 0xff, aff1 = (phys_id >> 8) & 0xff;
+        uint64_t aff0 = phys_id & 0xff, aff1 = (phys_id >> 8) & 0xff;
 
-	__builtin_arm_wsr64("ICC_SGI1R_EL1", ((uint64_t)sgi << 24) | (aff1 << 16) | (1ULL << (aff0 & 15)));
-	__builtin_arm_isb(ISB_SY);
+        __builtin_arm_wsr64("ICC_SGI1R_EL1", ((uint64_t)sgi << 24) | (aff1 << 16) | (1ULL << (aff0 & 15)));
+        __builtin_arm_isb(ISB_SY);
 }
 
 /* The platform's half of cpu_signal(): interrupt that processor (GenericARMCPU::signalCPU()). */
 void
 gic_v3_irq_signal(uint32_t phys_id)
 {
-	gic_send_sgi(phys_id, GIC_SGI_SIGNAL);
+        gic_send_sgi(phys_id, GIC_SGI_SIGNAL);
 }
 
 void
 gic_v3_irq_signal_stop(uint32_t phys_id)
 {
-	gic_send_sgi(phys_id, GIC_SGI_STOP);
+        gic_send_sgi(phys_id, GIC_SGI_STOP);
 }
 
 /* An SPI that a driver has attached: its handler called. false: nobody has it. */
 static bool
 gic_spi_handle(uint32_t intid)
 {
-	for (unsigned i = 0; i < GIC_SPI_MOST; i++) {
-		struct gic_spi *spi = &gic_spi[i];
+        for (unsigned i = 0; i < GIC_SPI_MOST; i++) {
+                struct gic_spi *spi = &gic_spi[i];
 
-		if (os_atomic_load(&spi->intid, acquire) == intid) {
-			os_atomic_inc(&spi->busy, acquire);
-			if (os_atomic_load(&spi->intid, relaxed) == intid) {
-				spi->count++;
-				spi->handler(spi->context, intid);
-			}
-			os_atomic_dec(&spi->busy, release);
-			return true;
-		}
-	}
-	return false;
+                if (os_atomic_load(&spi->intid, acquire) == intid) {
+                        os_atomic_inc(&spi->busy, acquire);
+                        if (os_atomic_load(&spi->intid, relaxed) == intid) {
+                                spi->count++;
+                                spi->handler(spi->context, intid);
+                        }
+                        os_atomic_dec(&spi->busy, release);
+                        return true;
+                }
+        }
+        return false;
 }
 
 static void
 gic_distributor_settle(void)
 {
-	while (gic_read32(gicd_base + GICD_CTLR) & GICD_CTLR_RWP) {
-		/* wait for the change to take effect */
-	}
+        while (gic_read32(gicd_base + GICD_CTLR) & GICD_CTLR_RWP) {
+                /* wait for the change to take effect */
+        }
 }
 
 void
 gic_v3_spi_mask(uint32_t intid)
 {
-	if (gicd_base != 0 && intid >= GIC_INTID_SPI_MIN && intid < GIC_INTID_SPURIOUS_MIN) {
-		gic_write32(gicd_base + GICD_ICENABLER(intid / 32), 1u << (intid % 32));
-		gic_distributor_settle();
-	}
+        if (gicd_base != 0 && intid >= GIC_INTID_SPI_MIN && intid < GIC_INTID_SPURIOUS_MIN) {
+                gic_write32(gicd_base + GICD_ICENABLER(intid / 32), 1u << (intid % 32));
+                gic_distributor_settle();
+        }
 }
 
 void
 gic_v3_spi_unmask(uint32_t intid)
 {
-	if (gicd_base != 0 && intid >= GIC_INTID_SPI_MIN && intid < GIC_INTID_SPURIOUS_MIN) {
-		gic_write32(gicd_base + GICD_ISENABLER(intid / 32), 1u << (intid % 32));
-	}
+        if (gicd_base != 0 && intid >= GIC_INTID_SPI_MIN && intid < GIC_INTID_SPURIOUS_MIN) {
+                gic_write32(gicd_base + GICD_ISENABLER(intid / 32), 1u << (intid % 32));
+        }
 }
 
 /*
@@ -224,114 +224,114 @@ gic_v3_spi_unmask(uint32_t intid)
 kern_return_t
 gic_v3_spi_attach(uint32_t intid, bool edge, void (*handler)(void *context, uint32_t intid), void *context)
 {
-	uint64_t mpidr = __builtin_arm_rsr64("MPIDR_EL1");
-	struct gic_spi *slot = NULL;
-	uint32_t config;
+        uint64_t mpidr = __builtin_arm_rsr64("MPIDR_EL1");
+        struct gic_spi *slot = NULL;
+        uint32_t config;
 
-	if (gicd_base == 0 || intid < GIC_INTID_SPI_MIN || intid >= GIC_INTID_SPURIOUS_MIN || handler == NULL) {
-		return KERN_INVALID_ARGUMENT;
-	}
-	simple_lock(&gic_spi_lock, LCK_GRP_NULL);
-	for (unsigned i = 0; i < GIC_SPI_MOST; i++) {
-		if (gic_spi[i].intid == intid) {
-			simple_unlock(&gic_spi_lock);
-			return KERN_NAME_EXISTS;
-		}
-		if (slot == NULL && gic_spi[i].intid == 0 && gic_spi[i].busy == 0) {
-			slot = &gic_spi[i];
-		}
-	}
-	if (slot == NULL) {
-		simple_unlock(&gic_spi_lock);
-		return KERN_RESOURCE_SHORTAGE;
-	}
-	slot->handler = handler;
-	slot->context = context;
-	slot->count = 0;
-	os_atomic_store(&slot->intid, intid, release);
-	simple_unlock(&gic_spi_lock);
+        if (gicd_base == 0 || intid < GIC_INTID_SPI_MIN || intid >= GIC_INTID_SPURIOUS_MIN || handler == NULL) {
+                return KERN_INVALID_ARGUMENT;
+        }
+        simple_lock(&gic_spi_lock, LCK_GRP_NULL);
+        for (unsigned i = 0; i < GIC_SPI_MOST; i++) {
+                if (gic_spi[i].intid == intid) {
+                        simple_unlock(&gic_spi_lock);
+                        return KERN_NAME_EXISTS;
+                }
+                if (slot == NULL && gic_spi[i].intid == 0 && gic_spi[i].busy == 0) {
+                        slot = &gic_spi[i];
+                }
+        }
+        if (slot == NULL) {
+                simple_unlock(&gic_spi_lock);
+                return KERN_RESOURCE_SHORTAGE;
+        }
+        slot->handler = handler;
+        slot->context = context;
+        slot->count = 0;
+        os_atomic_store(&slot->intid, intid, release);
+        simple_unlock(&gic_spi_lock);
 
-	gic_v3_spi_mask(intid);
-	gic_write32(gicd_base + GICD_ICPENDR(intid / 32), 1u << (intid % 32));
-	gic_write32(gicd_base + GICD_ICACTIVER(intid / 32), 1u << (intid % 32));
-	gic_write32(gicd_base + GICD_IGROUPR(intid / 32), gic_read32(gicd_base + GICD_IGROUPR(intid / 32)) | 1u << (intid % 32));
-	gic_write32(gicd_base + GICD_IGRPMODR(intid / 32), gic_read32(gicd_base + GICD_IGRPMODR(intid / 32)) & ~(1u << (intid % 32)));
-	*(volatile uint8_t *)(gicd_base + GICD_IPRIORITYR(intid)) = GIC_PRIORITY_DEFAULT;
-	config = gic_read32(gicd_base + GICD_ICFGR(intid / 16)) & ~(3u << (intid % 16 * 2));
-	gic_write32(gicd_base + GICD_ICFGR(intid / 16), config | (edge ? 2u : 0u) << (intid % 16 * 2));
-	/* GICD_IROUTER: Aff3 in [39:32], Aff2.Aff1.Aff0 in [23:0]; bit 31 (any processor) clear */
-	*(volatile uint64_t *)(gicd_base + GICD_IROUTER(intid)) = (mpidr & 0xff00000000ull) | (mpidr & 0xffffff);
-	gic_distributor_settle();
-	gic_v3_spi_unmask(intid);
-	return KERN_SUCCESS;
+        gic_v3_spi_mask(intid);
+        gic_write32(gicd_base + GICD_ICPENDR(intid / 32), 1u << (intid % 32));
+        gic_write32(gicd_base + GICD_ICACTIVER(intid / 32), 1u << (intid % 32));
+        gic_write32(gicd_base + GICD_IGROUPR(intid / 32), gic_read32(gicd_base + GICD_IGROUPR(intid / 32)) | 1u << (intid % 32));
+        gic_write32(gicd_base + GICD_IGRPMODR(intid / 32), gic_read32(gicd_base + GICD_IGRPMODR(intid / 32)) & ~(1u << (intid % 32)));
+        *(volatile uint8_t *)(gicd_base + GICD_IPRIORITYR(intid)) = GIC_PRIORITY_DEFAULT;
+        config = gic_read32(gicd_base + GICD_ICFGR(intid / 16)) & ~(3u << (intid % 16 * 2));
+        gic_write32(gicd_base + GICD_ICFGR(intid / 16), config | (edge ? 2u : 0u) << (intid % 16 * 2));
+        /* GICD_IROUTER: Aff3 in [39:32], Aff2.Aff1.Aff0 in [23:0]; bit 31 (any processor) clear */
+        *(volatile uint64_t *)(gicd_base + GICD_IROUTER(intid)) = (mpidr & 0xff00000000ull) | (mpidr & 0xffffff);
+        gic_distributor_settle();
+        gic_v3_spi_unmask(intid);
+        return KERN_SUCCESS;
 }
 
 /* ... and gives it back: disabled, nothing pending, and no handler of it running when this returns. */
 void
 gic_v3_spi_detach(uint32_t intid)
 {
-	gic_v3_spi_mask(intid);
-	if (gicd_base != 0 && intid >= GIC_INTID_SPI_MIN && intid < GIC_INTID_SPURIOUS_MIN) {
-		gic_write32(gicd_base + GICD_ICPENDR(intid / 32), 1u << (intid % 32));
-	}
-	for (unsigned i = 0; i < GIC_SPI_MOST; i++) {
-		if (gic_spi[i].intid == intid) {
-			os_atomic_store(&gic_spi[i].intid, 0, release);
-			while (os_atomic_load(&gic_spi[i].busy, acquire) != 0) {
-				/* a handler of it on another processor is finishing */
-			}
-		}
-	}
+        gic_v3_spi_mask(intid);
+        if (gicd_base != 0 && intid >= GIC_INTID_SPI_MIN && intid < GIC_INTID_SPURIOUS_MIN) {
+                gic_write32(gicd_base + GICD_ICPENDR(intid / 32), 1u << (intid % 32));
+        }
+        for (unsigned i = 0; i < GIC_SPI_MOST; i++) {
+                if (gic_spi[i].intid == intid) {
+                        os_atomic_store(&gic_spi[i].intid, 0, release);
+                        while (os_atomic_load(&gic_spi[i].busy, acquire) != 0) {
+                                /* a handler of it on another processor is finishing */
+                        }
+                }
+        }
 }
 
 /* How many have arrived since it was attached. */
 uint64_t
 gic_v3_spi_count(uint32_t intid)
 {
-	for (unsigned i = 0; i < GIC_SPI_MOST; i++) {
-		if (gic_spi[i].intid == intid) {
-			return gic_spi[i].count;
-		}
-	}
-	return 0;
+        for (unsigned i = 0; i < GIC_SPI_MOST; i++) {
+                if (gic_spi[i].intid == intid) {
+                        return gic_spi[i].count;
+                }
+        }
+        return 0;
 }
 
 static void
 gic_irq_handler(__unused void *target, __unused void *refCon, __unused void *nub, __unused int source)
 {
-	int cpu = cpu_number();
+        int cpu = cpu_number();
 
-	for (;;) {
-		uint64_t iar = __builtin_arm_rsr64("ICC_IAR1_EL1");
-		uint32_t intid = (uint32_t)(iar & 0xffffff);
+        for (;;) {
+                uint64_t iar = __builtin_arm_rsr64("ICC_IAR1_EL1");
+                uint32_t intid = (uint32_t)(iar & 0xffffff);
 
-		if (intid >= GIC_INTID_SPURIOUS_MIN) {
-			break;
-		}
-		gic_active_iar[cpu] = iar | GIC_IAR_TAKEN;
+                if (intid >= GIC_INTID_SPURIOUS_MIN) {
+                        break;
+                }
+                gic_active_iar[cpu] = iar | GIC_IAR_TAKEN;
 
-		if (intid == GIC_INTID_VTIMER) {
-			/* same sequence as the FIQ path in sleh_fiq() */
-			getCpuDatap()->cpu_decrementer = -1; /* Large */
-			rtclock_intr(TRUE);
-		} else if (intid == GIC_SGI_SIGNAL) {
-			cpu_signal_handler();
-		} else if (intid == GIC_SGI_STOP) {
-			/* comes back only if nobody has in fact asked for that */
-			psci_smp_stop_here();
-		} else if (intid >= GIC_INTID_SPI_MIN && gic_spi_handle(intid)) {
-			/* a driver's */
-		} else {
-			/* nobody owns this interrupt yet: keep it from storming */
-			gic_mask(intid);
-			gic_unhandled_count++;
-			gic_last_unhandled = intid;
-		}
+                if (intid == GIC_INTID_VTIMER) {
+                        /* same sequence as the FIQ path in sleh_fiq() */
+                        getCpuDatap()->cpu_decrementer = -1; /* Large */
+                        rtclock_intr(TRUE);
+                } else if (intid == GIC_SGI_SIGNAL) {
+                        cpu_signal_handler();
+                } else if (intid == GIC_SGI_STOP) {
+                        /* comes back only if nobody has in fact asked for that */
+                        psci_smp_stop_here();
+                } else if (intid >= GIC_INTID_SPI_MIN && gic_spi_handle(intid)) {
+                        /* a driver's */
+                } else {
+                        /* nobody owns this interrupt yet: keep it from storming */
+                        gic_mask(intid);
+                        gic_unhandled_count++;
+                        gic_last_unhandled = intid;
+                }
 
-		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
-		__builtin_arm_isb(ISB_SY);
-		gic_active_iar[cpu] = 0;
-	}
+                __builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
+                __builtin_arm_isb(ISB_SY);
+                gic_active_iar[cpu] = 0;
+        }
 }
 
 /*
@@ -343,25 +343,25 @@ gic_irq_handler(__unused void *target, __unused void *refCon, __unused void *nub
 void
 gic_v3_irq_quiesce(void)
 {
-	int cpu;
+        int cpu;
 
-	if (gicd_base == 0) {
-		return;         /* as early as this there is no interrupt, nor a cpu number to ask for */
-	}
-	cpu = cpu_number();
-	/* (what drivers had of the shared interrupts goes with this kernel: none of them may fire under the loader) */
-	for (unsigned i = 0; i < GIC_SPI_MOST; i++) {
-		uint32_t intid = gic_spi[i].intid;
+        if (gicd_base == 0) {
+                return;         /* as early as this there is no interrupt, nor a cpu number to ask for */
+        }
+        cpu = cpu_number();
+        /* (what drivers had of the shared interrupts goes with this kernel: none of them may fire under the loader) */
+        for (unsigned i = 0; i < GIC_SPI_MOST; i++) {
+                uint32_t intid = gic_spi[i].intid;
 
-		if (intid != 0) {
-			gic_write32(gicd_base + GICD_ICENABLER(intid / 32), 1u << (intid % 32));
-		}
-	}
-	if (gic_active_iar[cpu] != 0) {
-		__builtin_arm_wsr64("ICC_EOIR1_EL1", gic_active_iar[cpu] & ~GIC_IAR_TAKEN);
-		__builtin_arm_isb(ISB_SY);
-		gic_active_iar[cpu] = 0;
-	}
+                if (intid != 0) {
+                        gic_write32(gicd_base + GICD_ICENABLER(intid / 32), 1u << (intid % 32));
+                }
+        }
+        if (gic_active_iar[cpu] != 0) {
+                __builtin_arm_wsr64("ICC_EOIR1_EL1", gic_active_iar[cpu] & ~GIC_IAR_TAKEN);
+                __builtin_arm_isb(ISB_SY);
+                gic_active_iar[cpu] = 0;
+        }
 }
 
 /*
@@ -376,133 +376,133 @@ gic_v3_irq_quiesce(void)
 void
 gic_v3_irq_cpu_shutdown(void)
 {
-	vm_offset_t gicr;
+        vm_offset_t gicr;
 
-	if (gicd_base == 0) {
-		return;
-	}
-	gic_v3_irq_quiesce();
-	gicr = gicr_cpu_base[cpu_number()];
-	if (gicr != 0) {
-		gic_write32(gicr + GICR_ICENABLER0, 0xffffffffu);
-		gic_write32(gicr + GICR_ICPENDR0, 0xffffffffu);
-		gic_write32(gicr + GICR_ICACTIVER0, 0xffffffffu);
-	}
-	__builtin_arm_wsr64("ICC_IGRPEN1_EL1", 0);
-	__builtin_arm_isb(ISB_SY);
+        if (gicd_base == 0) {
+                return;
+        }
+        gic_v3_irq_quiesce();
+        gicr = gicr_cpu_base[cpu_number()];
+        if (gicr != 0) {
+                gic_write32(gicr + GICR_ICENABLER0, 0xffffffffu);
+                gic_write32(gicr + GICR_ICPENDR0, 0xffffffffu);
+                gic_write32(gicr + GICR_ICACTIVER0, 0xffffffffu);
+        }
+        __builtin_arm_wsr64("ICC_IGRPEN1_EL1", 0);
+        __builtin_arm_isb(ISB_SY);
 }
 
 static vm_offset_t
 gic_find_redistributor(void)
 {
-	uint64_t mpidr = __builtin_arm_rsr64("MPIDR_EL1");
-	/* GICR_TYPER[63:32] packs Aff3.Aff2.Aff1.Aff0 */
-	uint32_t affinity = (uint32_t)(((mpidr >> 32) & 0xff) << 24 | (mpidr & 0xffffff));
+        uint64_t mpidr = __builtin_arm_rsr64("MPIDR_EL1");
+        /* GICR_TYPER[63:32] packs Aff3.Aff2.Aff1.Aff0 */
+        uint32_t affinity = (uint32_t)(((mpidr >> 32) & 0xff) << 24 | (mpidr & 0xffffff));
 
-	for (vm_offset_t frame = gicr_base; frame + GICR_FRAME_SIZE <= gicr_base + gicr_size; frame += GICR_FRAME_SIZE) {
-		uint64_t typer = *(volatile uint64_t *)(frame + GICR_TYPER);
+        for (vm_offset_t frame = gicr_base; frame + GICR_FRAME_SIZE <= gicr_base + gicr_size; frame += GICR_FRAME_SIZE) {
+                uint64_t typer = *(volatile uint64_t *)(frame + GICR_TYPER);
 
-		if ((uint32_t)(typer >> 32) == affinity) {
-			return frame;
-		}
-		if (typer & GICR_TYPER_LAST) {
-			break;
-		}
-	}
-	panic("gic: no redistributor for MPIDR 0x%llx", mpidr);
+                if ((uint32_t)(typer >> 32) == affinity) {
+                        return frame;
+                }
+                if (typer & GICR_TYPER_LAST) {
+                        break;
+                }
+        }
+        panic("gic: no redistributor for MPIDR 0x%llx", mpidr);
 }
 
 /* Per-CPU bring-up: every processor calls this for itself, the boot processor first. */
 void
 gic_v3_irq_cpu_init(void)
 {
-	int cpu = cpu_number();
-	vm_offset_t gicr;
-	uint32_t mine = 1u << GIC_INTID_VTIMER;
+        int cpu = cpu_number();
+        vm_offset_t gicr;
+        uint32_t mine = 1u << GIC_INTID_VTIMER;
 
-	if (gicd_base == 0) {
-		DTEntry entry;
-		void const *prop;
-		unsigned int prop_size;
+        if (gicd_base == 0) {
+                DTEntry entry;
+                void const *prop;
+                unsigned int prop_size;
 
-		if (SecureDTLookupEntry(NULL, "/arm-io/gic", &entry) != kSuccess ||
-		    SecureDTGetProperty(entry, "reg", &prop, &prop_size) != kSuccess ||
-		    prop_size < 4 * sizeof(uint64_t)) {
-			panic("gic: no usable /arm-io/gic node in the device tree");
-		}
-		uint64_t const *reg = prop;
-		vm_offset_t soc_base = pe_arm_get_soc_base_phys();
+                if (SecureDTLookupEntry(NULL, "/arm-io/gic", &entry) != kSuccess ||
+                    SecureDTGetProperty(entry, "reg", &prop, &prop_size) != kSuccess ||
+                    prop_size < 4 * sizeof(uint64_t)) {
+                        panic("gic: no usable /arm-io/gic node in the device tree");
+                }
+                uint64_t const *reg = prop;
+                vm_offset_t soc_base = pe_arm_get_soc_base_phys();
 
-		simple_lock_init(&gic_spi_lock, 0);
-		gicd_base = ml_io_map(soc_base + reg[0], reg[1]);
-		gicr_base = ml_io_map(soc_base + reg[2], reg[3]);
-		gicr_size = reg[3];
-		if (gicd_base == 0 || gicr_base == 0) {
-			panic("gic: cannot map the distributor/redistributor");
-		}
-	} else if (gicr_cpu_base[cpu] != 0) {
-		return;
-	}
+                simple_lock_init(&gic_spi_lock, 0);
+                gicd_base = ml_io_map(soc_base + reg[0], reg[1]);
+                gicr_base = ml_io_map(soc_base + reg[2], reg[3]);
+                gicr_size = reg[3];
+                if (gicd_base == 0 || gicr_base == 0) {
+                        panic("gic: cannot map the distributor/redistributor");
+                }
+        } else if (gicr_cpu_base[cpu] != 0) {
+                return;
+        }
 
-	/* System-register CPU interface */
-	__builtin_arm_wsr64("ICC_SRE_EL1", __builtin_arm_rsr64("ICC_SRE_EL1") | 1);
-	__builtin_arm_isb(ISB_SY);
+        /* System-register CPU interface */
+        __builtin_arm_wsr64("ICC_SRE_EL1", __builtin_arm_rsr64("ICC_SRE_EL1") | 1);
+        __builtin_arm_isb(ISB_SY);
 
-	gicr = gicr_cpu_base[cpu] = gic_find_redistributor();
+        gicr = gicr_cpu_base[cpu] = gic_find_redistributor();
 
-	uint32_t waker = gic_read32(gicr + GICR_WAKER);
-	if (waker & (GICR_WAKER_PROCSLEEP | GICR_WAKER_CHILDASLEEP)) {
-		gic_write32(gicr + GICR_WAKER, waker & ~GICR_WAKER_PROCSLEEP);
-		while (gic_read32(gicr + GICR_WAKER) & GICR_WAKER_CHILDASLEEP) {
-			/* spin until the redistributor is awake */
-		}
-	}
+        uint32_t waker = gic_read32(gicr + GICR_WAKER);
+        if (waker & (GICR_WAKER_PROCSLEEP | GICR_WAKER_CHILDASLEEP)) {
+                gic_write32(gicr + GICR_WAKER, waker & ~GICR_WAKER_PROCSLEEP);
+                while (gic_read32(gicr + GICR_WAKER) & GICR_WAKER_CHILDASLEEP) {
+                        /* spin until the redistributor is awake */
+                }
+        }
 
-	/*
-	 * The interrupts between processors, where there is more than one. A core that an earlier
-	 * kernel switched off in the middle of one (a return to the boot loader, started again
-	 * since) may still have it marked active, and would then never see another.
-	 */
-	if (ml_get_cpu_count() > 1) {
-		uint32_t sgis = (1u << GIC_SGI_SIGNAL) | (1u << GIC_SGI_STOP);
+        /*
+         * The interrupts between processors, where there is more than one. A core that an earlier
+         * kernel switched off in the middle of one (a return to the boot loader, started again
+         * since) may still have it marked active, and would then never see another.
+         */
+        if (ml_get_cpu_count() > 1) {
+                uint32_t sgis = (1u << GIC_SGI_SIGNAL) | (1u << GIC_SGI_STOP);
 
-		gic_write32(gicr + GICR_ICACTIVER0, sgis);
-		gic_write32(gicr + GICR_ICPENDR0, sgis);        /* ... or one that it never took */
-		*(volatile uint8_t *)(gicr + GICR_IPRIORITYR(GIC_SGI_SIGNAL)) = GIC_PRIORITY_DEFAULT;
-		*(volatile uint8_t *)(gicr + GICR_IPRIORITYR(GIC_SGI_STOP)) = GIC_PRIORITY_DEFAULT;
-		mine |= sgis;
-	}
+                gic_write32(gicr + GICR_ICACTIVER0, sgis);
+                gic_write32(gicr + GICR_ICPENDR0, sgis);        /* ... or one that it never took */
+                *(volatile uint8_t *)(gicr + GICR_IPRIORITYR(GIC_SGI_SIGNAL)) = GIC_PRIORITY_DEFAULT;
+                *(volatile uint8_t *)(gicr + GICR_IPRIORITYR(GIC_SGI_STOP)) = GIC_PRIORITY_DEFAULT;
+                mine |= sgis;
+        }
 
-	/* Virtual timer PPI (and those): Group 1 (IRQ), default priority, enabled */
-	gic_write32(gicr + GICR_IGROUPR0, gic_read32(gicr + GICR_IGROUPR0) | mine);
-	gic_write32(gicr + GICR_IGRPMODR0, gic_read32(gicr + GICR_IGRPMODR0) & ~mine);
-	*(volatile uint8_t *)(gicr + GICR_IPRIORITYR(GIC_INTID_VTIMER)) = GIC_PRIORITY_DEFAULT;
-	gic_write32(gicr + GICR_ISENABLER0, mine);
+        /* Virtual timer PPI (and those): Group 1 (IRQ), default priority, enabled */
+        gic_write32(gicr + GICR_IGROUPR0, gic_read32(gicr + GICR_IGROUPR0) | mine);
+        gic_write32(gicr + GICR_IGRPMODR0, gic_read32(gicr + GICR_IGRPMODR0) & ~mine);
+        *(volatile uint8_t *)(gicr + GICR_IPRIORITYR(GIC_INTID_VTIMER)) = GIC_PRIORITY_DEFAULT;
+        gic_write32(gicr + GICR_ISENABLER0, mine);
 
-	/* Distributor: affinity routing, Group 1 enabled (normally already so) */
-	uint32_t ctlr = gic_read32(gicd_base + GICD_CTLR);
-	if ((ctlr & (GICD_CTLR_ENABLE_G1NS | GICD_CTLR_ARE_NS)) != (GICD_CTLR_ENABLE_G1NS | GICD_CTLR_ARE_NS)) {
-		gic_write32(gicd_base + GICD_CTLR, ctlr | GICD_CTLR_ENABLE_G1NS | GICD_CTLR_ARE_NS);
-		while (gic_read32(gicd_base + GICD_CTLR) & GICD_CTLR_RWP) {
-			/* wait for the write to take effect */
-		}
-	}
+        /* Distributor: affinity routing, Group 1 enabled (normally already so) */
+        uint32_t ctlr = gic_read32(gicd_base + GICD_CTLR);
+        if ((ctlr & (GICD_CTLR_ENABLE_G1NS | GICD_CTLR_ARE_NS)) != (GICD_CTLR_ENABLE_G1NS | GICD_CTLR_ARE_NS)) {
+                gic_write32(gicd_base + GICD_CTLR, ctlr | GICD_CTLR_ENABLE_G1NS | GICD_CTLR_ARE_NS);
+                while (gic_read32(gicd_base + GICD_CTLR) & GICD_CTLR_RWP) {
+                        /* wait for the write to take effect */
+                }
+        }
 
-	/*
-	 * CPU interface: accept all priorities, no preemption grouping, Group 1 on. And no priority
-	 * active: a core that the firmware switches off and on again need not lose that, and a
-	 * kernel that left in the middle of an interrupt without ending it would leave this one
-	 * waiting for an end that never comes.
-	 */
-	__builtin_arm_wsr64("ICC_AP1R0_EL1", 0);
-	__builtin_arm_wsr64("ICC_PMR_EL1", 0xff);
-	__builtin_arm_wsr64("ICC_BPR1_EL1", 0);
-	__builtin_arm_wsr64("ICC_IGRPEN1_EL1", 1);
-	__builtin_arm_isb(ISB_SY);
+        /*
+         * CPU interface: accept all priorities, no preemption grouping, Group 1 on. And no priority
+         * active: a core that the firmware switches off and on again need not lose that, and a
+         * kernel that left in the middle of an interrupt without ending it would leave this one
+         * waiting for an end that never comes.
+         */
+        __builtin_arm_wsr64("ICC_AP1R0_EL1", 0);
+        __builtin_arm_wsr64("ICC_PMR_EL1", 0xff);
+        __builtin_arm_wsr64("ICC_BPR1_EL1", 0);
+        __builtin_arm_wsr64("ICC_IGRPEN1_EL1", 1);
+        __builtin_arm_isb(ISB_SY);
 
-	ml_install_interrupt_handler(NULL, 0, NULL, gic_irq_handler, NULL);
-	kprintf("gic: v3, distributor %p, cpu %d's redistributor %p, virtual timer on PPI %d\n",
-	    (void *)gicd_base, cpu, (void *)gicr, GIC_INTID_VTIMER);
+        ml_install_interrupt_handler(NULL, 0, NULL, gic_irq_handler, NULL);
+        kprintf("gic: v3, distributor %p, cpu %d's redistributor %p, virtual timer on PPI %d\n",
+            (void *)gicd_base, cpu, (void *)gicr, GIC_INTID_VTIMER);
 }
 
 #endif /* GENERIC_GIC_V3_IRQ */

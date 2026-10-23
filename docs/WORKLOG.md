@@ -262,3 +262,73 @@ R10 发布记录 (Task 28 补):
 - 待办: 用户按 docs/FLASH-R10.md 实测——期望"黑屏 20-60s → 干净桌面 →
   fastboot 卡死（成功签名）"；回传观察清单 C1-C5（亮度/动画/色彩/触摸现状/
   桌面时钟走不走）→ 定 R11（触摸重编内核轮：GENI I2C goodix 移植）
+
+---
+Task ID: R11
+Agent: Z.ai (main)
+Task: R10 大捷（干净桌面确认）→ 用户指令：R11 驱动批量适配（触摸绝对优先/按键急需/GPU freedreno/背光），USB 暂缓，直接开干——内核首次源码构建
+
+Work Log:
+- R10 实测归档：干净 iOS 桌面 + fastboot 随 USB 被接管而哑火 = 完全启动签名
+- 侦察三源：①上游 hackios 内核 overlay（redwood_* 驱动族 + redwood.patch 构建
+  钩子 + xnu/apply.sh+xnu-build.sh 源码构建链，theos/L1ghtmann 工具链）；
+  ②ios-raphael 旧项目基线树（work/xnu：sweet_touch.c 的 RAPHAEL 路径——
+  GT9886@0x5d on GENI SE19@c88000、TLMM 98/100 供轨/54 复位/122 IRQ、784B
+  gt9886_cfg.h、t13 同机真机验证；sweet_spmi.c 的 sm8150 SPMI 仲裁器=与
+  redwood 同址）③上游主线权威（sm8150.dtsi/gpucc-sm8150.c/a6xx_catalog.c/
+  a6xx_gmu.c/mdt_loader.c/a6xx.xml + LKML raphael DTS 全文 + pm8941-pwrkey.c）
+- 门铃进源码：GIC_INTID_VTIMER 27→19（gic_v3_irq.c 单宏驱动 R9 四处二进制
+  站点：分发比较/使能位/优先级/组掩码全跟随）
+- raphael_touch.c（新，~900 行）：sweet_touch RAPHAEL 路径完整移植 →
+  redwood_touch_post（0..65535 归一化，sensor 翻转按 DT + touchflip=1），
+  touchscreen=1 门控，touchdelay= 默认 5s（真睡眠——cpus=1 下忙转会饿死
+  launchd），say()→redwood_tl 实时日志钩子（每步上电行进 loader 日志环）
+- raphael_buttons.c（新，~600 行）：redwood_buttons 架构 + raphael 外设：
+  PON（PM8150 sid0 periph 0x008，KPDPWR/RESIN 位按 subtype 自适应
+  classic=bit0/1 gen3=bit7/6，step3/4 打印裁决）+ 音量上（pm8150_gpios 6
+  = periph 0xC5，主线 DTS 实锤）；只读 + 未见过释放不信任 + 60Hz 轮询；
+  导出同名 redwood_spmi_lock/unlock（redwood_torch 链接保持）
+- raphael_adreno.c（新，redwood_adreno.c 4125 行移植，scripts
+  r11_port_adreno.py + r11_gpu_a640_fix.py 两段变换，每处改动注明出处）：
+  地址表 sm8150 化（gpu 0x2c00000/gmu 0x2c6a000/gpucc 0x2c90000/smmu
+  0x2ca0000/cmd-db 0x85f20000/pdc 0xb290000+新 pdc_seq 0xb490000）；
+  a630 家族流程（DTCM 0x40000、RSC=GMU+0x23000、FAL10 不写、RSC ucode
+  a630 字组）；PDC 完整加载（sm8150 无人代劳：SEQ uCode + TCS1/TCS3
+  三命令组 + sync 0x30090，a6xx_gmu.c 逐行对照）；GEN2 池（a640_gmu.bin
+  无 NEEDS 块——解码实证 ITCM 0x0/0x200/0x400/0x4000、DTCM 0x40000/0x43fe0、
+  dcache 数据 0x57000——驱动按 Linux icache/dcache 0x4000/0x44000 各
+  0x3f000 建池）；zap 单文件 .mbn 适配（qcom_mdt_read_metadata 语义：
+  ELF头+hash 段拼 blob 给 TZ；PT_LOAD 段从 .mbn 内 p_offset 取）；频率表
+  345/427/585@64/80/128（sm8150 gpu_opp_table）；chipid 0x06040001
+- 固件源裁决链：a6xx_catalog.c 实锤 a640 的 GMU 固件是 a640_gmu.bin（非
+  a630_gmu.bin——后者是 a630 legacy 裸镜像，块表解析必失败）；kernel.org
+  对本沙箱 403 → Debian firmware-qcom-soc 20260916-1 拆分包（28MB）验明
+  qcom/a640_gmu.bin（块表✓解码）+ qcom/a630_sqe.fw + qcom/sm8150/
+  a640_zap.mbn（ELF32 Hexagon、3 phdr、hash 段@0x1000、PT_LOAD@0x3000
+  RELOCATABLE）三件俱全；入库 fw-gpu-raphael/（86KB，sha256 在 README）
+- MiniIOMobileFramebuffer：fbdim 软件调光（drawRows 三条写路径乘系数，
+  unscaled memcpy 路径分支）+ redwood_fb_set_dim（type-6 记录，x=百分比，
+  redwood_input.c 写路径挂钩）；DCS 硬背光 R12+
+- 集成：redwood_input.c 换调 raphael_touch_init/raphael_buttons_init +
+  redwood_input.h 声明；redwood.patch conf/files 三行换注册（goodix/
+  buttons/adreno → raphael_*，原文件留树不编译）
+- tools/r11-flash-build.sh：内核改为源码构建产物（缺失即 fail，不用
+  r9-kernel-patch.py）+ 双镜像（主 touchscreen=1 buttons=1 / GPU 实验
+  +gpu=1）+ 六重门禁升级（门铃字节在源码内核中验证 + R11 标记串
+  RAPHAEL TOUCH/buttons: step 1/a640_gmu.bin/a640_zap.mbn/panel dimmed +
+  cmdline touchscreen/buttons/-v 缺席断言）
+- .github/workflows/r11-springboard.yml：九步流水线，内核源码构建前置
+  （②c：theos+L1ghtmann iOSToolchain+apply.sh+deps+make -j4 -k，编译错误
+  在 7.4GB 下载前暴露；内核产物标记串六重验证）；⑤ 步 fw-gpu-raphael →
+  fw-gpu 填充 + 7z 抽验 fw/a640_gmu.bin 在小镜像；⑥ 双镜像 + iOS 卷分片
+  与 R5-R10 同字节（免重刷）
+
+Stage Summary:
+- R11 = 驱动轮：源码构建内核（门铃进源码）+ 触摸（t13 验证时序移植）+ 按键
+  （只读防呆）+ GPU（a640 全量移植，实验镜像隔离风险）+ 软件调光
+- 双镜像发布：主镜像赢交互（滑动+按键），GPU 镜像独立实验（22 步梯子每步
+  带判词，卡哪步回传哪步）；R10 镜像 = 行为基线回退
+- 预期风险点已全部在 FLASH-R11.md 判读树标出：触摸（ABL 的 GENI 固件/
+  总线 idle 裁决）、按键（PON 位 subtype 裁决）、GPU（zap 通用签名 TZ
+  拒收/GMU 固件块表/PDC 完整加载）、源码构建本身（prebuilt→新工具链变量，
+  R10 可一刷即回）

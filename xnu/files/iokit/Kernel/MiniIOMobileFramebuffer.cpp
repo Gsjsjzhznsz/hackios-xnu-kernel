@@ -116,6 +116,41 @@ static TUNABLE(uint32_t, gFBHeight, "fbheight", kFBDefaultHeight);
 static TUNABLE(uint32_t, gFBScale, "fbscale", 0);
 /* Boot-arg fbtrace=N: log the first N calls of every selector (default 3). */
 static TUNABLE(uint32_t, gFBTrace, "fbtrace", 3);
+/*
+ * R11 (raphael): software dimming, boot-arg fbdim=P (a percent of full brightness, 10 to
+ * 100; the default 100 leaves every pixel as it is). The panel's own backlight is the
+ * AMOLED's, set over the display bus (DCS 0x51), which this kernel does not drive yet;
+ * scaling the colours on their way to the panel is what is possible now, and on an AMOLED
+ * less light is real power too. redwood_fb_set_dim() -- a record of type 6 written to
+ * /dev/redwood-touch, x the percent -- changes it while the system runs.
+ */
+static TUNABLE(uint32_t, gFBDimPercent, "fbdim", 100);
+static uint32_t gFBDim256;            /* 0 = not worked out yet; else 0..256 */
+static inline uint32_t
+fbDim(uint32_t c)
+{
+	uint32_t br = gFBDim256, r, g, b;
+
+	if (br >= 256 || br == 0) {
+		return c;
+	}
+	r = (((c >> 16) & 0xff) * br) >> 8;
+	g = (((c >> 8) & 0xff) * br) >> 8;
+	b = ((c & 0xff) * br) >> 8;
+	return (c & 0xff000000u) | r << 16 | g << 8 | b;
+}
+void
+redwood_fb_set_dim(uint32_t percent)
+{
+	if (percent < 10) {
+		percent = 10;
+	}
+	if (percent > 100) {
+		percent = 100;
+	}
+	gFBDim256 = percent * 256 / 100;
+	IOLog("MiniIOMobileFramebuffer: the panel dimmed to %u%%\n", (uint32_t)percent);
+}
 
 /*
  * A recording of the screen, for a machine one cannot look at while it runs (the phone is
@@ -618,7 +653,14 @@ IOMobileFramebuffer::drawRows(const RowJob * job, int32_t y0, int32_t y1, uint32
 		to = (uint32_t *) (fBase + (size_t) y * fRowBytes);
 		if (job->unscaled) {
 			/* not scaled at all */
-			memcpy(to + px0, pixels + (size_t) (sy + y - py0) * stride + (size_t) sx * 4, (size_t) sw * 4);
+			if (gFBDim256 >= 256) {
+				memcpy(to + px0, pixels + (size_t) (sy + y - py0) * stride + (size_t) sx * 4, (size_t) sw * 4);
+			} else {
+				const uint32_t *src = (const uint32_t *) (pixels + (size_t) (sy + y - py0) * stride + (size_t) sx * 4);
+				for (int32_t x = 0; x < sw; x++) {
+					to[px0 + x] = fbDim(src[x]);
+				}
+			}
 			continue;
 		}
 		if (filter) {
@@ -666,11 +708,11 @@ IOMobileFramebuffer::drawRows(const RowJob * job, int32_t y0, int32_t y1, uint32
 			for (uint32_t i = 0, n = (uint32_t) (cx1 - cx0); i < n; i++) {
 				uint32_t c = column[i], w = weights[i], a = from[c];
 
-				out[i] = w == 0 || a == from[c + 1] ? a : blend(a, from[c + 1], w);
+				out[i] = fbDim(w == 0 || a == from[c + 1] ? a : blend(a, from[c + 1], w));
 			}
 		} else {
 			for (int32_t x = cx0; x < cx1; x++) {
-				to[x] = from[fColumn[x]];
+				to[x] = fbDim(from[fColumn[x]]);
 			}
 		}
 	}
@@ -727,6 +769,10 @@ IOMobileFramebuffer::drawLayer(MiniIOSurface * s, const int32_t * src, const int
 	int32_t px0, py0, px1, py1, cx0, cx1;
 	bool filter = gFilter != 0;
 	RowJob job;
+
+	if (gFBDim256 == 0) {
+		gFBDim256 = gFBDimPercent > 100 ? 256 : gFBDimPercent * 256 / 100;
+	}
 
 	if (sw <= 0 || sh <= 0) {
 		sx = sy = 0;
