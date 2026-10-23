@@ -556,7 +556,6 @@ out:
         if (steps < 5) {
                 printf("buttons: stopping here (buttons_steps=%u)\n", steps);
         }
-        (void)problem;
         thread_terminate(current_thread());
 }
 
