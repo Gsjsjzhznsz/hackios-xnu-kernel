@@ -172,3 +172,21 @@ Stage Summary:
 - 方法论：dump 的"回读验证"只在读不盲时有效——R8 的教训是拿盲仪器下了
   "写被丢"的结论；R9 用 Linux 主线同款写法 + 活体应答（ICC_IAR1 实测）
   取代回读判读
+
+R9 发布记录 (Task 27 补):
+- dispatch #1 run 39935808450 (babbcf6): ②b 编译门禁过（R9 loader 76,288 B，
+  15 特征串全在），⑥ 失败——镜像内补丁字节验证窗口 k[:0x200000] 太小（补丁
+  站点在文件偏移 ~0x470xxx），补丁工具本身全绿（sha256 与本地一致 b9fe82ca…）
+- 修复 a3aed36（全文件搜索 + 只做存在性检查——原字节在别处自然出现，缺席
+  检查会误报）；dispatch #2 run 39937219342 全绿（10:20:13Z completed
+  success），release 421703283 @ 10:20:10Z，11 资产
+- 资产: iOS 卷 5 分片（与 R5-R8 字节相同）+ raphael-xnu-r9-flash.img
+  (8,212,591 B, sha256 e6537a55…) + raphael-r9-flashboot.apfs (4,194,304 B,
+  14485e7c… 与 R8 同字节) + r9-boot-volume-root.apfs (4,194,304 B) + rejoin +
+  README + SHA256SUMS
+- 公网回读校验（Task 20 纪律）: flash/flashboot/boot-volume 三资产 sha256 全等
+  PASS，存档 work/r9-out/；交付件刷新 download/r9/（四小件 + FLASH-R9.md +
+  README + SHA256SUMS）
+- 现存 releases: r5/r6/r7/r8/r9 并存（iOS 卷跨轮同字节留旧省 5.6GB 重下）
+- 待办: 用户按 docs/FLASH-R9.md 实测——oem irqtest 判词 + oem run 后
+  heartbeat 是否 1→2→3；回传 r9-klog.txt → 按 R10 分支表定下一轮
