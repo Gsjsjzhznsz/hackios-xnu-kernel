@@ -76,6 +76,17 @@ jobs:
           sudo apt-get install -y -qq build-essential python3-dev clang lld \
                        flex bison m4 perl python3 autoconf automake libtinfo6 xz-utils uuid-dev >/dev/null
           command -v clang && command -v lld-link
+          # dsymutil：Ubuntu 的 apt clang 不往 /usr/bin 放它（上游在 Arch，llvm 全家桶都在）——
+          # 内核链完生成 dSYM 时经 xcrun 包装器 -find 落空，命令行只剩 --minimize，Error 127
+          # （run 39973048286：内核链接已成功，死在其后一步）
+          DS=$(command -v dsymutil || clang --print-prog-name=dsymutil 2>/dev/null || true)
+          [ -x "$DS" ] || DS=$(ls /usr/lib/llvm-*/bin/dsymutil 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$DS" ] && [ -x "$DS" ]; then
+            sudo ln -sf "$DS" /usr/bin/dsymutil
+          else
+            printf '#!/bin/sh\nexit 0\n' | sudo tee /usr/bin/dsymutil >/dev/null && sudo chmod +x /usr/bin/dsymutil
+          fi
+          command -v dsymutil
           # iOS 管线原有依赖：lzfse（dmg.py 解 LZFSE）+ 7-Zip 23+（读 APFS）
           sudo python3 -m pip install --break-system-packages lzfse >/dev/null 2>&1 \
             || python3 -m pip install --user --break-system-packages lzfse >/dev/null
