@@ -62,7 +62,7 @@ jobs:
     timeout-minutes: 240
     env:
       REL: ${{ github.workspace }}/release
-      THEOS: $HOME/theos
+      THEOS: /home/runner/theos     # (literal: GitHub Actions' env: block expands nothing)
     steps:
       # ---------------------------------------------------------------
       - name: "①/⑨ 磁盘准备与依赖（内核构建工具链 + iOS 管线）"
