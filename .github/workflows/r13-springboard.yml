@@ -217,10 +217,15 @@ jobs:
           df -h /
 
       # ---------------------------------------------------------------
+      # continue-on-error：本步任何失败（下载残卷 / 校验不过）都不判死刑——
+      # 早立的 VOLS_OK=0 让 ④b/c/d 完整 iOS 回退接管，只有回退也失败才算失败。
+      # （heredoc 一律顶层顶格：bash 的 << 终止符不许缩进，首跑的教训。）
       - name: "④/⑦ 小卷就位（缓存 → R12 release 直取 → 完整 iOS 回退，三级）"
+        continue-on-error: true
         run: |
           set -eu
           cd hackios
+          echo "VOLS_OK=0" >> "$GITHUB_ENV"     # 先立旗：中途死掉也轮到回退接管
           mkdir -p userland
           VOLS_OK=0
           # 第一级：actions/cache 命中（VOLKEY 对得上）
@@ -243,24 +248,41 @@ jobs:
               rm -f userland/flashboot.apfs userland/root.apfs
             fi
           fi
-          if [ "$VOLS_OK" != 0 ]; then
-            # 无论哪一级来的，同一套内容校验（与 R12 的 ⑤ 相同的判据）
-            python3 - <<'PY'
-            for f, what in (('userland/root.apfs','小镜像 = md1 /redwood'), ('userland/flashboot.apfs','启动卷 = md0 根')):
-                d = open(f,'rb').read(36)
-                assert d[32:36]==b'NXSB', f'{f} 不是 APFS 容器（@+32 读到 {d[32:36]!r}）'
-                print(f'✓ {f} 是 APFS 容器 = {what}')
-            PY
-            7z l userland/flashboot.apfs 2>/dev/null | grep -m1 'launchd' \
-              || { echo "::error::flashboot.apfs 里没有 sbin/launchd（stage0）"; exit 1; }
-            7z l userland/root.apfs 2>/dev/null | grep -m1 'fw/a640_gmu.bin' \
-              || { echo "::error::root.apfs 里没有 fw/a640_gmu.bin（fw-gpu 没进小镜像）"; exit 1; }
-            echo "✓ 两个小卷内容校验通过（launchd + GPU 固件都在）"
-            # 入缓存目录，本 job 成功后由 actions/cache 存档
-            mkdir -p userland/.volumes
-            cp userland/root.apfs userland/flashboot.apfs userland/.volumes/
+          # 校验与入缓存（顶层 heredoc；python 自己判断有没有东西可验）
+          python3 - <<'PY'
+          import os, subprocess, sys, hashlib
+          root, flash = 'userland/root.apfs', 'userland/flashboot.apfs'
+          if not (os.path.isfile(root) and os.path.isfile(flash)):
+              print('（小卷未就位——完整 iOS 回退接管）')
+              sys.exit(0)
+          for f, what in ((root, '小镜像 = md1 /redwood'), (flash, '启动卷 = md0 根')):
+              d = open(f, 'rb').read(36)
+              assert d[32:36] == b'NXSB', f'{f} 不是 APFS 容器（@+32 读到 {d[32:36]!r}）'
+              print(f'✓ {f} 是 APFS 容器 = {what}  sha256 {hashlib.sha256(open(f,"rb").read()).hexdigest()[:16]}…')
+          def has(path, needle):
+              out = subprocess.run(['7z', 'l', path], capture_output=True, text=True)
+              return needle in out.stdout
+          assert has(flash, 'launchd'), 'flashboot.apfs 里没有 sbin/launchd（stage0）'
+          assert has(root, 'fw/a640_gmu.bin'), 'root.apfs 里没有 fw/a640_gmu.bin（fw-gpu 没进小镜像）'
+          print('✓ 两个小卷内容校验通过（launchd + GPU 固件都在）')
+          os.makedirs('userland/.volumes', exist_ok=True)
+          for f in (root, flash):
+              with open(f, 'rb') as i, open('userland/.volumes/' + os.path.basename(f), 'wb') as o:
+                  while True:
+                      chunk = i.read(1 << 20)
+                      if not chunk:
+                          break
+                      o.write(chunk)
+          open('userland/.volumes/.verified', 'w').write('ok')
+          print('✓ 已入缓存目录（job 成功后 actions/cache 存档，下次秒取）')
+          PY
+          # 只有校验通过（stamp 在）才立旗；残卷/校验不过 → VOLS_OK 保持 0，回退接管
+          if [ -f userland/.volumes/.verified ]; then
+            echo "VOLS_OK=$VOLS_OK" >> "$GITHUB_ENV"
+          else
+            rm -f userland/flashboot.apfs userland/root.apfs
+            echo "::warning::小卷未就位或校验未通过——走完整 iOS 回退（慢，仅此一次：成功后入缓存）"
           fi
-          echo "VOLS_OK=$VOLS_OK" >> "$GITHUB_ENV"
           ls -lh userland/*.apfs 2>/dev/null || true
 
       # ---------------------------------------------------------------
