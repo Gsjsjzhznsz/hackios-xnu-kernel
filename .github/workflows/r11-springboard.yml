@@ -132,12 +132,20 @@ jobs:
       - name: "②c/⑨ 内核源码构建（theos + xnu/apply.sh + xnu-deps + make：R11 的内核从本仓库编译）"
         run: |
           set -eu
-          # theos：cctools（ld64）与 sdks/iPhoneOS16.5.sdk
+          # theos：cctools（ld64）。SDK 自 2020 年起拆到独立仓库 theos/sdks（主仓 sdks/ 是空的）——
+          # 稀疏检出只拉 iPhoneOS16.5.sdk 一个目录（run 39959129155 的教训：主仓里没有这个 SDK）
           git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
           mkdir -p "$THEOS/toolchain"
           curl -sL https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-x86_64.tar.xz | tar -xJ -C "$THEOS/toolchain/"
           $THEOS/toolchain/linux/iphone/bin/ld64 --version || true
-          test -d "$THEOS/sdks/iPhoneOS16.5.sdk" || { echo "::error::theos 缺 iPhoneOS16.5.sdk"; exit 1; }
+          if [ ! -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include" ]; then
+            git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/theos-sdks
+            git -C /tmp/theos-sdks sparse-checkout set iPhoneOS16.5.sdk
+            mkdir -p "$THEOS/sdks"
+            mv /tmp/theos-sdks/iPhoneOS16.5.sdk "$THEOS/sdks/"
+            rm -rf /tmp/theos-sdks
+          fi
+          test -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include" || { echo "::error::theos/sdks 的 iPhoneOS16.5.sdk 就位失败"; exit 1; }
           df -h /
           # 内核树：Apple xnu-8796.121.2 + redwood.patch + files/（含 R11 的 raphael_*）
           cd hackios

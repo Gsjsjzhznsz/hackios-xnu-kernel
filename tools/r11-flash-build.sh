@@ -20,7 +20,7 @@
 #     - bsd/dev/raphael_adreno.c: the GPU -- redwood_adreno.c (Adreno 642L, sc7280)
 #       adapted to the Adreno 640: sm8150's block bases (gpu@2c00000, gmu@2c6a000 with
 #       gmu_pdc@b290000/gmu_pdc_seq@b490000, gpucc@2c90000, adreno_smmu@2ca0000,
-#       cmd-db@85f20000), the a630 family's firmware (fw/a630_gmu.bin, fw/a630_sqe.fw)
+#       cmd-db@85f20000), the a640's firmware (fw/a640_gmu.bin, fw/a630_sqe.fw)
 #       and flows (DTCM at 0x40000, the GPU RSC inside the GMU window at +0x23000, the
 #       PDC that nobody has programmed on this SoC: the full a6xx_load_pdc/rsc_ucode),
 #       and the zap shader (fw/a640_zap.mbn).  The 22-step ladder and
