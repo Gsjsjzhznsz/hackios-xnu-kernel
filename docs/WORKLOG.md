@@ -332,3 +332,24 @@ Stage Summary:
   总线 idle 裁决）、按键（PON 位 subtype 裁决）、GPU（zap 通用签名 TZ
   拒收/GMU 固件块表/PDC 完整加载）、源码构建本身（prebuilt→新工具链变量，
   R10 可一刷即回）
+
+## R11 发布记录（Task 20 纪律）
+
+- CI 七轮鏖战全绿：39957248914（THEOS=$HOME 字面目录）→ 39959129155
+  （theos 主仓 sdks/ 空置，SDK 2020 年迁至 theos/sdks 独立仓）→
+  39968195997（runner 无 uuid-dev，hostcompat.h 强制 include
+  <uuid/uuid.h> 首行即死，exporthdrs 0.44s 全灭；本地沙箱恰好装有
+  uuid-dev 故复现不出——dpkg -S 实锤）→ 39970464195（raphael_buttons.c
+  残留 (void)problem，全内核唯一编译错误；touch/adreno 首编即过）→
+  39973048286（redwood_fb_set_dim C++ 定义缺 extern "C"，C 调用方
+  找不到符号，唯一未定义符号）→ 39974173713（dsymutil：Ubuntu apt
+  clang 不装 /usr/bin/dsymutil，dSYM 步 Error 127 连累 strip 产物；
+  内核链接本身已成功）→ **全绿，release 421986356，12 资产**
+- 首个源码构建内核：15,029,152 B，sha256 5fa857ad5819e805…（DEVELOPMENT
+  构建），门铃 cmp w20,#0x13 / movz w8,#0x8,lsl#16 源码级验证，
+  双镜像共用（主 = touchscreen=1 buttons=1 / GPU = +gpu=1）
+- 公网回读：五件 sha256 与发布 SUMS 全符；镜像解包（gzip 层内 XNUP）
+  九项标记 + cmdline 断言复核；iOS 卷五片与 R10 SUMS 全同 = 免重下
+  免重刷；flashboot 与 R9/R10 字节相同（14485e7c）= 固件/shim 铁证未动
+- 交付：download/r11/（双镜像 + flashboot + 小镜像备份 + SUMS/README/
+  rejoin + VOLUME-NOTE；卷分片不落盘——与 R10 同字节且无需重刷）
