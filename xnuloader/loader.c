@@ -3143,6 +3143,30 @@ choose_window(const struct payload_info *pi)
 }
 
 /*
+ * R10: hand the panel over black.  From the jump on the screen is iOS's, and
+ * the verbose console that used to scroll away whatever this loader (and the
+ * firmware before it) printed is gone with "-v" -- without this the boot's
+ * first half minute would stare at the loader's last words until
+ * SpringBoard's first frame finally covers them.
+ */
+static void
+screen_clear(void)
+{
+        if (SCREEN.base == 0) {
+                return;
+        }
+        print("screen cleared for the handoff (%d x %d)\n", (uint64_t)SCREEN.width, (uint64_t)SCREEN.height);
+        uint32_t *px = (uint32_t *)(uintptr_t)SCREEN.base;
+        uint64_t count = (uint64_t)SCREEN.stride * SCREEN.height / 4;
+
+        for (uint64_t i = 0; i < count; i++) {
+                px[i] = 0xff000000;         /* opaque black (BGRA) */
+        }
+        clean_dcache((uint64_t)SCREEN.base,
+            (uint64_t)SCREEN.base + (uint64_t)SCREEN.stride * SCREEN.height);
+}
+
+/*
  * Load and run the kernel from the payload. Returns when the kernel comes
  * back (panic, checkpoint, early exception); the combined log is staged and
  * written to the log partition. Returns 0 if the kernel could not be started.
@@ -3385,7 +3409,17 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
         for (const char *c = pi.cmdline; *c; c++) {
                 own_serial |= starts_with(c, "serial=");
         }
-        const char *base_cmdline = (PLAT->uart != 0 && !own_serial) ? "debug=0x8 serial=3 " : "debug=0x8 ";
+        /*
+         * R10 (the clean-screen round): none of our debug bits any more.  R9
+         * proved the whole chain alive to SpringBoard, and the prize on a full
+         * boot is the desktop unpainted: on raphael (no UART) debug=0x8 fed
+         * only the console overlay, while the loader's own channels -- the
+         * heartbeat counter and the kernel's log ring, which never pass
+         * through any console -- still work for the days the boot does not
+         * come up.  A verbose boot stays one payload cmdline away: "-v
+         * debug=0x8".
+         */
+        const char *base_cmdline = (PLAT->uart != 0 && !own_serial) ? "serial=3 " : "";
         uint32_t n = 0;
         for (const char *c = base_cmdline; *c && n < BOOT_LINE_LENGTH - 1; c++) {
                 ba->commandLine[n++] = *c;
@@ -3685,6 +3719,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
         ba->deviceTreeP = dt_pa - slide;
         ba->deviceTreeLength = dt_len;
         print("device tree %x len %x, boot_args %x, top %x\n", dt_pa, (uint64_t)dt_len, ba_pa, top);
+        print("R10 clean screen round: no -v and no debug bits -- the panel belongs to iOS from here\n");
         print("cmdline: %s\n", ba->commandLine);
         gic_print_baseline();
         if (kernel_mpidr != this_mpidr) {
@@ -3723,6 +3758,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
                         /* Do not enter the kernel at all: exercise only the return path. */
                         jump_to_kernel((uint64_t)(uintptr_t)&loader_return_stub, 0);
                 }
+                screen_clear();
                 if (kernel_mpidr != this_mpidr) {
                         int64_t status = run_on_other_cpu(kernel_mpidr, entry_va + slide, ba_pa, kernel_live, slide, kernel_budget);
 

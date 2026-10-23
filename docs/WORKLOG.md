@@ -190,3 +190,55 @@ R9 发布记录 (Task 27 补):
 - 现存 releases: r5/r6/r7/r8/r9 并存（iOS 卷跨轮同字节留旧省 5.6GB 重下）
 - 待办: 用户按 docs/FLASH-R9.md 实测——oem irqtest 判词 + oem run 后
   heartbeat 是否 1→2→3；回传 r9-klog.txt → 按 R10 分支表定下一轮
+
+---
+Task ID: R10
+Agent: Z.ai (main)
+Task: R9 实测判决（用户报告：SpringBoard 桌面在 -v 日志下渲染成功、iOS 接管
+USB 后 fastboot 哑火 = 完全启动）→ R10 清屏轮（用户点名：去掉 -v 与
+debug=0x8，看干净桌面；触摸/背光给路线图）
+
+Work Log:
+- R9 实测归档（用户报告，无 klog——USB 随完全启动被 iOS 接管，oem log 终端
+  卡死不再回话）：桌面图标（照片/App Store/设置）在 -v 控制台日志底下成功
+  渲染 = launchd 全程跑通、SpringBoard 上屏、UI 链路（boot video → 合成）
+  全通；fastboot 哑火是**成功签名**（loader 常驻 core 0，但 USB 控制器被
+  iOS 重置后通道即断），从此成功态取证 = 拍照，失败态（早冻）fastboot 仍活
+- R10 定案 = 清屏轮，三处改动、全部在 cmdline/交接面，内核一字节不动：
+  * payload cmdline 去 `-v`：boot_args.video.v_display 0→1（图形模式，非
+    verbose iPhone 的标准开机方式；framebuffer 交接参数恒定，UI 路径不受
+    影响——机制读自 loader.c:3356-3372 的 v_display 注释与代码）
+  * loader 基础 cmdline 去 `debug=0x8 ` 前缀（loader.c base_cmdline）：
+    raphael 无 UART，该位只喂屏幕叠加；心跳计数（kernel_live.heartbeat）
+    与内核日志环均不走 console，失败日取证能力一件不丢
+  * loader 交接前 screen_clear()：print() 走 UEFI 控制台会上屏，无 -v 滚屏
+    后 loader 遗言会冻在屏上整段 launchd 启动——填黑 + clean_dcache 后再
+    jump（UEFI ConOut 屏与 GOP 同一 framebuffer，oem screenshot 同款直访
+    模式）
+- 触摸/背光调研归档（R11+ 路线）：上游 hackios 在 redwood（POCO X5 Pro）
+  上触摸全通（Goodix GT9916、SE13 SPI、125Hz 轮询、/dev/redwood-touch、
+  boot-arg touchscreen=1 运行时开关），但全部地址是 sc7280/redwood 的；
+  raphael = GT9886 走 GENI **I2C**（SE7, 0x5d）——帧法/引脚/时钟/供电轨全
+  不同，直接开 touchscreen=1 等于拿错地址戳 SoC（t17-t19 教训：可触发
+  RPM/TZ 热复位）。R11 = 内核重编轮：① CI 启用 xnu-build.sh 先证"重编等
+  价"；② redwood_goodix.c 的 SPI→I2C 帧法移植 + raphael 地址（同机上电
+  序列已被 ios-raphael 赛道真机验证：SE7 GENI I2C、0x5d、poll=10ms、doze
+  disable）；③ 事件仍进 /dev/redwood-touch（用户态链路现成）。背光
+  （AMOLED DCS/PWM）与 GPU 合成（redwood 走 Adreno+freedreno 跑
+  CoreAnimation）同理排队
+- 交付链：tools/r10-flash-build.sh（CMDLINE 无 -v；门禁 = R9 全特征串 +
+  R10 两特征串 + debug=0x8 缺席断言 + 镜像内 cmdline 无 -v 复验；内核仍
+  走 r9-kernel-patch.py）；.github/workflows/r10-springboard.yml（七步
+  流水线 R10 化，资产/README/判读树/release 正文全换）；docs/FLASH-R10.md
+  （判读树 + R11 观察清单 C1-C5 + 触摸路线图）
+- 本地预检：zig 0.13（clang 18 内核）按 build.sh 同参数编译 loader.c
+  **零警告零错误**；R10 两特征串在目标文件、debug=0x8 绝迹、R9 十五特征串
+  全保留（CI ②b 门禁同款断言）
+
+Stage Summary:
+- R10 = 清屏轮：cmdline（-v / debug=0x8）+ 黑屏交接，三处改动全在交接面，
+  内核与 r1/r2/r4 验证字节不动；R9 镜像即现成的 verbose 回退
+- 判读树决胜行：黑屏 20-60s → 干净桌面 = 全胜；fastboot 卡死 = 成功签名；
+  黑屏 >2min → R9 镜像看卡点；失败态 fastboot 照活，取证套餐不变
+- R11 分支表：触摸 = 重编内核轮（GENI I2C 移植）；背光/GPU 合成按 C1-C5
+  观察清单的痛点排队；本轮先把"看得清"还给用户
