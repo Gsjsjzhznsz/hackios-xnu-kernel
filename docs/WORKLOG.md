@@ -242,3 +242,23 @@ Stage Summary:
   黑屏 >2min → R9 镜像看卡点；失败态 fastboot 照活，取证套餐不变
 - R11 分支表：触摸 = 重编内核轮（GENI I2C 移植）；背光/GPU 合成按 C1-C5
   观察清单的痛点排队；本轮先把"看得清"还给用户
+
+R10 发布记录 (Task 28 补):
+- dispatch 两次（第一次后台任务静默成功所致），concurrency 组自动取消旧
+  run 39943697102，存活 run 39943757373 于 11:06:25Z 开跑、11:16:53Z
+  completed success（约 10 分钟；②b 编译门禁/⑥ R10 打包六重校验/⑧b 发布
+  全绿）
+- 发布 release 421751934 tag r10-springboard
+  "R10 · 纯血 hackios SpringBoard · iOS 16.5 (20F66) · 清屏轮"，11 资产
+- 资产: iOS 卷 5 分片（与 R5-R9 字节相同）+ raphael-xnu-r10-flash.img
+  (8,212,591 B, sha256 70a2496d…) + raphael-r10-flashboot.apfs (4,194,304 B,
+  14485e7c… 与 R9 同字节 = userland 未动铁证) + r10-boot-volume-root.apfs
+  (4,194,304 B, 635d59e8…) + r10-rejoin.sh + README.txt + SHA256SUMS
+- 公网回读校验（Task 20 纪律）: 三资产公开 URL 下载 sha256 与 SHA256SUMS
+  全等 PASS，存档 work/r10-out/；交付件刷新 download/r10/（四小件 +
+  FLASH-R10.md + README.txt + r10-rejoin.sh）
+- 现存 releases: r5/r6/r7/r8/r9/r10 并存（iOS 卷跨轮同字节留旧省 5.6GB
+  重下；**R9 从此兼任 R10 的 verbose 回退镜像**，按 FLASH-R10.md 判读树 B）
+- 待办: 用户按 docs/FLASH-R10.md 实测——期望"黑屏 20-60s → 干净桌面 →
+  fastboot 卡死（成功签名）"；回传观察清单 C1-C5（亮度/动画/色彩/触摸现状/
+  桌面时钟走不走）→ 定 R11（触摸重编内核轮：GENI I2C goodix 移植）
