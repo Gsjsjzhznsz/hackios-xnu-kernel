@@ -91,3 +91,20 @@ Stage Summary:
   仍卡 → CPU interface 层（ICC_IGRPEN1/PMR 可能也被 EL2 吞）；写被丢 →
   照抄 raphael-Linux 在这台机器上拿到 IRQ 组的机制（唯一被证明可行的
   答案），或内核接 FIQ
+
+R8 发布记录 (Task 25 补, 会话恢复后核实):
+- CI run 39927063425 (tag r8-springboard, commit 745cbcf) 08:46:41Z 开跑,
+  08:56:48Z completed success (~10 min); release 421630415 同刻发布, 11 资产
+- 资产: iOS 卷 5 分片 (aa..ae, 合计 5,628,755,968 B, 与 R5/R6/R7 字节相同)
+  + raphael-xnu-r8-flash.img (8,212,591 B) + raphael-r8-flashboot.apfs
+  (4,194,304 B) + r8-boot-volume-root.apfs (4,194,304 B) + rejoin.sh
+  + README + SHA256SUMS
+- 公网回读校验 (Task 20 纪律): flash.img / flashboot.apfs / boot-volume-root
+  三资产 sha256 与 SHA256SUMS 全等 (0281064f… / 14485e7c… / c290c248…),
+  本地存档 work/r8-out/; iOS 大卷沿 R5/R6 同卷声明免重下
+- r8-flash sha256: 0281064f49559dd454e9d1ada169c4bc0a10ef86b32e407959d5def82ba79bc1
+- 交付件刷新 download/r8/ (四小件 + FLASH-R8.md + SHA256SUMS)
+- 现存 releases: r5/r6/r7/r8 并存 (未删旧轮: iOS 卷跨轮同字节, 留旧
+  release 可省重下; 需清理时按用户指令)
+- 待办: 等用户按 docs/FLASH-R8.md 协议实测, 回传 r8-klog.txt /
+  gicgroup 判词行 → 按 R9 分支表定下一轮
