@@ -1251,6 +1251,13 @@ step_gmu_memory(void)
 #define SMMU_TCR2               (1u | 1u << 4 | 7u << 15)       /* 36 bits of physical address, 16 of context tag */
 #define SMMU_MAIR0              0xf404ff44      /* Linux's: 0 uncached, 1 cached, 2 device */
 #define SMMU_FSR_ALL            0xc00001fe      /* every kind of fault, and "several" */
+#define SMMU_FSR_FATAL          (1u << 3 | 1u << 31)    /* a bus error, or several at once: the waiting
+                                                                 * ends.  Every other kind -- access flag,
+                                                                 * permission, translation -- is named, cleared,
+                                                                 * and waited over (R17: the R16 phone's firmware
+                                                                 * answered the speed wanted right across a
+                                                                 * refusal of that kind, once the wait itself
+                                                                 * was allowed to run) */
 
 extern void loader_return(void);
 
@@ -1502,6 +1509,56 @@ space_faulted(const struct gpu_space *space)
             rd(smmu.base + context + SMMU_CB_SCTLR), rd(smmu.base + context + SMMU_CB_TTBR0 + 4),
             rd(smmu.base + context + SMMU_CB_TTBR0), rd(smmu.base + context + SMMU_CB_TCR));
         space_show_walk(space, far);
+        return true;
+}
+
+/* The refusals the wait has already named, so that one kind is not a hundred lines. */
+static uint32_t fault_status_seen, fault_far_lo_seen, fault_far_hi_seen, fault_count;
+
+static void
+space_forget_refusals(void)
+{
+        fault_status_seen = fault_far_lo_seen = fault_far_hi_seen = fault_count = 0;
+}
+
+/*
+ * What the context has recorded since the last look, with the verdict the wait wants: true
+ * to go on (nothing there, or a survivable refusal, named and cleared), false when the
+ * SMMU reports a bus error or several faults at once -- the GMU's transactions are being
+ * thrown away wholesale, and no patience brings them back.  R17: during the wait for an
+ * answer this is asked every few turns, so a refusal like the R15 one no longer ends the
+ * exchange -- it is named with its address, cleared (write one to clear), and the wait
+ * goes on; one kind of refusal is printed once, then every hundredth of the same.
+ */
+static bool
+space_check(const struct gpu_space *space, const char *when)
+{
+        uint32_t context = smmu_context(space), status = rd(smmu.base + context + SMMU_CB_FSR);
+        uint64_t far;
+
+        if ((status & SMMU_FSR_ALL) == 0) {             /* bits 10:9 only tell the format of the syndrome */
+                return true;
+        }
+        far = (uint64_t)rd(smmu.base + context + SMMU_CB_FAR + 4) << 32 | rd(smmu.base + context + SMMU_CB_FAR);
+        if (status & SMMU_FSR_FATAL) {
+                printf("adreno: %u: THE SMMU REFUSED %s with a bus error (%s): status %#x, address %#llx\n", step,
+                    space->name, when, status, far);
+                space_faulted(space);           /* the full naming: the stream, the syndromes, the walk */
+                return false;
+        }
+        if (status != fault_status_seen || far != ((uint64_t)fault_far_hi_seen << 32 | fault_far_lo_seen)) {
+                fault_status_seen = status;
+                fault_far_lo_seen = (uint32_t)far;
+                fault_far_hi_seen = (uint32_t)(far >> 32);
+                fault_count = 1;
+                printf("adreno: %u: the SMMU refuses %s again (%s): status %#x, address %#llx, syndrome %#x -- "
+                    "survivable, cleared, the wait goes on\n", step, space->name, when, status, far,
+                    rd(smmu.base + context + SMMU_CB_FSYNR0));
+        } else if (++fault_count % 100 == 0) {
+                printf("adreno: %u: the same refusal %u times now (%s): status %#x, address %#llx -- still survivable, "
+                    "cleared, the wait goes on\n", step, fault_count, when, status, far);
+        }
+        wr(smmu.base + context + SMMU_CB_FSR, status & SMMU_FSR_ALL);   /* write one to clear */
         return true;
 }
 
@@ -2506,12 +2563,14 @@ hfi_send(const char *what, uint32_t id, uint32_t *message, uint32_t words)
 {
         volatile struct hfi_queue *queue = &hfi->queue[0];
         volatile uint32_t *data = (volatile uint32_t *)((vm_offset_t)hfi + HFI_QUEUE_AT(0));
-        uint32_t at = queue->write % HFI_QUEUE_WORDS, number = ++hfi_number & 0xfff, verdict = 0, waiting = 0;
+        uint32_t at = queue->write % HFI_QUEUE_WORDS, number = ++hfi_number & 0xfff, verdict = 0, waiting = 0, turns = 0;
         /* the vote makes the GMU run the whole ramp -- RPMh round trips, the PDC's sequencer -- and the
          * R15 phone answered this very message only after the asking was given up: its answer sat in
          * the answer queue when 'slumber' went out, verdict 0, and the GX switch read powered at the
-         * leave-taking.  A slow answer is not a refusal; the budget for it is ten times the rest. */
-        uint32_t budget = id == HFI_GX_BW_PERF_VOTE ? 100000 : 10000;
+         * leave-taking.  A slow answer is not a refusal; the budget for it is ten seconds, and from
+         * the core power step on every message carries the same (R17: R16 wrote the budget for the
+         * vote alone; its neighbours keep the short one no longer). */
+        uint32_t budget = step >= 17 || id == HFI_GX_BW_PERF_VOTE ? 100000 : 10000;
         bool answered = false;
 
         message[0] = id | words << 8 | number << 20;
@@ -2524,15 +2583,29 @@ hfi_send(const char *what, uint32_t id, uint32_t *message, uint32_t words)
         }
         queue->write = at;
         settle();
+        space_forget_refusals();               /* each exchange counts its own refusals */
         wr(gmu.base + GMU_HOST2GMU_INTR_SET, 1);
-        for (int i = 0; i < budget && !answered; i++) {
+        for (uint32_t i = 0; i < budget && !answered; i++) {
+                turns = i + 1;
                 sleep_us(100);
                 waiting = rd(gmu.base + GMU_GMU2HOST_INTR_INFO);
                 if (waiting & 1) {
                         wr(gmu.base + GMU_GMU2HOST_INTR_CLR, 1);
                         answered = hfi_receive(1, number, &verdict);
                 }
-                if (rd(gmu.base + GMU_CM3_FW_INIT_RESULT) & GMU_FAILED) {
+                /* R17, the log's confession read whole: the wait never ran.  The firmware's verdict
+                 * of started, 0xbabeface, stands with bits 9 and 11 up -- 0xa00 -- and GMU_FAILED
+                 * is 0xe00: the healthy steady state read as a failure, and every wait ended on
+                 * its first turn.  The tables went through only because the GMU answers those
+                 * within the first 100 us; the vote, which takes seconds, never stood a chance.
+                 * A failure is a word that is NOT the started verdict and carries the failure
+                 * bits; the started verdict waits like everything else. */
+                if ((i & 7) == 7 && !space_check(&gmu_space, "while the GMU was deciding")) {
+                        break;                  /* a bus error: no patience brings the transactions back */
+                }
+                waiting = rd(gmu.base + GMU_CM3_FW_INIT_RESULT);
+                if (waiting != GMU_BOOTED_BABEFACE && (waiting & GMU_FAILED)) {
+                        printf("adreno: %u: the GMU's firmware has stopped answering: fw_init_result %#x\n", step, waiting);
                         break;
                 }
         }
@@ -2558,8 +2631,12 @@ hfi_send(const char *what, uint32_t id, uint32_t *message, uint32_t words)
                 return false;
         }
         printf("adreno: %u: the GMU accepts %s\n", step, what);
-        space_faulted(&gmu_space);      /* the moment a fault appears, not the step's end: the R15 fault's time was never in the log */
-        return true;
+        if (turns >= 1000) {
+                printf("adreno: %u: the answer took about %u ms to come -- the patience was not wasted\n", step, turns / 10);
+        }
+        return space_check(&gmu_space, "as the answer came");   /* the moment a fault appears, not the step's end:
+                                                                 * the R15 fault's time was never in the log; a
+                                                                 * survivable one is named, cleared, forgiven */
 }
 
 /*
@@ -2698,6 +2775,9 @@ step_core_power(void)
         for (int i = 0; i < 100000 && !(granted & GMU_CORE_GRANTED); i++) {
                 sleep_us(100);
                 granted = rd(gmu.base + GMU_GMU2HOST_INTR_INFO);
+                if ((i & 63) == 63 && !space_check(&gmu_space, "while the 3D core was powered")) {
+                        break;                  /* a bus error under the ramp: nothing to wait for */
+                }
         }
         core_is_on = true;                      /* asked for, at least: to be given back */
         put(&gmu, "gmu2host_intr_clr", GMU_GMU2HOST_INTR_CLR, GMU_CORE_GRANTED);
@@ -2727,7 +2807,8 @@ step_core_power(void)
         get(&gpu, "rbbm_clock_cntl", RBBM_CLOCK_CNTL);
         get(&gpu, "cp_rb_base", CP_RB_BASE);
         printf("adreno: %u: THE 3D CORE HAS POWER AND ANSWERS\n", step);
-        return !space_faulted(&gmu_space);
+        return space_check(&gmu_space, "at the step's end");    /* a survivable refusal no longer costs the step;
+                                                                 * a bus error still does */
 }
 
 /* ---- step 18: the 3D core's memory and its microcode -------------------------------------------------------- */
