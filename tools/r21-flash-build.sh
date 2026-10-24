@@ -228,7 +228,7 @@ for feat in (b'RAPHAEL TOUCH', b'GT9886', b'buttons: step 1', b'PMIC arbiter',
              b"adreno_tzunload",
              b"with the channel proven",
              b'whether it "supports" the GPU\'s image',
-             b"the same of the audio's, for comparison")
+             b"the same of the audio's, for comparison"):
         if feat not in k:
                 fail(f'the built kernel lacks the marker {feat!r}')
 # the R18 markers, and R19's verdict, must be GONE: the scanning and the verdict
