@@ -453,26 +453,6 @@ step_fuses(void)
         bin = get8(&qfprom, "raw speed bin, low", QFPROM_GPU_SPEED_BIN);
         bin |= get8(&qfprom, "raw speed bin, high", QFPROM_GPU_SPEED_BIN + 1) << 8;
         printf("adreno: %u: raw speed bin %u\n", step, bin >> 5 & 0xff);
-
-        /*
-         * R25 E7: the secboot and rollback fuses, on the record.  The image-side hypotheses are
-         * closed; whatever this phone's bottom line for an image is, it lives in these windows
-         * (qfprom raw 0x780000 and the error-corrected 0x784000): the secure-boot row, the
-         * anti-rollback rows, the debug state.  The non-zero words only -- a zero fuse is a
-         * fuse not blown.
-         */
-        announce("read the secboot and rollback fuses (E7: the whole qfprom windows 0x780000 and 0x784000, "
-            "the non-zero words -- a zero fuse is a fuse not blown)");
-        for (unsigned w = 0; w < 2; w++) {
-                uint32_t base = w == 0 ? 0 : QFPROM_CORRECTED;
-                printf("adreno: %u: qfprom %#x window, non-zero words:\n", step, qfprom.phys + base);
-                for (uint32_t off = 0; off < 0x400; off += 4) {
-                        uint32_t v = rd(qfprom.base + base + off);
-                        if (v != 0) {
-                                printf("adreno: %u:   %#x = %#010x\n", step, qfprom.phys + base + off, v);
-                        }
-                }
-        }
         return true;
 }
 
@@ -3311,6 +3291,8 @@ step_zap_load(void)
         uint64_t zap_place = 0, size = 0, header = 0, whole = 0, answer = ~0ull;
         int32_t got;
         uint32_t tzunload = 0;
+        uint32_t qfprom_on = 1;         /* R25b: the fuse sweep rides at the refusal path's
+                                         * end; adreno_qfprom=0 keeps even that out */
         bool zap_ours = false;
 
         if (!cx_ready() || !core_is_on) {
@@ -3338,6 +3320,7 @@ step_zap_load(void)
         scm("for the call that authenticates and starts an image", scm_how | SCM_IS_CALL_AVAILABLE, SCM_ONE_VALUE,
             SCM_SIP | SCM_PAS_AUTH_AND_RESET, 0, 0, &answer);
         PE_parse_boot_argn("adreno_tzunload", &tzunload, sizeof(tzunload));
+        PE_parse_boot_argn("adreno_qfprom", &qfprom_on, sizeof(qfprom_on));
         if (tzunload) {
                 announce("ask TrustZone to give up a zap shader that a kernel before this one may have left (adreno_tzunload: "
                     "the call that wedged R20, asked now with the channel proven)");
@@ -3572,6 +3555,31 @@ refused:
                 int32_t after_got = scm("E5: after the give-up", (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_INIT_IMAGE,
                     SCM_VALUE_BUFFER_VALUE, PAS_GPU, header, whole, &after_answer);
                 printf("adreno: %u: E5 after give-up: %d, answer %#llx\n", step, after_got, after_answer);
+        }
+        /*
+         * R25b: the fuses, last of all.  R25 read them in step 2 and the phone was gone before
+         * the kernel's first word reached the log -- the sweep's first read (raw 0x780000 + 0)
+         * is a row this phone's Non-secure world had never touched (R24b only ever read the
+         * speed-bin bytes at ...1e9 of each window).  Here, after every other answer of the
+         * step is already in the log, the sweep can only cost itself: corrected window first
+         * (Linux's), raw second, one line every 256 bytes so a death names its row.
+         */
+        if (qfprom_on) {
+                announce("read the secboot and rollback fuses (R25b: E7 moved to the end of the refusal path "
+                    "-- corrected window first, raw second, one line every 256 bytes; adreno_qfprom=0 keeps even this out)");
+                for (unsigned w = 0; w < 2; w++) {
+                        uint32_t base = w == 0 ? QFPROM_CORRECTED : 0;
+                        printf("adreno: %u: qfprom %#x window, non-zero words:\n", step, qfprom.phys + base);
+                        for (uint32_t off = 0; off < 0x400; off += 4) {
+                                if ((off & 0xff) == 0) {
+                                        printf("adreno: %u:   reading %#x\n", step, qfprom.phys + base + off);
+                                }
+                                uint32_t v = rd(qfprom.base + base + off);
+                                if (v != 0) {
+                                        printf("adreno: %u:   %#x = %#010x\n", step, qfprom.phys + base + off, v);
+                                }
+                        }
+                }
         }
         return false;
 }
