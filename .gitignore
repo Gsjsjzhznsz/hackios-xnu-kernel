@@ -20,6 +20,7 @@
 !/uefi/
 !/prebuilt/
 !/wifi/
+!/.github/
 
 __pycache__/
 *~
