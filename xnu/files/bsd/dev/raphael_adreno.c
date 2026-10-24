@@ -3298,7 +3298,7 @@ step_zap_load(void)
         }
         settle();
         if (scm("to authenticate the zap shader and run it", mem_how | SCM_SIP | SCM_PAS_AUTH_AND_RESET, SCM_ONE_VALUE, PAS_GPU,
-            0, &answer) != 0 || answer != 0) {
+            0, 0, &answer) != 0 || answer != 0) {
                 printf("adreno: %u: TrustZone does not authenticate the zap shader (%#llx)\n", step, answer);
                 goto refused;
         }
