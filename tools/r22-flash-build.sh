@@ -237,7 +237,7 @@ for feat in (b'RAPHAEL TOUCH', b'GT9886', b'buttons: step 1', b'PMIC arbiter',
              b"the give-up call takes the refusal back",
              b"a one-page metadata the way it is asked",
              b"attempt %u refused: the call returns %d, its answer %#llx",
-             b"the same code under every layout"):
+             b"the next attempt goes on all the same"):
         if feat not in k:
                 fail(f'the built kernel lacks the marker {feat!r}')
 # the R18 markers, and R19's verdict, must be GONE: the scanning and the verdict

@@ -226,7 +226,7 @@ jobs:
                                (b"the give-up call takes the refusal back", 'R22 尝试间清理'),
                                (b"a one-page metadata the way it is asked", 'R22 单页元数据判词'),
                                (b"attempt %u refused: the call returns %d, its answer %#llx", 'R22 拒绝码逐试打印'),
-                               (b"the same code under every layout", 'R22 矩阵判读入档')):
+                               (b"the next attempt goes on all the same", 'R22 矩阵判读入档')):
               assert marker in d, f'源码构建的内核缺 {what}'
           for gone, what in ((b'of the stream table does not keep what is written', 'R18 条目 0 拒写取证'),
                              (b'of the stream table instead', 'R18 换条目路由'),
