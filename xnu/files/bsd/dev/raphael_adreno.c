@@ -1234,6 +1234,7 @@ step_gmu_memory(void)
 #define SMMU_CB_FAR             0x60
 #define SMMU_CB_FSYNR0          0x68
 #define SMMU_CB_TLBIASID        0x610
+#define SMMU_CB_TLBIALL         0x618
 #define SMMU_CB_TLBSYNC         0x7f0
 #define SMMU_CB_TLBSTATUS       0x7f4
 #define SMMU_SCTLR_ON           (1u << 0 | 1u << 1 | 1u << 2 | 1u << 5 | 1u << 12) /* on; faults recorded, no interrupt */
@@ -1486,6 +1487,10 @@ space_on(struct gpu_space *space, uint32_t match, uint32_t stream)
 	put(&smmu, "cb mair0", context + SMMU_CB_MAIR0, SMMU_MAIR0);
 	put(&smmu, "cb mair1", context + SMMU_CB_MAIR1, 0);
 	put(&smmu, "cb fsr", context + SMMU_CB_FSR, SMMU_FSR_ALL);
+	/* everything this bank ever cached, not only our ASID's entries: the R14 log's fault
+	 * was an access-flag fault at an address of ours that was never mapped -- the kind of
+	 * answer a stale translation left by whoever configured the bank before us gives */
+	put(&smmu, "cb tlbiall", context + SMMU_CB_TLBIALL, 0);
 	put(&smmu, "cb tlbiasid", context + SMMU_CB_TLBIASID, space->context);
 	put(&smmu, "cb tlbsync", context + SMMU_CB_TLBSYNC, 1);
 	if (!wait_for(&smmu, context + SMMU_CB_TLBSTATUS, 1, 0, 100)) {
@@ -1774,7 +1779,11 @@ step_zap_signature(void)
 #define GMU_ITCM_ADDRESS        0x00000000u
 #define GMU_DTCM_ADDRESS        0x00040000u     /* a6xx_gmu_fw_load: every family but the 650's */
 #define GMU_TCM_SIZE            0x4000u
-#define GMU_LOG_ADDRESS         0x60002000u     /* after the two pages the firmware asks for at 0x60000000 */
+#define GMU_SCRATCH_ADDRESS     0x60000000u     /* the two pages at the head of the uncached range the
+                                                 * firmware's own code asks for: 0x60000000 is a literal in
+                                                 * its ITCM (the R14 log's step-17 fault was exactly here) */
+#define GMU_SCRATCH_SIZE        0x2000u
+#define GMU_LOG_ADDRESS         0x60002000u     /* after those two pages */
 #define GMU_LOG_SIZE            0x4000u
 #define GMU_HFI_ADDRESS         0x60006000u
 #define GMU_STREAM              5
@@ -1787,7 +1796,7 @@ struct gmu_firmware_block {
 #define GMU_FIRMWARE_NEEDS_KEPT 7
 
 static struct gpu_space gmu_space = { .name = "the GMU", .context = 1 };
-static struct gpu_block gmu_blocks[12], gmu_log, gmu_hfi;
+static struct gpu_block gmu_blocks[12], gmu_scratch, gmu_log, gmu_hfi;
 static unsigned gmu_block_count;
 static const uint8_t *gmu_firmware;
 static uint64_t gmu_firmware_size;
@@ -1884,10 +1893,13 @@ step_gmu_space(void)
 			}
 		}
 	}
-	if (!block_new(&gmu_space, &gmu_log, GMU_LOG_ADDRESS, GMU_LOG_SIZE, PTE_GMU) ||
+	if (!block_new(&gmu_space, &gmu_scratch, GMU_SCRATCH_ADDRESS, GMU_SCRATCH_SIZE, PTE_GMU) ||
+	    !block_new(&gmu_space, &gmu_log, GMU_LOG_ADDRESS, GMU_LOG_SIZE, PTE_GMU) ||
 	    !block_new(&gmu_space, &gmu_hfi, GMU_HFI_ADDRESS, PAGE_SIZE, PTE_GMU)) {
 		return false;
 	}
+	printf("adreno: %u: %#x bytes at %#x: the two pages the GMU's own code asks for -- 0x60000000 is a literal in its ITCM; R14 left them unmapped and the SMMU refused the GMU there at step 17\n",
+	    step, GMU_SCRATCH_SIZE, GMU_SCRATCH_ADDRESS);
 
 	announce("give the SMMU's context 1 these tables and send the GMU's requests (stream 5) through it: the first "
 	    "writes to the SMMU, the global ones (cbar, cba2r, s2cr, smr) through the hypervisor");
@@ -2353,6 +2365,22 @@ gmu_post_mortem(void)
 		    log[4 * i + 4], log[4 * i + 5], log[4 * i + 6], log[4 * i + 7],
 		    log[4 * i + 8], log[4 * i + 9], log[4 * i + 10], log[4 * i + 11],
 		    log[4 * i + 12], log[4 * i + 13], log[4 * i + 14], log[4 * i + 15]);
+	}
+	{
+		const volatile uint32_t *scratch = (const volatile uint32_t *)gmu_scratch.memory;
+		uint32_t live = 0;
+
+		to_memory(gmu_scratch.memory, GMU_SCRATCH_SIZE);
+		for (uint32_t i = 0; i < GMU_SCRATCH_SIZE / 4; i++) {
+			live += scratch[i] != 0;
+		}
+		printf("adreno: %u: the GMU's own two pages at %#x: %u of %u words written; the first 16:\n",
+		    step, GMU_SCRATCH_ADDRESS, live, GMU_SCRATCH_SIZE / 4);
+		for (uint32_t i = 0; i < 16; i += 8) {
+			printf("adreno: %u:   %x %x %x %x %x %x %x %x\n", step,
+			    scratch[i], scratch[i + 1], scratch[i + 2], scratch[i + 3],
+			    scratch[i + 4], scratch[i + 5], scratch[i + 6], scratch[i + 7]);
+		}
 	}
 	for (uint32_t i = 0; i < 24; i += 8) {
 		printf("adreno: %u: the GMU's state +%#x: %x %x %x %x %x %x %x %x\n", step, 4 * i,
