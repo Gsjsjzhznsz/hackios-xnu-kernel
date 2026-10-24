@@ -139,7 +139,6 @@ jobs:
             r16-ccache-
             r15-ccache-
             r14-ccache-
-            r13-ccache-
 
       # ---------------------------------------------------------------
       - name: "③/⑥ 内核源码构建（theos + xnu/apply.sh + xnu-deps + ccache + make）"
@@ -359,7 +358,7 @@ jobs:
           PY
 
       # ---------------------------------------------------------------
-      - name: "⑤/⑥ 打 r21 双启动镜像（r1 固件 + r2 shim + R10 loader + 本仓库源码内核 + cpus=8 + 全量小卷 md1）"
+      - name: "⑤/⑥ 打 r22 双启动镜像（r1 固件 + r2 shim + R10 loader + 本仓库源码内核 + cpus=8 + 全量小卷 md1）"
         run: |
           set -eu
           cd hackios
