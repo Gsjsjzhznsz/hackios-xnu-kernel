@@ -1753,6 +1753,26 @@ scm(const char *what, uint64_t function, uint64_t arguments, uint64_t first, uin
         return -1;
 }
 
+/*
+ * R26: the whole log goes to the storage before a call that can reset the phone.
+ * The watching loader writes what the log holds this moment -- everything printed
+ * so far, this wrapper's own line included -- to the logdump partition, and answers
+ * with the ack; a reset that follows does not then eat the record.  (loader_return.c;
+ * an old loader that does not know the request is waited out and the run goes on.)
+ */
+extern int loader_log_flush(void);
+
+static void
+put_the_log_away(const char *what)
+{
+        printf("adreno: %u: %s; the whole log goes to the storage first (a reset must not eat the record)\n",
+            step, what);
+        if (!loader_log_flush()) {
+                printf("adreno: %u: the loader did not put the log away in time (no loader, or an old one); going on\n",
+                    step);
+        }
+}
+
 static bool
 step_trustzone(void)
 {
@@ -3293,11 +3313,24 @@ step_zap_load(void)
         uint32_t tzunload = 0;
         uint32_t qfprom_on = 1;         /* R25b: the fuse sweep rides at the refusal path's
                                          * end; adreno_qfprom=0 keeps even that out */
+        uint32_t e1_mode = 3;           /* R26: 3 = Linux's shape, the size goes with it
+                                         * (R25b's, the one under trial); 2 = R21-R24b's,
+                                         * the size stays home (the control); adreno_e1_mode */
         bool zap_ours = false;
 
         if (!cx_ready() || !core_is_on) {
                 return false;
         }
+        /*
+         * R26: the calls of this step can reset the phone (R25b died in the window after
+         * step 18 done, its step 19 prints only in the RAM the reset ate).  From here the
+         * storage holds what was printed before each of them: this line is the first one
+         * after "step 18: done" the storage can hold, so a record that ends before it
+         * says the death came before any call of this step was issued.
+         */
+        printf("adreno: %u: step 19 entered (R26: before each call that can reset the phone, the whole log goes to the storage first)\n",
+            step);
+        put_the_log_away("the step's first line");
         announce("establish the channel first -- the questions this phone's own Linux asks TrustZone before anything else "
             "(R21: the give-up call is not sent by default; raphael's TrustZone took the processor with it and never gave it back)");
         if (scm("whether it can be asked", scm_how | SCM_IS_CALL_AVAILABLE, SCM_ONE_VALUE, SCM_SIP | SCM_IS_CALL_AVAILABLE, 0,
@@ -3321,6 +3354,13 @@ step_zap_load(void)
             SCM_SIP | SCM_PAS_AUTH_AND_RESET, 0, 0, &answer);
         PE_parse_boot_argn("adreno_tzunload", &tzunload, sizeof(tzunload));
         PE_parse_boot_argn("adreno_qfprom", &qfprom_on, sizeof(qfprom_on));
+        PE_parse_boot_argn("adreno_e1_mode", &e1_mode, sizeof(e1_mode));
+        if (e1_mode != 2 && e1_mode != 3) {
+                e1_mode = 3;
+        }
+        printf("adreno: %u: adreno_e1_mode=%u (%s)\n", step, e1_mode, e1_mode == 3 ?
+            "Linux's shape: a number, the buffer, a number -- the size goes with it (R25b's, the one under trial)" :
+            "R21-R24b's shape: a number, the buffer -- the size stays home (the control)");
         if (tzunload) {
                 announce("ask TrustZone to give up a zap shader that a kernel before this one may have left (adreno_tzunload: "
                     "the call that wedged R20, asked now with the channel proven)");
@@ -3365,9 +3405,32 @@ step_zap_load(void)
         if (!zap_header(&header, true)) {
                 return false;
         }
-        got = scm("to take the zap shader's signature (R25 E1: Linux's shape -- the size goes with it: "
-            "a number, the buffer, a number)", (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_INIT_IMAGE,
-            SCM_VALUE_BUFFER_VALUE, PAS_GPU, header, whole, &answer);
+        /*
+         * R26, the empty probe: a question that hands TrustZone no memory (it asks whether
+         * a call exists), sent before E1.  On the storage it is the anchor between "step 19
+         * was entered" and "E1 was armed": a record that ends before it says the death came
+         * before any call of this step was issued; one that holds it and then ends at E1's
+         * own parameters says the death is E1's.
+         */
+        answer = ~0ull;
+        scm("the empty probe (R26: a question that hands no memory -- what it proves is that this point was reached alive)",
+            scm_how | SCM_IS_CALL_AVAILABLE, SCM_ONE_VALUE, SCM_SIP | SCM_PAS_INIT_IMAGE, 0, 0, &answer);
+        printf("adreno: %u: the empty probe answered; what follows it was reached alive\n", step);
+        printf("adreno: %u: E1 armed: smc %#llx, arguments word %#llx, x2 %u, x3 %#llx (the metadata page), "
+            "x4 %#llx (%s)\n", step, (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_INIT_IMAGE,
+            (uint64_t)(e1_mode == 3 ? SCM_VALUE_BUFFER_VALUE : SCM_VALUE_AND_BUFFER), (unsigned)PAS_GPU, header,
+            e1_mode == 3 ? whole : 0,
+            e1_mode == 3 ? "the whole file, the size goes with it" : "the size stays home");
+        put_the_log_away("E1's parameters above -- the call that follows them may reset the phone");
+        if (e1_mode == 3) {
+                got = scm("to take the zap shader's signature (R26 E1, adreno_e1_mode=3: Linux's shape -- the size "
+                    "goes with it: a number, the buffer, a number)", (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_INIT_IMAGE,
+                    SCM_VALUE_BUFFER_VALUE, PAS_GPU, header, whole, &answer);
+        } else {
+                got = scm("to take the zap shader's signature (R26 E1, adreno_e1_mode=2: R21-R24b's shape -- the size "
+                    "stays home: a number, the buffer)", (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_INIT_IMAGE,
+                    SCM_VALUE_AND_BUFFER, PAS_GPU, header, 0, &answer);
+        }
         if (got != 0 || answer != 0) {
                 printf("adreno: %u: refused: the call returns %d, its answer %#llx\n", step, got, answer);
                 goto refused;
@@ -3396,6 +3459,7 @@ step_zap_load(void)
                             "dt's pil_gpu_region is referenced by nothing)\n", step, zap_place);
                 }
         }
+        put_the_log_away("the place is handed over next (MEM_SETUP)");
         if (scm("where the image will be", (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_MEM_SETUP, SCM_THREE_VALUES, PAS_GPU,
             zap_place, ZAP_MEMORY_SIZE, &answer) != 0 || answer != 0) {
                 printf("adreno: %u: TrustZone does not take the place %#llx (%#llx)\n", step, zap_place, answer);
@@ -3413,6 +3477,7 @@ step_zap_load(void)
                 to_memory((vm_offset_t)zap_memory, ZAP_MEMORY_SIZE);
         }
         settle();
+        put_the_log_away("the authentication and the start are next (AUTH_AND_RESET can reset the phone)");
         if (scm("to authenticate the zap shader and run it", (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_AUTH_AND_RESET,
             SCM_ONE_VALUE, PAS_GPU, 0, 0, &answer) != 0 || answer != 0) {
                 printf("adreno: %u: TrustZone does not authenticate the zap shader (%#llx)\n", step, answer);
@@ -3422,6 +3487,11 @@ step_zap_load(void)
         zap_is_loaded = true;
         return true;
 refused:
+        /*
+         * R26: the refusal itself is the one line the whole experiment is for -- it goes
+         * to the storage before the controls run on.
+         */
+        put_the_log_away("the refusal and its code are on the record above");
         /*
          * The channel is alive (the answers came back) but this image or this place is not
          * taken -- on this phone that cannot mean a shader from before (XBL made TrustZone
@@ -3474,6 +3544,7 @@ refused:
 
                 announce("R25: the shape sweeps -- E2 the size word, E3 the argument word, E4 the id, "
                     "E5 the state; all INIT_IMAGE alone, nothing authenticated, nothing started");
+                put_the_log_away("the shape sweeps are next; every one of them is INIT_IMAGE alone");
                 /* E2: the third word.  The canonical attempt took the file's whole size (E1);
                  * these are the other sizes the callers of this phone's world use. */
                 {
@@ -3501,6 +3572,7 @@ refused:
                                         ((volatile uint8_t *)sweep_page)[i] ^= 0xaa;
                                 }
                                 to_memory(sweep_page, PAGE_SIZE);
+                                put_the_log_away("the corrupted-hash-table control is next");
                                 sweep_got = scm("E2 control: the hash table corrupted in a RAM copy (parse "
                                     "intact, the signature's own bytes broken)",
                                     (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_INIT_IMAGE, SCM_VALUE_BUFFER_VALUE,
@@ -3511,6 +3583,7 @@ refused:
                                     "A DIFFERENT ANSWER: the content was on the table");
                         }
                 }
+                put_the_log_away("the argument-word sweep is next");
                 /* E3: the argument word.  0x83 is E1's (three: value, buffer, value); 0x82 was
                  * R21-R24b's (two: value, buffer, no size); the rest probe the word itself. */
                 {
@@ -3522,6 +3595,7 @@ refused:
                                     sweep_answer);
                         }
                 }
+                put_the_log_away("the id sweep is next");
                 /* E4: the id.  The same metadata page, the same size, the other doors -- audio,
                  * modem, video, then the rest of the table.  (Nothing but INIT_IMAGE is sent.) */
                 {
@@ -3533,6 +3607,7 @@ refused:
                                     sweep_answer);
                         }
                 }
+                put_the_log_away("the state test is next (the same call twice)");
                 /* E5: the state.  The same call twice over; a code that moves between the takes
                  * is a state answer, not a file one.  (The half after the give-up is at the end.) */
                 for (unsigned i = 0; i < 2; i++) {
@@ -3548,6 +3623,7 @@ refused:
         if (!tzunload) {
                 zap_unload();
         }
+        put_the_log_away("the give-up's second half is next (after the give-up)");
         /* E5's other half: after the give-up.  A code that changes here answers for the
          * state, not for the file. */
         {
@@ -3567,12 +3643,15 @@ refused:
         if (qfprom_on) {
                 announce("read the secboot and rollback fuses (R25b: E7 moved to the end of the refusal path "
                     "-- corrected window first, raw second, one line every 256 bytes; adreno_qfprom=0 keeps even this out)");
+                put_the_log_away("the fuse sweep is next (the R25 killer's family); every row it announces "
+                    "is on the storage before it is read");
                 for (unsigned w = 0; w < 2; w++) {
                         uint32_t base = w == 0 ? QFPROM_CORRECTED : 0;
                         printf("adreno: %u: qfprom %#x window, non-zero words:\n", step, qfprom.phys + base);
                         for (uint32_t off = 0; off < 0x400; off += 4) {
                                 if ((off & 0xff) == 0) {
                                         printf("adreno: %u:   reading %#x\n", step, qfprom.phys + base + off);
+                                        put_the_log_away("the fuse row above is the next one read");
                                 }
                                 uint32_t v = rd(qfprom.base + base + off);
                                 if (v != 0) {

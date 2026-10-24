@@ -178,6 +178,11 @@ loader_log_linearize(void)
 /* Patched by the loader: { magic, PA of its return stub, checkpoint to stop at, PA - VA }. See start.s. */
 extern uint64_t loader_stub_slot[4];
 
+/* "XNULIVE3" (R26): the kernel can ask for the whole log to be put on the storage
+ * (loader_log_flush below) -- for the calls that can reset the phone.
+ */
+#define LOADER_LIVE_MAGIC3      0x334556494c554e58ULL
+
 /*
  * For a loader that watches from another processor core while the kernel runs (it starts the
  * kernel on a core of its choice and stays on the first one): a sign of life, and where the log
@@ -198,6 +203,9 @@ struct loader_live {
 	volatile uint64_t stop;         /* the loader's to write: the host has asked for the run to end */
 	uint64_t magic2;                /* "XNULIVE2": what follows is there (a loader may meet an older kernel) */
 	const uint64_t *sound;          /* loader_sound: the same for a recording of the sound */
+	uint64_t magic3;                /* "XNULIVE3" (R26): the kernel can ask for the log on the storage */
+	volatile uint64_t flush_seq;    /* the kernel's to write: a call that can reset the phone is coming */
+	volatile uint64_t flush_ack;    /* the loader's to write: it is done */
 };
 
 /*
@@ -213,7 +221,39 @@ struct loader_live loader_live = {
 	.log_wrapped = &loader_log_wrapped, .log_head = LOADER_LOG_HEAD, .log_ring = LOADER_LOG_RING,
 	.recording = loader_recording,
 	.magic2 = 0x324556494c554e58ULL, .sound = loader_sound,
+	.magic3 = LOADER_LIVE_MAGIC3,
 };
+
+/*
+ * R26: the whole log, on the storage, before a call that can reset the phone.  The
+ * watching loader writes what the log holds this moment -- its own side and the
+ * kernel's, whole, in reading order -- to the logdump partition, and answers with the
+ * ack; a reset that follows does not take the record with it.  Returns 1 when the
+ * loader has done it, 0 when there is none or it did not answer in time (the caller
+ * goes on either way: a lost flush must not become a lost experiment).
+ */
+int
+loader_log_flush(void)
+{
+	uint64_t seq, freq, now, end;
+
+	if (loader_live.magic3 != LOADER_LIVE_MAGIC3) {
+		return 0;
+	}
+	seq = ++loader_live.flush_seq;
+	__asm__ volatile ("dsb sy");
+	freq = __builtin_arm_rsr64("CNTFRQ_EL0");
+	now = __builtin_arm_rsr64("CNTVCT_EL0");
+	end = now + freq + freq / 2;         /* a second and a half */
+	while (loader_live.flush_ack != seq) {
+		__builtin_arm_yield();
+		now = __builtin_arm_rsr64("CNTVCT_EL0");
+		if (now >= end) {
+			return 0;
+		}
+	}
+	return 1;
+}
 
 /* Valid from the first instruction of C code: does not depend on gVirtBase/gPhysBase being set up. */
 static inline uint64_t

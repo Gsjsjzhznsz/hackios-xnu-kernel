@@ -324,6 +324,21 @@ compose_logs(const char *klog, uint64_t klog_len)
 
 static int hc_list_is_uefis(void);
 static int hc_log_skips;                /* logs not written this run (said twice at most) */
+
+/*
+ * R26, oem keep-logdump: the previous run's log, kept.  The flag lives in the logdump
+ * partition's own last block, where no composed log ever lands (they start at block 0
+ * and stay under 2 MB of a 64 MB partition).  Found at start-up, the magic is spent
+ * (one boot) and this run writes nothing to the partition -- what the last run left
+ * there, the log a reset has just taken the RAM of, survives for "oem logdump".
+ * "oem keep-logdump" writes it again and turns this run's writes back on.
+ */
+#define LOGDUMP_KEEP_MAGIC     "XNUKEEP1"
+static int logdump_keep_prev;           /* set at start-up: this run keeps the partition's log */
+static int logdump_keep_said;           /* the note is printed at most twice */
+static uint8_t keep_block[4096] __attribute__((aligned(8)));
+/* kernel arguments set over USB ("oem cmdline-append"), riding on the payload's own */
+static char extra_cmdline[160];
 static void hc_print_state(const char *when);
 static void hc_take_back(const char *when);
 
@@ -342,6 +357,16 @@ write_logs(const char *klog, uint64_t klog_len)
                         }
                         print("\n== END OF LOG ==\n");
                 }
+                return;
+        }
+        if (logdump_keep_prev) {
+                /* R26: this run keeps the previous run's log: nothing of this run goes
+                 * to the partition, so what a reset left there survives for the fetch. */
+                if (logdump_keep_said++ < 2) {
+                        print("log: NOT WRITTEN to logdump: the previous run's log is kept (oem logdump fetches it;\n"
+                            "    oem keep-logdump arms the next boot and turns the writes back on)\n");
+                }
+                compose_logs(klog, klog_len);
                 return;
         }
         uint64_t bs = bio->media->block_size;
@@ -893,6 +918,10 @@ struct kernel_live {
         uint64_t stop;                  /* ours to write: the host wants the run to end ("oem stop") */
         uint64_t magic2;                /* "XNULIVE2": the kernel is new enough to have what follows */
         uint64_t sound;                 /* (a virtual address too) the same for a recording of the sound */
+        uint64_t magic3;                /* "XNULIVE3" (R26): the kernel can ask for the log on the storage below */
+        uint64_t flush_seq;             /* the kernel's to write: put the log on the storage
+                                         * (a call that can reset the phone is coming) */
+        uint64_t flush_ack;             /* ours to write: it is done */
 };
 
 /*
@@ -961,6 +990,7 @@ static const char *sound_data;
 static uint64_t sound_len;
 #define KERNEL_LIVE_MAGIC2      0x324556494c554e58ULL
 #define KERNEL_LIVE_MAGIC       0x214556494c554e58ULL
+#define KERNEL_LIVE_MAGIC3      0x334556494c554e58ULL  /* "XNULIVE3" (R26) */
 #define OTHER_CPU_NOT_STARTED   1000    /* run_on_other_cpu(): the firmware said yes but the core never arrived */
 #define OTHER_CPU_HUNG          1001    /* ... the kernel stopped giving signs of life */
 #define START_SECONDS           5
@@ -1057,6 +1087,83 @@ compose_live_log(const struct kernel_live *live, uint64_t slide)
         }
 #undef PUT
         staged_len = n;
+}
+
+/*
+ * R26, the kernel's own flush: what the log holds this moment -- the loader's side
+ * and the kernel's, whole, in reading order -- goes to the logdump partition.  (The
+ * 2-second notes carry the last 960 bytes; a call that can reset the phone asks for
+ * everything, before it goes out.  The ack then lets the kernel walk into the call.)
+ */
+static void
+flush_logdump_whole(const struct kernel_live *live, uint64_t slide)
+{
+        efi_block_io *bio = find_log_partition();
+        uint64_t bs, wlen, ws, rs = 0;
+        int same = 0;
+
+        if (logdump_keep_prev) {
+                if (logdump_keep_said++ < 2) {
+                        print("log: the kernel asked for a flush; NOT WRITTEN -- the previous run's log is kept\n");
+                }
+                return;
+        }
+        if (bio == NULL) {
+                return;         /* (QEMU: no log partition; the ack costs nothing) */
+        }
+        if (!hc_list_is_uefis()) {
+                if (hc_log_skips++ < 2) {
+                        print("log: the kernel asked for a flush; NOT WRITTEN: UEFI's transfer list is not the one "
+                            "in the controller\n");
+                }
+                return;
+        }
+        compose_live_log(live, slide);
+        bs = bio->media->block_size;
+        wlen = (staged_len + 1 + bs - 1) / bs * bs;
+        ws = bio->write_blocks(bio, bio->media->media_id, 0, wlen, out_buf);
+        if (!EFI_ERROR(ws)) {
+                bio->flush_blocks(bio);
+                if (wlen <= sizeof(block_buffer)) {
+                        rs = bio->read_blocks(bio, bio->media->media_id, 0, wlen, block_buffer);
+                        same = !EFI_ERROR(rs) && memcmp(block_buffer, out_buf, wlen) == 0;
+                }
+        }
+        print("log: the kernel asked for a flush; %d B written to logdump whole (%x), read back %s (%x)\n",
+            (uint32_t)wlen, ws, EFI_ERROR(ws) ? "not tried" : same ? "the same" : "DIFFERENT", rs);
+}
+
+/*
+ * R26, the start-up half of oem keep-logdump: spend the magic, keep this run's
+ * writes off the partition.  (See the note by logdump_keep_prev.)
+ */
+static void
+logdump_keep_boot_check(void)
+{
+        efi_block_io *bio = find_log_partition();
+        uint64_t lbs;
+
+        if (bio == NULL) {
+                return;         /* (QEMU: no log partition) */
+        }
+        lbs = bio->media->block_size;
+        if (lbs == 0 || lbs > sizeof(keep_block) || bio->media->last_block < 2 ||
+            (bio->media->last_block + 1) * lbs <= (4ull << 20)) {
+                return;         /* the magic must sit beyond anything a composed log or a logdump read touches */
+        }
+        if (EFI_ERROR(bio->read_blocks(bio, bio->media->media_id, bio->media->last_block, lbs, keep_block)) ||
+            memcmp(keep_block, LOGDUMP_KEEP_MAGIC, sizeof(LOGDUMP_KEEP_MAGIC) - 1) != 0) {
+                return;
+        }
+        memset(keep_block, 0, (size_t)lbs);
+        if (EFI_ERROR(bio->write_blocks(bio, bio->media->media_id, bio->media->last_block, lbs, keep_block))) {
+                return;         /* could not spend it: better back to writing than keeping forever on a fluke */
+        }
+        bio->flush_blocks(bio);
+        logdump_keep_prev = 1;
+        print("logdump: the previous run's log is KEPT: this run writes nothing there "
+            "(its keep magic was in the last block)\n"
+            "logdump: oem logdump fetches it; oem keep-logdump arms the next boot and turns the writes back on\n");
 }
 
 static void print(const char *fmt, ...);
@@ -2716,6 +2823,16 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
                         }
                 }
                 /*
+                 * R26: the kernel asked for the log on the storage (a call that can reset
+                 * the phone is coming).  Everything printed so far goes to logdump whole,
+                 * and the ack lets the kernel walk into its call.
+                 */
+                if (live != NULL && live->magic3 == KERNEL_LIVE_MAGIC3 &&
+                    live->flush_seq != live->flush_ack) {
+                        flush_logdump_whole(live, slide);
+                        ((struct kernel_live *)(uintptr_t)live)->flush_ack = live->flush_seq;
+                }
+                /*
                  * After that this core only watches: no interrupts (the kernel reprograms the interrupt
                  * controller's shared half; UEFI's handlers had better not run on top of that for long).
                  */
@@ -3475,6 +3592,15 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
         }
         for (const char *c = pi.cmdline; *c && n < BOOT_LINE_LENGTH - 1; c++) {
                 ba->commandLine[n++] = *c;
+        }
+        /* R26: the extra arguments set over USB ("oem cmdline-append"), after the payload's own */
+        if (extra_cmdline[0] != 0) {
+                if (n < BOOT_LINE_LENGTH - 1) {
+                        ba->commandLine[n++] = ' ';
+                }
+                for (const char *c = extra_cmdline; *c && n < BOOT_LINE_LENGTH - 1; c++) {
+                        ba->commandLine[n++] = *c;
+                }
         }
 
         /* --- device tree ---------------------------------------------------- */
@@ -4382,6 +4508,78 @@ fb_command(char *cmd)
                                 compose_logs(NULL, 0);
                         }
                         fb_reply("OKAY", "");
+                } else if (starts_with(cmd, "oem keep-logdump") || starts_with(cmd, "oem boot-no-clear")) {
+                        /*
+                         * R26: the next boot leaves the logdump partition alone (the keep
+                         * magic goes into its last block), and THIS run's writes to it are
+                         * turned back on.  For the rounds whose run ends in a reset of its
+                         * own: the log of the run that died is on the partition, and the
+                         * boot after it does not write over it.
+                         */
+                        efi_block_io *bio = find_log_partition();
+
+                        if (bio == NULL) {
+                                fb_reply("FAIL", "no logdump partition");
+                        } else {
+                                uint64_t lbs = bio->media->block_size;
+
+                                if (lbs == 0 || lbs > sizeof(keep_block) || bio->media->last_block < 2 ||
+                                    (bio->media->last_block + 1) * lbs <= (4ull << 20)) {
+                                        fb_reply("FAIL", "the logdump partition is shaped wrong for this");
+                                } else if (!hc_list_is_uefis()) {
+                                        fb_reply("FAIL", "the storage's transfer list is not UEFI's right now");
+                                } else {
+                                        memset(keep_block, 0, (size_t)lbs);
+                                        memcpy(keep_block, LOGDUMP_KEEP_MAGIC, sizeof(LOGDUMP_KEEP_MAGIC) - 1);
+                                        if (EFI_ERROR(bio->write_blocks(bio, bio->media->media_id,
+                                            bio->media->last_block, lbs, keep_block))) {
+                                                fb_reply("FAIL", "the write of the keep magic failed");
+                                        } else {
+                                                bio->flush_blocks(bio);
+                                                logdump_keep_prev = 0;
+                                                print("logdump: the next boot KEEPS this partition's log; this run's writes are ON\n");
+                                                fb_reply("OKAY", "armed: the next boot keeps the logdump; this run writes it");
+                                        }
+                                }
+                        }
+                } else if (starts_with(cmd, "oem cmdline-clear")) {
+                        /* R26: drop the extra kernel arguments ("oem cmdline-append" sets them) */
+                        extra_cmdline[0] = 0;
+                        print("cmdline: the extra arguments are dropped\n");
+                        fb_reply("OKAY", "");
+                } else if (starts_with(cmd, "oem cmdline-append")) {
+                        /*
+                         * R26: kernel arguments without reflashing.  The payload's cmdline
+                         * entry is baked into the flashed image; these ride on top of it,
+                         * into the boot_args line of the next "oem run".  ("oem cmdline"
+                         * shows them; 160 is the room.)
+                         */
+                        const char *arg = cmd + 18;
+                        size_t have, add;
+
+                        while (*arg == ' ') {
+                                arg++;
+                        }
+                        have = str_len(extra_cmdline);
+                        add = str_len(arg);
+                        if (add == 0) {
+                                fb_reply("FAIL", "nothing to append");
+                        } else if (have + (have ? 1 : 0) + add + 1 > sizeof(extra_cmdline)) {
+                                fb_reply("FAIL", "too long: the room is 160");
+                        } else {
+                                if (have != 0) {
+                                        extra_cmdline[have++] = ' ';
+                                }
+                                memcpy(extra_cmdline + have, arg, add);
+                                extra_cmdline[have + add] = 0;
+                                print("cmdline: the extra arguments are now \"%s\" (they ride on the next run's boot_args)\n",
+                                    extra_cmdline);
+                                fb_reply("OKAY", extra_cmdline);
+                        }
+                } else if (starts_with(cmd, "oem cmdline")) {
+                        fb_reply("OKAY",
+                            extra_cmdline[0] != 0 ? extra_cmdline :
+                            "(none; oem cmdline-append sets them, oem cmdline-clear drops them)");
                 } else if (starts_with(cmd, "oem logdump")) {
                         /* R24b: stage the logdump partition for "get_staged".  A kernel that
                          * came back on its own (reason 0, a panic's way back included) leaves
@@ -4577,7 +4775,9 @@ efi_main(efi_handle image, efi_system_table *st)
         IMAGE = image;
 
         BS->set_watchdog_timer(0, 0, 0, NULL);
-        print("== XNULOADER v3 ==\n");
+        /* R26: the loader moves for the first time since 47911ca -- the keep-logdump
+         * flag, the kernel's flush channel, and the cmdline extras. */
+        print("== XNULOADER v4 ==\n");
         print("CurrentEL=%x MIDR=%x MMFR0=%x CNTFRQ=%d image=%x\n", READ_SYSREG(CurrentEL) >> 2, READ_SYSREG(MIDR_EL1),
             READ_SYSREG(ID_AA64MMFR0_EL1), READ_SYSREG(CNTFRQ_EL0), (uint64_t)(uintptr_t)&__ImageBase);
 
@@ -4601,6 +4801,7 @@ efi_main(efi_handle image, efi_system_table *st)
 
         install_exception_hook();
         wdt_arm();
+        logdump_keep_boot_check();
 
         int have_payload = parse_payload(&pi, 0);
         if (have_payload && pi.usb_mode && usb_start()) {
