@@ -547,3 +547,13 @@ Stage Summary:
 - `zap_header()`：发调用前扫描证书链可读名（前 6 个）+ 测试签名有界查证，打印 **"THE SIGNATURE CHAIN SAYS: A TEST KEY …"** 或 "no test-key marks"。
 - step 19：矩阵退役，单一规范尝试（整 .mbn + 可抢占）；落位 = 自家新页（vendor 同款，0x1000 授权），`adreno_zapmem=<phys>` 可强制 DT 区；拒绝路径加**零页对照**（GPU id / audio id 各一发，同码=调用级、换码=镜像级）。
 - 门禁：+15 条 R23 标记、−7 条 R22 矩阵标记（退役清单入 CI）。
+
+## R24 · 换血：本机原厂 zap 文件
+
+**R23 实锤闭环：判词自报 "A TEST KEY"、零页对照 -3145738 换码（TZ 读得动缓冲、拒的是镜像；-(0x3000xx) 码族实证：0x0A=零页解析拒、0x45=测试链签名拒）。R21-R23 七次同码的唯一变量 = 签名链。R24 换上本机 /vendor 原厂件。**
+
+- 文件取证（upload/a640_zap_stock.elf，用户自本机 /vendor 提取）：14256B，sha256 627ecc6a…；与测试签名件 diff 仅 3453B（0x103c..0x1f36，全部在证书区）；ELF 头/phdr/代码段逐字节相同（同一份 zap 代码）；zap_header 验收 PASS（hash 0x1a38@0x1000、PT_LOAD 0x7b0@0x3000 同布局）；链名 "Xiaomi Attestation CA"（2021→2041，Beijing）+ "Xiaomi Root CA"（2017→2037），测试标记零命中
+- 交付机制（md1 卷字节固定的破局）：新件与旧件**同长（14256B）**且卷内旧件**唯一命中（0x7b000）**⇒ APFS 卷内同长字节置换（演练于 r23 md1：置换后 NXSB 完好、测试链清零、新件唯一；测试链 2 处均在文件区间内随之清零）
+- 内核改动（scripts/r24_patch_c.py 字节锚定×5 全命中，配平 0/0）：三岔判词（A TEST KEY 防旧件回流 / THE PHONE'S OWN PRODUCTION CHAIN 预期判词 / 无标记兜底）+ Xiaomi Attestation CA / Xiaomi Root CA 探针 + 取证名 6→8 个；R23 全部机制保留（单一规范尝试、零页对照、动态页落位 adreno_zapmem=、签名链取证）
+- 流水线：tools/r24-flash-build.sh + .github/workflows/r24-springboard.yml（新增 ④b 同长置换步：root.apfs 与 .volumes 缓存源同换、幂等、置换后三重断言；打包门禁硬校验"卷内必须有小米链、必须无测试链"；门禁 +4/−1）
+- 红线遵守：不 stage md1（boot-only 不变）；只用 .elf 不用 .mdt；零页对照全保留

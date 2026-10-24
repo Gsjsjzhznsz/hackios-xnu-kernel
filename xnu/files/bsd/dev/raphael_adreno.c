@@ -1863,6 +1863,11 @@ image_file(const char *directory, const char *name, uint64_t *size)
  * itself "Generated Test Attestation CA" and "General Use Test Key (for testing only)": a chain
  * a fused phone's TrustZone cannot take from anyone.  The chain's own names are read out of the
  * hashes here, before the first call is made, so the log decides the file question by itself.
+ *
+ * R24, the file changed: this tree ships the phone's OWN a640_zap.mbn now (the /vendor/firmware
+ * file, 14256 B, sha256 627ecc6a..., "Xiaomi Attestation CA"/"Xiaomi Root CA" -- its diff against
+ * the test-signed file is 3453 bytes, all inside the certificate area; the code is the same
+ * bytes).  The verdict names the production chain when it sees it.
  */
 /* A bounded strstr: does the first len bytes of buf carry the needle whole?  (The hashes are one blob, not a string.) */
 static bool
@@ -1941,6 +1946,8 @@ zap_header(uint64_t *phys, bool whole)
                 unsigned names = 0;
                 bool test_signed = zap_chain_has(hashes, hash_bytes, "Generated Test") ||
                                    zap_chain_has(hashes, hash_bytes, "General Use Test Key");
+                bool xiaomi_chain = zap_chain_has(hashes, hash_bytes, "Xiaomi Attestation CA") ||
+                                    zap_chain_has(hashes, hash_bytes, "Xiaomi Root CA");
 
                 for (at = 0; at <= hash_bytes; at++) {
                         uint8_t c = at < hash_bytes ? hashes[at] : 32;
@@ -1960,7 +1967,7 @@ zap_header(uint64_t *phys, bool whole)
                                         word[i] = (char)hashes[run_at + i];
                                 }
                                 word[i] = 0;
-                                if (names < 6) {
+                                if (names < 8) {
                                         printf("adreno: %u:   the hashes carry \"%s\" (at %#x)\n", step, word,
                                             hash_at + run_at);
                                         names++;
@@ -1972,7 +1979,10 @@ zap_header(uint64_t *phys, bool whole)
                     "A TEST KEY (Qualcomm SecTools \"Generated Test\"/\"General Use Test Key\") -- a fused phone's "
                     "TrustZone refuses this file whoever calls: a640_zap.mbn must be THIS phone's own signed file "
                     "(the stock ROM's vendor.img, vendor/firmware/)" :
-                    "no test-key marks -- the chain reads like the phone's own");
+                    xiaomi_chain ?
+                    "THE PHONE'S OWN PRODUCTION CHAIN (\"Xiaomi Attestation CA\"/\"Xiaomi Root CA\") -- this is the "
+                    "file this phone's vendor ships: TrustZone should take it" :
+                    "no test-key marks and no Xiaomi marks -- judge by the names printed above");
         }
         if (kmem_alloc(kernel_map, &page, PAGE_SIZE, KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
                 printf("adreno: %u: no memory\n", step);
@@ -3230,6 +3240,13 @@ step_core_space(void)
  * log loads its zap from a page the pil framework allocates ("loading from 0xfe500000 to
  * 0xfe501000" -- one page, dynamically placed).  So the vendor-faithful place is a fresh page
  * of ours; adreno_zapmem=<phys> forces the dt's region back, for an A/B.
+ * R24: the file IS this phone's own now (the /vendor file; the same 14256 B, the same code
+ * bytes, only the certificate area differs -- the swap is done inside the md1 volume, byte
+ * for byte, same length, one occurrence).  What the refusal was, is what the file was: the
+ * zero-page control already proved TrustZone reads our buffers (-3145738, a different code)
+ * and refuses THE IMAGE (-3145797, the test chain).  With the production chain the attempt
+ * is expected to be taken, and the step walks on into MEM_SETUP, the write and the
+ * authentication.
  * R22, the matrix that closed the call's variables (its verdict is what stands):
  *   - The form of the call. R21 sent the PAS calls "at once" (SCM_FAST, as the probes are
  *     sent); both working forms send them as calls that MAY BE PREEMPTED -- redwood's step 12
