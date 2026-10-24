@@ -210,7 +210,7 @@ jobs:
                                (b"'s status byte changed to", 'R14 按键原始字节见证'),
                                (b"the two pages the GMU's own code asks for", 'R15 GMU scratch 两页'),
                                (b'cb tlbiall', 'R15 上下文银行全量 TLB 清洗'),
-                               (b'a bank nobody used before', 'R16 处女银行'),
+                               (b'a context bank nobody used before', 'R16 处女银行'),
                                (b'trying context bank', 'R16 银行候选循环'),
                                (b'tlbiallnsnh', 'R16 全局 TLB 失效'),
                                (b'the stream the bank names for it', 'R16 故障流 ID 取证'),
