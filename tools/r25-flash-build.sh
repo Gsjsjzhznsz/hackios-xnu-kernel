@@ -244,7 +244,7 @@ for feat in (b'RAPHAEL TOUCH', b'GT9886', b'buttons: step 1', b'PMIC arbiter',
              b"E4: the id sweep",
              b"E5: the same call again",
              b"E5: after the give-up",
-             b"secboot and rollback fuses")):
+             b"secboot and rollback fuses"):
         if feat not in k:
                 fail(f'the built kernel lacks the marker {feat!r}')
 # retired markers must be GONE: the rounds that deleted them
