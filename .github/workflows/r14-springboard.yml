@@ -157,12 +157,16 @@ jobs:
         run: |
           set -eu
           if [ ! -x "$THEOS/toolchain/linux/iphone/bin/ld64" ]; then
+            # 缓存可能带来残缺树（run 40059592397：r13-theos-v1 只有 158MB、无 toolchain）——
+            # git clone 不进非空目录，先清场再取
+            rm -rf "$THEOS"
             git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
             mkdir -p "$THEOS/toolchain"
             curl -sL https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-x86_64.tar.xz | tar -xJ -C "$THEOS/toolchain/"
           fi
           "$THEOS/toolchain/linux/iphone/bin/ld64" --version || true
           if [ ! -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include" ]; then
+            rm -rf "$THEOS/sdks/iPhoneOS16.5.sdk" /tmp/theos-sdks
             git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/theos-sdks
             git -C /tmp/theos-sdks sparse-checkout set iPhoneOS16.5.sdk
             mkdir -p "$THEOS/sdks"
