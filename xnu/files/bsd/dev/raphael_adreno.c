@@ -1563,63 +1563,6 @@ space_check(const struct gpu_space *space, const char *when)
 }
 
 /*
- * R18: which entry of the stream table carries a stream. The entries and the streams are
- * independent -- entry 1 has carried the GMU's stream 5 since R15, entry 2 the second stream's
- * in its round. Entry 0, the one the device tree pairs with the 3D core's stream 0, does not
- * keep what is written: R17's step 18 offered it the device tree's match twice, through bank 4
- * and through bank 0, and read zeroes both times -- and it read zero at step 8, before anything
- * was written to it at all. Whoever holds it (the global registers are the hypervisor's to
- * answer for) is not argued with: the stream is offered its own entry first, then every free
- * one -- the GMU's entry 1 never -- and the first entry that keeps what it is given carries
- * it. An entry that refuses is named and put back as it was; an entry reading zero matches
- * nothing. Returns the entry that took the stream, or all ones if none would; `taken`, when
- * not all ones, is an entry already carrying another stream and is never re-offered.
- */
-static uint32_t
-space_match_take(uint32_t stream, uint32_t match, uint32_t context, uint32_t taken)
-{
-        static const uint32_t others[] = { 0, 2, 3, 4, 5 };     /* 1 stays the GMU's (GMU_MATCH) */
-        uint32_t value = SMMU_SMR_VALID | SMMU_STREAM_MASK << 16 | stream;
-        uint32_t slots[sizeof(others) / sizeof(others[0]) + 1];
-        unsigned count = 0;
-
-        slots[count++] = match;
-        for (unsigned i = 0; i < sizeof(others) / sizeof(others[0]); i++) {
-                if (others[i] != match) {
-                        slots[count++] = others[i];
-                }
-        }
-        for (unsigned i = 0; i < count; i++) {
-                uint32_t slot = slots[i], was_smr, was_s2cr, read;
-
-                if (slot >= smmu_matches || slot == taken) {
-                        continue;
-                }
-                was_smr = get(&smmu, "smr", SMMU_SMR(slot));
-                was_s2cr = get(&smmu, "s2cr", SMMU_S2CR(slot));
-                put(&smmu, "s2cr", SMMU_S2CR(slot), context);
-                put(&smmu, "smr", SMMU_SMR(slot), value);
-                read = get(&smmu, "smr", SMMU_SMR(slot));
-                if (read == value && (get(&smmu, "s2cr", SMMU_S2CR(slot)) & 0x300ff) == context) {
-                        if (slot != match) {
-                                printf("adreno: %u: stream %u goes through entry %u of the stream table instead\n",
-                                    step, stream, slot);
-                        }
-                        return slot;
-                }
-                if (read != value) {
-                        printf("adreno: %u: entry %u of the stream table does not keep what is written "
-                            "(the write reads back %#x)\n", step, slot, read);
-                }
-                put(&smmu, "smr", SMMU_SMR(slot), was_smr);
-                put(&smmu, "s2cr", SMMU_S2CR(slot), was_s2cr);
-        }
-        printf("adreno: %u: NO ENTRY of the stream table keeps stream %u: the GPU's streams are the hypervisor's "
-            "to route, and it refused every entry\n", step, stream);
-        return ~0u;
-}
-
-/*
  * One more stream through a context that is on. A match is taken only as the device tree has
  * it, a stream and the mask 0x400: one entry for streams 0 and 1 (mask 0x401) reads back 0.
  */
@@ -2954,9 +2897,9 @@ static struct gpu_space second_space = {
         .name = "the 3D core's second stream", .context = 2, .control = SMMU_SCTLR_SERVE_AFTER_FAULT,
 };
 #define SECOND_MATCH            2
-/* R18: the entries that actually carry the streams -- space_match_take() finds them, for the
- * device tree's entry 0 has refused everything written to it since R17 (it reads back zeroes);
- * the defines above are only where each stream's offer starts */
+/* R19: the entries are as the device tree has them again -- entry 0 for stream 0, entry 2 for
+ * the second stream; what R17 and R18 read as refusals was the dead bank behind the entry, and
+ * the fix is the bank's order, not the table's (space_match_take is gone with that theory) */
 static uint32_t core_match = CORE_MATCH, second_match = SECOND_MATCH;
 static bool second_space_is_on, second_stream_is_on;
 static struct gpu_block core_ring, core_sqe, core_scratch, core_target;
@@ -3046,12 +2989,10 @@ step_core_space(void)
 {
         const uint8_t *microcode;
         uint64_t size = 0;
-        uint32_t stream1 = 1;
 
         if (!cx_ready() || !core_is_on) {
                 return false;
         }
-        PE_parse_boot_argn("adreno_stream1", &stream1, sizeof(stream1));
         announce("make the 3D core's memory: its ring, its microcode (fw/a630_sqe.fw), a page to try writing to");
         microcode = image_file("fw", "a630_sqe.fw", &size);
         if (microcode == NULL || size < 8 || size > 0x40000 ||
@@ -3063,51 +3004,25 @@ step_core_space(void)
         memcpy((void *)core_sqe.memory, microcode + 4, size - 4);       /* the file's first word is not microcode */
         to_memory(core_sqe.memory, core_sqe.size);
 
-        /* a bank nobody used before, for the same reason the GMU moved off its own: Android's 3D core
-         * bank (0) carries the same kind of leftover translations, and the SQE's fetches go through
-         * the bank from its first instruction (R16; 4 is the one nobody of the five has ever had) */
-        announce("give the SMMU's tables to a context bank nobody used before for the 3D core's requests (stream 0), "
-            "Android's own 3D bank (0) the fallback; the device tree's entry 0 of the stream table refused R17 "
-            "everything (it reads zeroes), so the free entries are offered one by one until one keeps the stream");
-        core_match = space_match_take(CORE_STREAM, CORE_MATCH, core_space.context, ~0u);
-        if (core_match == ~0u) {
+        /* the reference's order (the phone the driver comes from, and the GMU's own step 13 here):
+         * the bank is programmed COMPLETELY and switched ON first, then the stream table is told
+         * where the stream goes -- the hypervisor drops SMR/S2CR writes that would route a stream
+         * into a bank whose translation is OFF (what R17 met through bank 4 and bank 0, and R18
+         * met through every entry of the table; the R18 scanning is gone with them) */
+        announce("give the SMMU's context 0 these tables and send the 3D core's requests (stream 0) through it: "
+            "the bank is programmed and ON before the stream table is touched -- the hypervisor drops SMR/S2CR "
+            "writes that would route a stream into a bank that is not translating (what R17 and R18 met)");
+        core_match = CORE_MATCH;
+        core_space_is_on = true;
+        if (!space_on(&core_space, CORE_MATCH, CORE_STREAM)) {
                 return false;
         }
-        core_space_is_on = true;
-        for (unsigned i = 0;; i++) {
-                static const uint32_t candidates[] = { 4, 0 };     /* 4: nobody's; 0: Android's own 3D core bank */
-
-                core_space.context = candidates[i] < smmu_contexts ? candidates[i] : 0;
-                printf("adreno: %u: trying context bank %u for the 3D core%s\n", step, core_space.context,
-                    core_space.context == 0 ? " (the fallback: Android's own 3D core bank)" : "");
-                if (space_on(&core_space, core_match, CORE_STREAM)) {
-                        break;
-                }
-                if (i + 1 == sizeof(candidates) / sizeof(candidates[0])) {
-                        return false;
-                }
-        }
-        if (stream1 == 2) {
-                if ((second_space.root = space_new_table(&second_space)) == NULL) {
-                        return false;
-                }
-                second_match = space_match_take(1, SECOND_MATCH, second_space.context, core_match);
-                if (second_match == ~0u) {
-                        return false;
-                }
-                second_space_is_on = true;
-                if (!space_on(&second_space, second_match, 1)) {
-                        return false;
-                }
-        } else if (stream1 == 1) {
-                second_match = space_match_take(1, SECOND_MATCH, core_space.context, core_match);
-                if (second_match == ~0u) {
-                        return false;
-                }
-                second_stream_is_on = true;
-                if (!space_stream(&core_space, second_match, 1)) {
-                        return false;
-                }
+        announce("the core's second stream (1) through the same context, at the stream table's entry 2: "
+            "without it the phone resets without a word once the command processor starts");
+        second_match = SECOND_MATCH;
+        second_stream_is_on = true;
+        if (!space_stream(&core_space, SECOND_MATCH, 1)) {
+                return false;
         }
         get(&gpu, "rbbm_status", RBBM_STATUS);
         return !space_faulted(&core_space);

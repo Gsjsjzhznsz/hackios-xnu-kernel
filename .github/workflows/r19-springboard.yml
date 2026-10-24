@@ -1,0 +1,494 @@
+# =====================================================================
+#  R19 · SpringBoard 一键流水线（boot-only · R13 全量小卷直取 · GitHub Actions）
+#  -------------------------------------------------------------------
+#  R18 真机战报：三条事实闭合——entry 0 在 step 8（一字未写时）读 0；
+#  经 bank 4、bank 0 两次写入均读回 0；空闲条目逐一如数退还，而 GMU 的
+#  entry 1 从未拒过。唯一的解释：看守者（hypervisor）拒绝的不是"某条
+#  entry"，而是"把流路由进一条没在翻译的 context bank"的一切 SMR/S2CR
+#  写入。GMU 的 bank 是先完整编程再打开的，写入自 R13 起次次落地；
+#  3D 核心的 bank 是死的，写"给流表"的一切随它陪葬。
+#  R19 改一件事（参考配方原样回移——同芯片家族、同看守者、能日用的
+#  那台手机的驱动顺序）：
+#
+#    context bank 0 先完整编程并打开（cb sctlr → cba2r → cbar → tcr2 →
+#    tcr → ttbr0 → mair0 → tlbiasid/tlbsync → sctlr ON|SERVE_AFTER_FAULT），
+#    然后才动流表：s2cr(entry 0) = context 0，
+#    smr(entry 0) = VALID | 0x400<<16 | stream 0；第二流 1（gfx3d_lpac）
+#    走同一 context 的 entry 2——设备树怎么配就怎么绑。
+#    R18 的槽位搜索（space_match_take）连同它的理论一起删除：无扫描、
+#    无 bypass、无写零、无退回循环。R17 的一切照旧（UNPRIVILEGED 页、
+#    READ_ONLY 微码 +4 跳过、SERVE_AFTER_FAULT、10 s 耐心）。
+#
+#  内核标记（构建门禁）：R19 = "the bank is programmed and ON before the
+#  stream table is touched" + "the hypervisor drops SMR/S2CR" + "the core's
+#  second stream (1) through the same context"；R11-R17 标记全数保留
+#  （R16 两条经 GMU 路径仍存活）；R18 四条标记必须【消失】（门禁反向
+#  验证——搜索代码已删干净）。loader：R10 0.10 不变。双卷仍取 R13 全量
+#  字节。
+#
+#  部署：默认分支 .github/workflows/r19-springboard.yml → Run workflow。
+#  注意：重复运行前先删掉旧 Release（或换 release_tag）。
+# =====================================================================
+name: R19 · SpringBoard 一键流水线（boot-only · R13 全量小卷直取）
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_repo:
+        description: "hackios 内核树 fork（含 xnu/ + tools/r19-flash-build.sh）"
+        required: true
+        default: "Gsjsjzhznsz/hackios-xnu-kernel"
+      userland_repo:
+        description: "hackios userland 树 fork"
+        required: true
+        default: "Gsjsjzhznsz/hackios-xnu-userland"
+      release_tag:
+        description: "Release tag（直链的一部分）"
+        required: true
+        default: "r19-springboard"
+      flashboot_url:
+        description: "启动卷 md0 直链（R13 全量字节，真机验证过）"
+        required: false
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r13-springboard/raphael-r13-flashboot.apfs"
+      root_url:
+        description: "小卷 md1（= /redwood = 系统根！）直链（R13 全量字节）"
+        required: false
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r13-springboard/r13-boot-volume-root.apfs"
+permissions:
+  contents: write
+concurrency:
+  group: r19-springboard
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 200
+    env:
+      REL: ${{ github.workspace }}/release
+      THEOS: /home/runner/theos     # (literal: GitHub Actions' env: block expands nothing)
+      CCACHE_DIR: ${{ github.workspace }}/hackios/.ccache
+    steps:
+      # ---------------------------------------------------------------
+      - name: "①/⑥ 磁盘准备与依赖（内核构建工具链 + 打包工具）"
+        run: |
+          set -eu
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+                       /usr/local/share/boost /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential python3-dev clang lld ccache \
+                       flex bison m4 perl python3 autoconf automake libtinfo6 xz-utils uuid-dev 7zip >/dev/null
+          command -v clang && command -v ccache && command -v 7z
+          # dsymutil：Ubuntu 的 apt clang 不往 /usr/bin 放它（R11 run 39973048286 的教训）
+          DS=$(command -v dsymutil || clang --print-prog-name=dsymutil 2>/dev/null || true)
+          [ -x "$DS" ] || DS=$(ls /usr/lib/llvm-*/bin/dsymutil 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$DS" ] && [ -x "$DS" ]; then
+            sudo ln -sf "$DS" /usr/bin/dsymutil
+          else
+            printf '#!/bin/sh\nexit 0\n' | sudo tee /usr/bin/dsymutil >/dev/null && sudo chmod +x /usr/bin/dsymutil
+          fi
+          mkdir -p "$REL"
+          df -h /
+
+      # ---------------------------------------------------------------
+      - name: "②/⑥ 取树（kernel fork + userland fork）"
+        run: |
+          set -eu
+          git clone --depth 1 "https://github.com/${{ inputs.kernel_repo }}.git" hackios
+          cd hackios
+          if ! USERLAND_URL="https://github.com/${{ inputs.userland_repo }}.git" common/setup.sh; then
+            echo "::warning::userland fork 拉取失败，回退上游 oosexgang/hackios-xnu-userland"
+            rm -rf .userland.git
+            USERLAND_URL="https://github.com/oosexgang/hackios-xnu-userland.git" common/setup.sh
+          fi
+          echo "→ raphael 启动链与 R19 打包器："
+          ls -lh prebuilt/raphael/ tools/r19-flash-build.sh fw-gpu-raphael/
+          git log -1 --format='→ kernel 树 @ %h %s'
+
+      # ---------------------------------------------------------------
+      - name: "②b/⑥ 编译门禁（loader：编译 + 特征串全验，内核构建前快速失败）"
+        run: |
+          set -eu
+          cd hackios
+          bash xnuloader/build.sh
+          python3 - <<'PY'
+          d = open('xnuloader/loader.efi', 'rb').read()
+          for feat in (b'oem gic', b'oem sgi', b'oem peek', b'NXSB at +32',
+                     b'as the firmware left it', b'never showed up as pending', b'oem gicset',
+                     b'oem gicgroup', b'group repair', b'pre-arm before CPU_ON',
+                     b'at the hung verdict',
+                     b'oem irqtest', b'DELIVERS as a Group 1 NS IRQ', b'R10 branch',
+                     b'the readback reads 0',
+                     b'R10 clean screen round', b'screen cleared for the handoff',
+                     b'cores for the kernel, in the order it takes them'):
+              assert feat in d, f'loader.efi 缺特征串 {feat!r}'
+          assert b'debug=0x8' not in d, 'loader.efi 仍带 debug=0x8'
+          print(f'✓ R19 loader（R10 0.10 原样，含多核路径特征）{len(d):,} B')
+          PY
+
+      # ---------------------------------------------------------------
+      # 缓存三连：theos / xnu-deps / ccache（键迁 r19-，restore-keys 回退 r18-/r17-）
+      - name: "②c/⑥ 缓存：theos（工具链 + iPhoneOS16.5.sdk）"
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/theos
+          key: r19-theos-v1
+          restore-keys: |
+            r18-theos-v1
+            r17-theos-v1
+            r16-theos-v1
+            r15-theos-v1
+            r14-theos-v1
+            r13-theos-v1
+      - name: "②d/⑥ 缓存：xnu-deps（Apple 开源件 + host 工具 + SDK 链接树）"
+        uses: actions/cache@v4
+        with:
+          path: hackios/xnu-deps
+          key: r19-xnu-deps-v1
+          restore-keys: |
+            r18-xnu-deps-v1
+            r17-xnu-deps-v1
+            r16-xnu-deps-v1
+            r15-xnu-deps-v1
+            r14-xnu-deps-v1
+            r13-xnu-deps-v1
+      - name: "②e/⑥ 缓存：ccache（内核编译）"
+        uses: actions/cache@v4
+        with:
+          path: hackios/.ccache
+          key: r19-ccache-${{ github.run_id }}
+          restore-keys: |
+            r19-ccache-
+            r18-ccache-
+            r17-ccache-
+            r16-ccache-
+            r15-ccache-
+            r14-ccache-
+            r13-ccache-
+
+      # ---------------------------------------------------------------
+      - name: "③/⑥ 内核源码构建（theos + xnu/apply.sh + xnu-deps + ccache + make）"
+        run: |
+          set -eu
+          if [ ! -x "$THEOS/toolchain/linux/iphone/bin/ld64" ]; then
+            # 缓存可能带来残缺树（run 40059592397：r13-theos-v1 只有 158MB、无 toolchain）——
+            # git clone 不进非空目录，先清场再取
+            rm -rf "$THEOS"
+            git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
+            mkdir -p "$THEOS/toolchain"
+            curl -sL https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-x86_64.tar.xz | tar -xJ -C "$THEOS/toolchain/"
+          fi
+          "$THEOS/toolchain/linux/iphone/bin/ld64" --version || true
+          if [ ! -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include" ]; then
+            rm -rf "$THEOS/sdks/iPhoneOS16.5.sdk" /tmp/theos-sdks
+            git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/theos-sdks
+            git -C /tmp/theos-sdks sparse-checkout set iPhoneOS16.5.sdk
+            mkdir -p "$THEOS/sdks"
+            mv /tmp/theos-sdks/iPhoneOS16.5.sdk "$THEOS/sdks/"
+            rm -rf /tmp/theos-sdks
+          fi
+          test -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include" || { echo "::error::theos/sdks 的 iPhoneOS16.5.sdk 就位失败"; exit 1; }
+          df -h /
+          cd hackios
+          xnu/apply.sh
+          bash xnu-deps/setup.sh || { echo "::error::setup.sh 失败——exporthdrs.log 尾部："; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
+          export XNU_CCACHE=1 CCACHE_COMPILERCHECK=content
+          ccache -M 2G >/dev/null 2>&1 || true
+          echo "→ ccache 起步统计："; ccache -s 2>/dev/null | head -8 || true
+          ./xnu-build.sh -j4 -k || echo "（make 退出码 $?——上游文档：链接后的检查，内核若已产出即成功）"
+          K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
+          ls -la "$K" || { echo "::error::内核没有产出——exporthdrs.log 与 make 日志尾部："; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
+          echo "→ ccache 收官统计："; ccache -s 2>/dev/null | head -8 || true
+          python3 - "$K" <<'PY'
+          import sys
+          d = open(sys.argv[1], 'rb').read()
+          for marker, what in ((b'\x9f\x4e\x00\x71', 'cmp w20,#0x13（门铃 19 分发）'),
+                               (b'\x08\x01\xa0\x52', 'movz w8,#0x8,lsl#16（门铃 19 使能）'),
+                               (b'RAPHAEL TOUCH', '触摸驱动'),
+                               (b'buttons: step 1', '按键驱动'),
+                               (b'a640_gmu.bin', 'GPU 驱动（a640 固件名）'),
+                               (b'a640_zap.mbn', 'GPU 驱动（zap mbn）'),
+                               (b'the panel dimmed to', 'fbdim 调光'),
+                               (b'going on with the configured rates', 'R12 测量降级（adreno step5）'),
+                               (b'going with the ID registers', 'R13 SMMU 修复（IDR 优先）'),
+                               (b'was not started: the firmware answers', 'PSCI SMP 起核路径'),
+                               (b"this firmware's verdict of started", 'R14 GMU 判据分支'),
+                               (b"the power-on block's pull-ups", 'R14 PON 拉电阻回读'),
+                               (b"'s status byte changed to", 'R14 按键原始字节见证'),
+                               (b"the two pages the GMU's own code asks for", 'R15 GMU scratch 两页'),
+                               (b'cb tlbiall', 'R15 上下文银行全量 TLB 清洗'),
+                               (b'a context bank nobody used before', 'R16 处女银行（GMU 路径）'),
+                               (b'trying context bank', 'R16 银行候选（GMU 路径）'),
+                               (b'tlbiallnsnh', 'R16 全局 TLB 失效'),
+                               (b'the stream the bank names for it', 'R16 故障流 ID 取证'),
+                               (b'what our own tables say for', 'R16 页表 walk 转储'),
+                               (b'arrived late', 'R16 迟到答案'),
+                               (b'make the SMMU forget every translation again', 'R16 msg30 前再清洗'),
+                               (b'survivable, cleared, the wait goes on', 'R17 可活故障容忍'),
+                               (b'while the GMU was deciding', 'R17 等待期故障轮询'),
+                               (b'has stopped answering', 'R17 假失败判据修复'),
+                               (b'with a bus error', 'R17 致命故障分类'),
+                               (b'the patience was not wasted', 'R17 答案耗时标定'),
+                               (b'while the 3D core was powered', 'R17 OOB 循环故障轮询'),
+                               (b'the bank is programmed and ON before the stream table is touched', 'R19 先开后表的参考顺序'),
+                               (b'the hypervisor drops SMR/S2CR', 'R19 看守者判词'),
+                               (b"the core's second stream (1) through the same context", 'R19 二流同 context 绑定')):
+              assert marker in d, f'源码构建的内核缺 {what}'
+          for gone, what in ((b'of the stream table does not keep what is written', 'R18 条目 0 拒写取证'),
+                             (b'of the stream table instead', 'R18 换条目路由'),
+                             (b'the free entries are offered one by one', 'R18 条目候选搜索'),
+                             (b'refused every entry', 'R18 全条目拒绝判词')):
+              assert gone not in d, f'R18 标记未删净：{what}（{gone!r} 仍在二进制里）'
+          print(f'✓ 源码构建的内核带齐 R11-R19 全部标记、R18 标记已删净（{len(d):,} B）')
+          PY
+          df -h /
+
+      # ---------------------------------------------------------------
+      # ④ 双卷获取（R15 起的纪律——R14 事故的封堵，R19 沿用）：
+      #   顺序 = 缓存(.volumes) → R13 release 全量字节 → 都没有则【失败即止】。
+      #   绝不再跑无 iOS 解包树的"直造"：build.sh 的 $IOS/rootfs 分支整段
+      #   跳过后，root.apfs 只剩 init/child/motd/pattern/fw 骨架，而 md1
+      #   挂上 /redwood 就是系统根（R14 黑屏事故的完整机制）。直造路径
+      #   从本工作流永久除名。
+      #   八道内容门禁（缺一 = 构建失败，不发空壳卷）：
+      #     root.apfs（md1 = /redwood = 系统根）：
+      #       lib/libredwood.dylib      注入 backboardd/SpringBoard 的用户态库
+      #       LaunchDaemons/com.apple.SpringBoard.plist   没它 launchd 不启桌面
+      #       etc/var.skel              没它 "[FAIL] create the directories of the data volume"
+      #       etc/inject.conf  etc/rc   注入清单与作业清单
+      #       xpc/extensions.plist      xpc 服务扩展（iOS 卷来件）
+      #       fw/a640_gmu.bin  bin/child  sbin/init   GPU 固件与基础件
+      #     flashboot.apfs（md0 = 启动卷）：sbin/launchd（stage0）
+      - name: "②f/⑥ 缓存：双卷（root.apfs + flashboot.apfs，验证通过才入缓存）"
+        uses: actions/cache@v4
+        with:
+          path: hackios/userland/.volumes
+          key: r19-volumes-v1
+          restore-keys: |
+            r18-volumes-v1
+            r17-volumes-v1
+            r16-volumes-v1
+            r15-volumes-v1
+            r14-volumes-v1
+            r13-volumes-v1
+
+      - name: "④/⑥ 双卷就位 + 八道内容门禁（缺一即停，绝不发空壳卷）"
+        run: |
+          set -eu
+          cd hackios
+          mkdir -p userland/.volumes
+          python3 - "${{ inputs.root_url }}" "${{ inputs.flashboot_url }}" <<'PY'
+          import hashlib, os, subprocess, sys
+
+          root, flash = 'userland/root.apfs', 'userland/flashboot.apfs'
+          vol_root, vol_flash = 'userland/.volumes/root.apfs', 'userland/.volumes/flashboot.apfs'
+
+          def nxsb(path):
+              return open(path, 'rb').read(36)[32:36] == b'NXSB'
+
+          def listed(path, needle):
+              out = subprocess.run(['7z', 'l', path], capture_output=True, text=True)
+              return needle in out.stdout
+
+          ROOT_NEEDS = ('fw/a640_gmu.bin', 'lib/libredwood.dylib',
+                        'LaunchDaemons/com.apple.SpringBoard.plist',
+                        'etc/var.skel', 'etc/inject.conf', 'etc/rc',
+                        'xpc/extensions.plist', 'bin/child', 'sbin/init')
+          FLASH_NEEDS = ('sbin/launchd',)
+
+          def gates(rootp, flashp, strict):
+              ok = nxsb(rootp) and nxsb(flashp)
+              why = []
+              for f, needs, what in ((rootp, ROOT_NEEDS, 'root.apfs (md1 = /redwood = 系统根)'),
+                                     (flashp, FLASH_NEEDS, 'flashboot.apfs (md0 = 启动卷)')):
+                  for n in needs:
+                      if not listed(f, n):
+                          ok = False
+                          why.append(f'{what} 缺 {n}')
+              return ok, why
+
+          got = False
+          # 第一优先：缓存里验证过的双卷
+          if os.path.isfile(vol_root) and os.path.isfile(vol_flash) and os.path.isfile('userland/.volumes/.verified'):
+              ok, why = gates(vol_root, vol_flash, True)
+              if ok:
+                  import shutil
+                  shutil.copyfile(vol_root, root)
+                  shutil.copyfile(vol_flash, flash)
+                  got = True
+                  print('✓ 双卷取自缓存（上轮验证过的同一批字节）')
+              else:
+                  print('::warning::缓存卷校验不过：' + '; '.join(why) + '——转 R13 资产')
+                  for f in (vol_root, vol_flash, 'userland/.volumes/.verified'):
+                      if os.path.isfile(f):
+                          os.remove(f)
+          # 第二优先：R13 release 的全量字节（R13 真机日志就是它的内容清单）
+          if not got:
+              root_url, flash_url = sys.argv[1], sys.argv[2]
+              for url, out in ((root_url, root), (flash_url, flash)):
+                  r = subprocess.run(['curl', '-fL', '--retry', '3', '--retry-delay', '5',
+                                      '--connect-timeout', '30', '-o', out, url])
+                  if r.returncode != 0:
+                      print(f'::error::下载失败 {url}')
+                      sys.exit(1)
+              ok, why = gates(root, flash, True)
+              if not ok:
+                  print('::error::R13 资产双卷未过内容门禁——按 R14 事故纪律，宁可构建失败也不发空壳卷：')
+                  for w in why:
+                      print('::error::  ' + w)
+                  sys.exit(1)
+              import shutil
+              shutil.copyfile(root, vol_root)
+              shutil.copyfile(flash, vol_flash)
+              open('userland/.volumes/.verified', 'w').write('ok')
+              got = True
+              print('✓ 双卷取自 R13 release 全量字节，八道门禁全过，已入缓存')
+          if not got:
+              print('::error::双卷无来源。R15 起不再无 iOS 直造（R14 黑屏事故：骨架 root.apfs 上了 /redwood）——'
+                    '补回 R13 release 资产或恢复 iOS 获取后重跑')
+              sys.exit(1)
+
+          for f, what in ((root, 'md1 /redwood = 系统根'), (flash, 'md0 启动卷')):
+              size = os.path.getsize(f)
+              digest = hashlib.sha256(open(f, 'rb').read()).hexdigest()[:16]
+              print(f'✓ {f} = {what}（{size:,} B, sha256 {digest}…）')
+          # 把 libredwood.dylib 解出来亮个相：内容门禁的实物证据
+          subprocess.run(['rm', '-rf', '/tmp/r15chk'])
+          if subprocess.run(['7z', 'e', root, '-o/tmp/r15chk', 'libredwood.dylib', '-r'],
+                            capture_output=True).returncode == 0:
+              hits = [os.path.join(dp, fn) for dp, _, fns in os.walk('/tmp/r15chk')
+                      for fn in fns if fn == 'libredwood.dylib']
+              if hits:
+                  print(f'✓ 卷内 libredwood.dylib 实物在案（{os.path.getsize(hits[0]):,} B）')
+          PY
+
+      # ---------------------------------------------------------------
+      - name: "⑤/⑥ 打 r19 双启动镜像（r1 固件 + r2 shim + R10 loader + 本仓库源码内核 + cpus=8 + 全量小卷 md1）"
+        run: |
+          set -eu
+          cd hackios
+          bash tools/r19-flash-build.sh .
+          cp userland/raphael-xnu-r19-flash.img "$REL/"
+          cp userland/raphael-xnu-r19-gpu-flash.img "$REL/"
+          cp userland/flashboot.apfs "$REL/raphael-r19-flashboot.apfs"
+          cp userland/root.apfs "$REL/r19-md1-root.apfs"
+          ls -lh "$REL"
+          df -h .
+
+      # ---------------------------------------------------------------
+      - name: "⑥/⑥ SHA256 + README + 发布 Release（只有 boot 资产，几十 MB）"
+        run: |
+          set -eu
+          cd "$REL"
+          : > SHA256SUMS
+          for f in raphael-xnu-r19-flash.img raphael-xnu-r19-gpu-flash.img \
+                   raphael-r19-flashboot.apfs r19-md1-root.apfs; do
+            sha256sum "$f" >> SHA256SUMS
+          done
+          REPO="${{ github.repository }}"
+          TAG="${{ inputs.release_tag }}"
+          cat > README.txt <<EOF
+          ============================================================
+           R19 · 纯血 hackios SpringBoard 交付包（raphael / K20 Pro）
+           —— boot-only：iOS 卷不随行（手机里已刷好，R5-R13 字节相同）
+          ============================================================
+          ⚠️⚠️⚠️ 启动卷只 stage 一个文件：raphael-r19-flashboot.apfs ⚠️⚠️⚠️
+            （R14 事故纪律不变：md1 备份不要 stage，flash.img 已内嵌全量小卷）
+          主镜像   : raphael-xnu-r19-flash.img（触摸 + 按键 + 八核；
+                     cmdline touchscreen=1 buttons=1 cpus=8）
+          GPU 镜像 : raphael-xnu-r19-gpu-flash.img（同上 + gpu=1：
+                     梯子进 step 18 的新水域）
+          启动卷   : raphael-r19-flashboot.apfs（stage0 = md0；R13
+                     全量字节，真机验证过）
+          小卷备份 : r19-md1-root.apfs（md1 同字节备份，勿 stage）
+          内核     : 本仓库源码构建；R19 改动 = 参考配方原样回移：
+                     R18 三事实（entry 0 未写即 0 / bank 4、0 皆拒 /
+                     空闲条目全拒而 GMU 从未拒）只有一种解释——
+                     看守者拒绝的是"把流路由进没在翻译的 bank"的一切
+                     SMR/S2CR 写入。R19：context bank 0 先完整编程并
+                     打开（sctlr ON|SERVE_AFTER_FAULT 收尾），才动流表
+                     （s2cr(0)=0、smr(0)=VALID|0x400<<16|0）；二流 1 走
+                     同一 context 的 entry 2。R18 槽位搜索连根删除；
+                     R17 全部成果一字不动。
+
+          【R17/R18 战报回顾】Step 17 史诗级通关：msg 30 等到回复、OOB
+          授权全过、rbbm_status=0x1——THE 3D CORE HAS POWER AND ANSWERS。
+          R18：entry 0 拒写一切（三次写入读回全 0）→ 看守者立场查明。
+
+          【R19 判读】（GPU 镜像，klog 里 adreno: N）
+          - step 17 照旧全绿："the GMU accepts" ×4、"THE 3D CORE HAS
+            POWER AND ANSWERS"
+          - step 18 新看点（bank 先行）：
+            · "give the SMMU's context 0 these tables ... the bank is
+              programmed and ON before the stream table is touched"
+            · 随后 smr(entry 0) 读回应为 0x84400400——R17 以来第一次
+              落地，这一行就是 R19 的胜利线
+            · 接着 "the core's second stream (1) through the same
+              context"，entry 2 读回 0x84400401 → step 18 done
+            · step 18 过 → SQE 微码就位 → 19-21（zap / start /
+              commands）是本机的新水域，照常爬梯
+          - 若 bank 已开而 entry 0 仍读 0：klog 整段回传——R20 的战场
+            换到 s2cr 形态或 bank 4，与 R19 的顺序判据不冲突
+          - 任何一步停住：整段回传 klog（fastboot oem log +
+            get_staged r19-klog.txt）
+
+          【手机端（Termux / bootloader）】
+            fastboot boot  raphael-xnu-r19-flash.img
+            fastboot oem  ramdisk
+            fastboot stage raphael-r19-flashboot.apfs
+            fastboot oem  run         # 黑屏 → 桌面；八核自动上；+5s 触摸
+            # GPU 实验（第二次开机）：
+            fastboot boot  raphael-xnu-r19-gpu-flash.img
+            fastboot oem  ramdisk
+            fastboot stage raphael-r19-flashboot.apfs
+            fastboot oem  run
+          直链：
+            https://github.com/${REPO}/releases/download/${TAG}/raphael-xnu-r19-flash.img
+            https://github.com/${REPO}/releases/download/${TAG}/raphael-xnu-r19-gpu-flash.img
+            https://github.com/${REPO}/releases/download/${TAG}/raphael-r19-flashboot.apfs
+            https://github.com/${REPO}/releases/download/${TAG}/SHA256SUMS
+
+          ⚠️ userdata 上的 iOS 卷是唯一存货：绝不要让 MIUI 开机
+             （Android 会重格回 f2fs，iOS 卷即毁）。
+          ⚠️ 每次开机都要重复 boot/oem ramdisk/stage/oem run 四步
+             （启动卷住 RAM 不落盘，"不写手机闪存"设计的一部分）。
+          ⚠️ 含 Apple 版权内容，仅个人研究；下载完成后请尽快删除本 Release。
+          EOF
+          echo "→ SHA256SUMS："
+          cat SHA256SUMS
+
+      - name: "⑥b/⑥ 发布 Release（直链交付）"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: "R19 · 纯血 hackios SpringBoard · 参考配方原样回移（先开 bank 再动表）"
+          body: |
+            raphael (K20 Pro) R19 交付包：**boot-only**（几十 MB——iOS 卷 R5-R13 字节相同，
+            手机里已刷好，不再随行）。
+
+            R19 一件事：**参考配方原样回移**。R18 战报三事实（entry 0 未写即 0、bank 4/0
+            皆拒、空闲条目全拒而 GMU 从未拒）→ 看守者拒绝的不是某条 entry，而是把流路由
+            进**没在翻译的 context bank** 的一切 SMR/S2CR 写入。R19：bank 0 先完整编程并
+            打开，才动流表；二流 1 走同一 context 的 entry 2；R18 槽位搜索连根删除；
+            R17 全部成果一字不动。
+
+            手机端：主镜像四步开机；GPU 镜像第二刷。判读树见附件 README.txt。
+
+            ⚠️ 含 Apple 版权内容，仅供个人研究；下载完成后请尽快删除本 Release。
+          fail_on_unmatched_files: true
+          files: |
+            release/raphael-xnu-r19-flash.img
+            release/raphael-xnu-r19-gpu-flash.img
+            release/raphael-r19-flashboot.apfs
+            release/r19-md1-root.apfs
+            release/SHA256SUMS
+            release/README.txt
+
+      - name: "直链汇总（跑完看这里，复制即用）"
+        run: |
+          set -eu
+          echo "════════════ 全部下载直链 ════════════"
+          for f in "$REL"/raphael-xnu-r19-flash.img "$REL"/raphael-xnu-r19-gpu-flash.img \
+                   "$REL"/raphael-r19-flashboot.apfs "$REL"/r19-md1-root.apfs \
+                   "$REL"/SHA256SUMS "$REL"/README.txt; do
+            echo "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/$(basename "$f")"
+          done
