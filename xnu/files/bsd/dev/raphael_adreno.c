@@ -5032,9 +5032,33 @@ redwood_adreno_init(void)
 
         printf("adreno: steps up to %u, without those in mask %#x; step %u is the new one and waits %u ms %s\n", last_step,
             skip_steps, newest_step, pause_ms, fine ? "before every access" : "after each announcement");
+        /*
+         * R27: the flush channel's own test, before any step runs.  The loader writes the
+         * whole log (its side and this ring) to the logdump partition and answers with the
+         * ack; the run that follows leaves this line as the partition's FIRST kernel-side
+         * record.  A fetched partition that holds it says the channel works end to end;
+         * one that does not (and the "did not put the log away in time" line below it is
+         * absent too, meaning the flush was not even asked for) says the channel itself
+         * is what R26 never proved.
+         */
+        put_the_log_away("step 1's first line: the flush channel's own test (R27)");
         for (step = 1; step <= last_step; step++) {
                 if (skip_steps & 1u << step) {
                         continue;
+                }
+                /*
+                 * R27: the steps past 19 had no guard of their own -- a death in them
+                 * (the two-parameter run died at 26 s, with step 19 refused and the run
+                 * gone on) left the partition holding only the 2-second notes' 960-byte
+                 * tail.  One flush before the three steps that write to the 3D core
+                 * itself: its registers (20), its command processor (21), the frame (22).
+                 */
+                if (step == 20) {
+                        put_the_log_away("step 20 entered: the 3D core's registers are next (R27)");
+                } else if (step == 21) {
+                        put_the_log_away("step 21 entered: out of secure mode and the first command are next (R27)");
+                } else if (step == 22) {
+                        put_the_log_away("step 22 entered: the first frame is next (R27)");
                 }
                 if (!steps[step - 1]()) {
                         printf("adreno: step %u: FAILED; the steps after it are not attempted\n", step);
@@ -5044,6 +5068,14 @@ redwood_adreno_init(void)
                 printf("adreno: step %u: done\n", step);
                 done = step;
         }
+        /*
+         * R27: the steps are over -- whatever the system does from here (the 26-second
+         * death of the two-parameter run sat on this side of the refusal, with the run
+         * gone on past step 19), the storage holds the whole record up to this point
+         * before the next thing happens.  (The loader's 2-second notes keep refreshing
+         * it for as long as the run lasts.)
+         */
+        put_the_log_away("the steps are over (R27): what follows is the system's own doing");
         PE_parse_boot_argn("adreno_keep", &keep, sizeof(keep));
         if (keep) {
                 if (done >= 21 && core_runs) {

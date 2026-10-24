@@ -144,6 +144,29 @@ memcpy(void *dst, const void *src, size_t n)
         return dst;
 }
 
+/*
+ * R27: the flush head needs an overlapping copy (dst > src, forward).  The
+ * freestanding build has no memmove of its own -- copy backwards, which any
+ * overlap direction tolerates when dst > src.
+ */
+void *
+memmove(void *dst, const void *src, size_t n)
+{
+        uint8_t *d = dst;
+        const uint8_t *s = src;
+
+        if (d < s) {
+                while (n--) {
+                        *d++ = *s++;
+                }
+        } else if (d > s) {
+                while (n--) {
+                        d[n] = s[n];
+                }
+        }
+        return dst;
+}
+
 static size_t
 str_len(const char *s)
 {
@@ -995,7 +1018,11 @@ static uint64_t sound_len;
 #define OTHER_CPU_HUNG          1001    /* ... the kernel stopped giving signs of life */
 #define START_SECONDS           5
 #define SILENCE_SECONDS         50
-#define NOTE_SECONDS            24      /* how long the kernel's progress is written down as it happens */
+#define NOTE_SECONDS            60      /* how long the kernel's progress is written down as it happens
+                                         * (R27: 24 -> 60 -- the two-parameter run died at 26 s, two
+                                         * seconds past the old window's end, and the death sat between
+                                         * two kernel flushes with nothing of the kernel's side on the
+                                         * storage; the whole-log notes now run past it) */
 
 static void wdt_pet(void);
 static int wdt_armed;
@@ -1094,17 +1121,59 @@ compose_live_log(const struct kernel_live *live, uint64_t slide)
  * and the kernel's, whole, in reading order -- goes to the logdump partition.  (The
  * 2-second notes carry the last 960 bytes; a call that can reset the phone asks for
  * everything, before it goes out.  The ack then lets the kernel walk into the call.)
+ *
+ * R27, two additions.  (1) The why: the 2-second notes now write the WHOLE log too
+ * (see run_on_other_cpu) -- R26's notes wrote only the loader's ring, and that 16 KB
+ * sat on top of whatever full snapshot the kernel's last flush had put there; a run
+ * that died between two kernel flushes left the partition holding 960 bytes of the
+ * kernel's side.  (2) The flush head: every write to the partition now starts with
+ * one ASCII line -- which write this is, how far into the run, why, how many bytes
+ * follow -- so a fetched partition reads at a glance: the newest write is the one
+ * whose head line it is, and an older, longer write's leftovers that follow the
+ * newer, shorter one's end are never mistaken for one record.
  */
+static uint32_t logdump_flush_count;
+static uint64_t run_started_at;          /* R27: the flush head's clock, set by run_on_other_cpu */
+
+/* (freestanding: no snprintf -- the head line is assembled by hand, the way print() does it) */
+static int
+head_put_str(char *p, const char *s)
+{
+        int n = 0;
+
+        while (*s) {
+                p[n++] = *s++;
+        }
+        return n;
+}
+
+static int
+head_put_dec(char *p, uint64_t v)
+{
+        char tmp[24];
+        int i = 0, n = 0;
+
+        do {
+                tmp[i++] = "0123456789"[v % 10];
+                v /= 10;
+        } while (v);
+        while (i) {
+                p[n++] = tmp[--i];
+        }
+        return n;
+}
+
 static void
-flush_logdump_whole(const struct kernel_live *live, uint64_t slide)
+flush_logdump_whole(const struct kernel_live *live, uint64_t slide, const char *why)
 {
         efi_block_io *bio = find_log_partition();
-        uint64_t bs, wlen, ws, rs = 0;
-        int same = 0;
+        uint64_t bs, wlen, ws, rs = 0, run_s;
+        int same = 0, hl;
+        char head[128];
 
         if (logdump_keep_prev) {
                 if (logdump_keep_said++ < 2) {
-                        print("log: the kernel asked for a flush; NOT WRITTEN -- the previous run's log is kept\n");
+                        print("log: %s; NOT WRITTEN -- the previous run's log is kept\n", why);
                 }
                 return;
         }
@@ -1113,12 +1182,34 @@ flush_logdump_whole(const struct kernel_live *live, uint64_t slide)
         }
         if (!hc_list_is_uefis()) {
                 if (hc_log_skips++ < 2) {
-                        print("log: the kernel asked for a flush; NOT WRITTEN: UEFI's transfer list is not the one "
-                            "in the controller\n");
+                        print("log: %s; NOT WRITTEN: UEFI's transfer list is not the one "
+                            "in the controller\n", why);
                 }
                 return;
         }
         compose_live_log(live, slide);
+        run_s = seconds_since(run_started_at);
+        {
+                char *p = head;
+
+                p += head_put_str(p, "== XNU FLUSH #");
+                p += head_put_dec(p, ++logdump_flush_count);
+                p += head_put_str(p, " at ");
+                p += head_put_dec(p, run_s);
+                p += head_put_str(p, " s (");
+                p += head_put_str(p, why);
+                p += head_put_str(p, "); ");
+                p += head_put_dec(p, staged_len);
+                p += head_put_str(p, " bytes follow ==\n");
+                hl = (int)(p - head);
+        }
+        if (hl > 0 && staged_len + (uint32_t)hl < sizeof(out_buf)) {
+                /* make room at the very start for the head line; a memmove that overlaps
+                 * (dst > src, forward) -- memmove, not memcpy */
+                memmove(out_buf + hl, out_buf, (size_t)staged_len);
+                memcpy(out_buf, head, (size_t)hl);
+                staged_len += (uint32_t)hl;
+        }
         bs = bio->media->block_size;
         wlen = (staged_len + 1 + bs - 1) / bs * bs;
         ws = bio->write_blocks(bio, bio->media->media_id, 0, wlen, out_buf);
@@ -1129,8 +1220,8 @@ flush_logdump_whole(const struct kernel_live *live, uint64_t slide)
                         same = !EFI_ERROR(rs) && memcmp(block_buffer, out_buf, wlen) == 0;
                 }
         }
-        print("log: the kernel asked for a flush; %d B written to logdump whole (%x), read back %s (%x)\n",
-            (uint32_t)wlen, ws, EFI_ERROR(ws) ? "not tried" : same ? "the same" : "DIFFERENT", rs);
+        print("log: %s; %d B written to logdump whole (#%u, %x), read back %s (%x)\n",
+            why, (uint32_t)wlen, logdump_flush_count, ws, EFI_ERROR(ws) ? "not tried" : same ? "the same" : "DIFFERENT", rs);
 }
 
 /*
@@ -2800,6 +2891,7 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
         status = psci_call(PSCI_CPU_ON, mpidr, (uint64_t)(uintptr_t)&other_cpu_entry, (uint64_t)(uintptr_t)&other_cpu_start);
 
         started = last_pet = last_battery = last_beat_at = READ_SYSREG(CNTVCT_EL0);
+        run_started_at = started;        /* R27: the flush head's "at N s" counts from here */
         print("core %x: the firmware answers %d to the request to start it\n", mpidr, (uint64_t)status);
         if (PLAT->log_other_cpu) {
                 flush_log();
@@ -2810,16 +2902,27 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
                  * that resets takes this loader's memory with it: where there is storage for the log,
                  * what the kernel is seen to do goes there as it happens. That needs UEFI's services,
                  * so until NOTE_SECONDS are over this core keeps its interrupts.
+                 *
+                 * R27: the note now writes the WHOLE log -- the loader's ring and the kernel's,
+                 * like the kernel's own flushes.  R26's notes wrote only the loader's ring, and
+                 * that 16 KB sat on top of the last full snapshot a kernel flush had put there;
+                 * a run that died between two kernel flushes left the partition holding 960
+                 * bytes of the kernel's side.  (A run with no live kernel, or an old kernel
+                 * without the magic3 word, keeps the plain loader-side note.)
                  */
                 if (!watching_only && seconds_since(started) >= noted + 2) {
                         noted = seconds_since(started);
                         if (PLAT->log_other_cpu) {
                                 if (!arrived) {
                                         print("%d s: the core has not arrived\n", noted);
+                                        flush_log();
+                                } else if (live != NULL && live->magic3 == KERNEL_LIVE_MAGIC3) {
+                                        note_kernel_progress(live, slide, noted);
+                                        flush_logdump_whole(live, slide, "the 2-second note");
                                 } else {
                                         note_kernel_progress(live, slide, noted);
+                                        flush_log();
                                 }
-                                flush_log();
                         }
                 }
                 /*
@@ -2829,7 +2932,7 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
                  */
                 if (live != NULL && live->magic3 == KERNEL_LIVE_MAGIC3 &&
                     live->flush_seq != live->flush_ack) {
-                        flush_logdump_whole(live, slide);
+                        flush_logdump_whole(live, slide, "the kernel asked for a flush");
                         ((struct kernel_live *)(uintptr_t)live)->flush_ack = live->flush_seq;
                 }
                 /*
@@ -4332,6 +4435,15 @@ fb_command(char *cmd)
                         fb_reply("OKAY", "");
                         log_len = 0;
                         print("== XNULOADER run (usb) ==\n");
+                        if (logdump_keep_prev) {
+                                /* R27: the run that is about to start writes NOTHING to the logdump
+                                 * partition (the boot spent the keep magic) -- if this run resets
+                                 * the phone, its log dies with it.  The cadence that keeps every
+                                 * run coverable: oem keep-logdump before each run that may reset. */
+                                print("logdump: WARNING: this run writes nothing to the logdump partition (the\n"
+                                    "    previous run's log is being kept); if this run may reset the phone,\n"
+                                    "    stop and arm first: oem keep-logdump\n");
+                        }
                         if (!run_kernel(have_cp, cp)) {
                                 set_result("not-started", 0, 0);
                                 compose_logs(NULL, 0);
@@ -4501,7 +4613,45 @@ fb_command(char *cmd)
                                         fb_reply("OKAY", "");
                                 }
                         }
-                } else if (starts_with(cmd, "oem log")) {
+                } else if (starts_with(cmd, "oem logdump")) {
+                        /* R24b: stage the logdump partition for "get_staged".  A kernel that
+                         * came back on its own (reason 0, a panic's way back included) leaves
+                         * its full log HERE, and "oem log" holds only the loader's own side --
+                         * the R24 black screen's kernel log was in this partition and nothing
+                         * could fetch it.  Read the first 4 MB (the composed log never grows
+                         * past 2 MB of loader log plus the kernel's ring) and stage it.
+                         *
+                         * R27: this branch must sit BEFORE "oem log" -- "oem log" is a strict
+                         * prefix of "oem logdump", and with both as starts_with matches the
+                         * shorter one swallowed the longer for all of R26: "fastboot oem logdump"
+                         * answered with the loader's own in-memory ring (the 514-byte banner),
+                         * and the partition the dead run's flushes had filled was never read. */
+                        efi_block_io *ldbio = find_log_partition();
+
+                        if (busy) {
+                                fb_reply("FAIL", "the kernel is running; stop it first");
+                        } else if (ldbio == NULL) {
+                                fb_reply("FAIL", "no logdump partition");
+                        } else {
+                                uint64_t lbs = ldbio->media->block_size;
+                                uint64_t want = sizeof(block_buffer) / lbs * lbs;
+
+                                if (want > (ldbio->media->last_block + 1) * lbs) {
+                                        want = (ldbio->media->last_block + 1) * lbs;
+                                }
+                                if (lbs == 0 || EFI_ERROR(ldbio->read_blocks(ldbio, ldbio->media->media_id, 0,
+                                    want, block_buffer))) {
+                                        fb_reply("FAIL", "read failed");
+                                } else {
+                                        staged_data = (const char *)block_buffer;
+                                        staged_len = want;
+                                        fb_reply("OKAY", "");
+                                }
+                        }
+                } else if (starts_with(cmd, "oem log") && cmd[7] == 0) {
+                        /* (R27: the exact match -- "oem log" is a prefix of "oem logdump",
+                         * and a starts_with match here hid that command for all of R26.
+                         * cmd[7]==0 rather than strcmp: the freestanding build has no strcmp.) */
                         if (busy) {
                                 compose_live_log(running_live, running_slide);
                         } else {
@@ -4580,35 +4730,6 @@ fb_command(char *cmd)
                         fb_reply("OKAY",
                             extra_cmdline[0] != 0 ? extra_cmdline :
                             "(none; oem cmdline-append sets them, oem cmdline-clear drops them)");
-                } else if (starts_with(cmd, "oem logdump")) {
-                        /* R24b: stage the logdump partition for "get_staged".  A kernel that
-                         * came back on its own (reason 0, a panic's way back included) leaves
-                         * its full log HERE, and "oem log" holds only the loader's own side --
-                         * the R24 black screen's kernel log was in this partition and nothing
-                         * could fetch it.  Read the first 4 MB (the composed log never grows
-                         * past 2 MB of loader log plus the kernel's ring) and stage it. */
-                        efi_block_io *ldbio = find_log_partition();
-
-                        if (busy) {
-                                fb_reply("FAIL", "the kernel is running; stop it first");
-                        } else if (ldbio == NULL) {
-                                fb_reply("FAIL", "no logdump partition");
-                        } else {
-                                uint64_t lbs = ldbio->media->block_size;
-                                uint64_t want = sizeof(block_buffer) / lbs * lbs;
-
-                                if (want > (ldbio->media->last_block + 1) * lbs) {
-                                        want = (ldbio->media->last_block + 1) * lbs;
-                                }
-                                if (lbs == 0 || EFI_ERROR(ldbio->read_blocks(ldbio, ldbio->media->media_id, 0,
-                                    want, block_buffer))) {
-                                        fb_reply("FAIL", "read failed");
-                                } else {
-                                        staged_data = (const char *)block_buffer;
-                                        staged_len = want;
-                                        fb_reply("OKAY", "");
-                                }
-                        }
                 } else if (starts_with(cmd, "reboot") || starts_with(cmd, "oem reboot")) {
                         fb_reply("OKAY", "");
                         BS->stall(200000);
@@ -4775,9 +4896,10 @@ efi_main(efi_handle image, efi_system_table *st)
         IMAGE = image;
 
         BS->set_watchdog_timer(0, 0, 0, NULL);
-        /* R26: the loader moves for the first time since 47911ca -- the keep-logdump
-         * flag, the kernel's flush channel, and the cmdline extras. */
-        print("== XNULOADER v4 ==\n");
+        /* R27: the loader moves again -- the oem log prefix that hid oem logdump, the
+         * whole-log 2-second notes (and their window, 24 s -> 60 s), the flush head,
+         * and the keep warning at oem run. */
+        print("== XNULOADER v5 ==\n");
         print("CurrentEL=%x MIDR=%x MMFR0=%x CNTFRQ=%d image=%x\n", READ_SYSREG(CurrentEL) >> 2, READ_SYSREG(MIDR_EL1),
             READ_SYSREG(ID_AA64MMFR0_EL1), READ_SYSREG(CNTFRQ_EL0), (uint64_t)(uintptr_t)&__ImageBase);
 
