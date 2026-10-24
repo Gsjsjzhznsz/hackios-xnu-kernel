@@ -434,3 +434,50 @@ Stage Summary:
 - 胜利线：smmu smr (0x2ca0800) = 0x84010000（R17 以来 gfx 流首次落地）
 - 失败分支（0x84010000 仍读 0）R21 战场已排定：TCU/TBU 取证 →
   sCR0.USFCFG → loader 时间线二分
+
+## R21 · TrustZone，按本机自己的方式问（2026-10-24）
+
+- 战报（R20）：step 18 通关——`about to write smmu smr at 0x2ca0800:
+  0x84010000` → 读回 `0x84010000` → `step 18: done`（R17 以来 gfx 流
+  SMR 首次落地，三轮 SMMU 迷案结案）。step 19 停在第一句 TZ 对话：
+  `about to ask TrustZone to give up the zap shader: smc 0x42000206,
+  arguments 0xd, 0, 0`——之后 wrapper 的应答行（`TrustZone returns ...`）
+  永远没来，触摸/按键照走：发 SMC 的那颗 CPU 被吞在 EL2/EL3，一去不回。
+- 破案（三条 redwood 残留，全部本轮证据）：
+  1. give-up call（svc2/cmd6）是 redwood 的世界：那边内核来去不重启，
+     前任会留 shader，TZ 对它有问必答（没有也答 success）；本机每次
+     过 XBL → TZ 全新，不可能有"上次的 shader"；本机自家驱动
+     （dt: qcom,kgsl-hyp，compatible "qcom,pil-tz-generic"，firmware
+     a640_zap，pas-id 0xd——scripts/raphael_dt_zap.py 实测）进场也不发
+     give-up。→ 默认不发送；adreno_tzunload=1 才发、放最后。
+  2. ZAP_MEMORY 0x8b71a000 = redwood gpu_micro_code；本机 = **pil_gpu_
+     region@0x98f15000**（8 KB，reserved-memory 实测）。
+  3. zap_header() 的 hash 段判定按 redwood .mdt 的 p_flags 低三位——
+     本机 a640_zap.mbn 的标记在 **24-26 位**（phdr[1] 0x2200000，
+     mdt_loader.c: QCOM_MDT_TYPE_HASH 2<<24）：旧判定一个 hash 都找不到。
+- 修改（scripts/r21_apply.py 字节锚定×9 全一次命中；+113/−39）：
+  · scm_how 静态量：64 位形态先问（0xC2xxxxxx），被拒则 32 位二试
+    （0x82xxxxxx，Linux 的第二试），全轮调用同源
+  · step 19 重排：通道探针（is-call-available (6,1) 本体 + 签名/落位/
+    认证三条可用性）→ adreno_tzunload 门控的 give-up → .mbn PT_LOAD →
+    zap_header → INIT_IMAGE(2,1) → MEM_SETUP(2,2)（本机 pil_gpu_region，
+    0x2000）→ 写段 → AUTH_AND_RESET(2,5)
+  · 拒绝即失败（"TAKEN TO MEAN THAT IT KEEPS A ZAP SHADER" 判词除名）；
+    失败路径追加诊断：PAS_IS_SUPPORTED GPU + audio 对照 + 补发 give-up
+  · zap_header() hash 判定加 (p_flags & 7<<24) == 2<<24
+  · zap_unload/step_zap_signature 改用 scm_how
+- 流水线：r21-springboard.yml + tools/r21-flash-build.sh（缓存键迁
+  r21-；门禁正向 +R21 八条、反向 + "TAKEN TO MEAN..." 除名；R20 全部
+  保留标记原样）
+- 静态校验：R20 全部保留标记在场；退役标记不在场；括号/花括号平衡；
+  补丁存 download/r21-trustzone-zap.patch（沙箱侧）
+
+Stage Summary:
+- R21 定性：不是"缺少 SCM 授权握手"（TZ/PAS 环境由 XBL 自己备好），
+  而是 redwood 的 warm-boot 语义（give-up）撞上 raphael 的冷启动世界，
+  外加两处地址/格式残留
+- 胜利线：TRUSTZONE HAS AUTHENTICATED AND STARTED THE ZAP SHADER →
+  step 20（CP 出安全模式）→ 21（commands）
+- 判读树按楔死位置分层：0xc2000601 本身楔 = 整门皆暗（R22 = HVC/
+  kgsl-hyp）；0xc2000201 楔 = PAS 族暗（R22 = 内存归属）；
+  0xc2000205 楔 = 最接近；返回错误码 = 通道全活、码即答案

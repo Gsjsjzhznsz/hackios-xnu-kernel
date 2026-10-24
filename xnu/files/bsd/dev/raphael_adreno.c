@@ -1699,6 +1699,20 @@ space_off(struct gpu_space *space, uint32_t match)
 #define SCM_INTERRUPTED         1                       /* a call that was preempted says so, and is made again so */
 #define PAS_GPU                 13
 
+/*
+ * R21: which form the calls take. Linux asks first with 64-bit arguments and, if TrustZone
+ * says no to that, again with 32-bit ones (qcom_scm.c); the answer is remembered here, and
+ * every later call of the run takes the form that was answered. On redwood the first was
+ * answered. On this phone R20's first word to TrustZone -- the give-up call, service 2
+ * command 6 -- took the processor and never gave it back (the log stops at "about to ask"
+ * and the wrapper's answer line never comes; touch lived on: one processor eaten inside the
+ * hypervisor or TrustZone itself). So step 19 asks the way this phone's own Linux does when
+ * its GPU starts -- is the call available, the image's signature, its place, the
+ * authentication -- and does not ask the give-up call by default (adreno_tzunload=1 asks
+ * for it, at the very end, with the channel proven).
+ */
+static uint64_t scm_how = SCM_FAST | SCM_64 | SCM_SIP;
+
 /* One call. What TrustZone returns: 0 or an error of its own, and a word of answer. */
 static int32_t
 scm(const char *what, uint64_t function, uint64_t arguments, uint64_t first, uint64_t second, uint64_t third,
@@ -1830,7 +1844,8 @@ zap_header(uint64_t *phys)
 {
         /*
          * A single-file "mbn": an ELF32 whose hash segment (a program header whose p_flags'
-         * low three bits are 2) and whose loadable segment are both inside the one file, at
+         * type mark is 2 -- redwood's .mdt carried it in the low three bits, this phone's
+         * .mbn carries it at 24) and whose loadable segment are both inside the one file, at
          * their p_offsets. What TrustZone takes at the first call is the ELF header and the
          * hash segment, put together with nothing between them (mdt_loader.c,
          * qcom_mdt_read_metadata). The redwood phone's zap was an .mdt whose whole file was
@@ -1861,7 +1876,12 @@ zap_header(uint64_t *phys)
                 memcpy(&flags, header + at + 24, sizeof(flags));
                 memcpy(&off, header + at + 4, sizeof(off));
                 memcpy(&len, header + at + 16, sizeof(len));
-                if ((flags & 7u) == 2u) {          /* the hash segment, named by its type */
+                if ((flags & 7u) == 2u || (flags & (7u << 24)) == (2u << 24)) {
+                        /* the hash segment: redwood's .mdt marked it in the low bits of
+                         * p_flags, this phone's .mbn marks it at 24 (mdt_loader.c:
+                         * QCOM_MDT_TYPE_HASH is 2 << 24; a640_zap.mbn's hashes are
+                         * phdr[1], p_flags 0x2200000 -- with only the low-bit test the
+                         * port found no hashes here at all) */
                         hash_at = off;
                         hash_bytes = len;
                         break;
@@ -1896,7 +1916,7 @@ step_zap_signature(void)
                 return false;
         }
         announce("hand the header to TrustZone to check its signature (image 13); a call that may be preempted, as Linux's is");
-        result = scm("to take the zap shader's signature", SCM_64 | SCM_SIP | SCM_PAS_INIT_IMAGE, SCM_VALUE_AND_BUFFER, PAS_GPU,
+        result = scm("to take the zap shader's signature", scm_how | SCM_SIP | SCM_PAS_INIT_IMAGE, SCM_VALUE_AND_BUFFER, PAS_GPU,
             header, 0, &answer);
         if (result == 0 && answer == 0) {
                 printf("adreno: %u: TRUSTZONE ACCEPTS THE ZAP SHADER'S SIGNATURE FROM THIS KERNEL\n", step);
@@ -3071,26 +3091,41 @@ step_core_space(void)
 
 /*
  * The rest of what Linux does with the zap shader (mdt_loader.c: qcom_mdt_pas_init,
- * qcom_mdt_load; adreno_gpu.c: zap_shader_load_mdt): after the header (step 12), TrustZone is
- * told where the image will be -- the two pages the device tree reserves for it
- * (reserved-memory gpu_micro_code@8b71a000, the zap-shader node's memory-region) --, the image's
- * one segment (the .mbn's single PT_LOAD, relocatable: at the start of that memory) is put there,
- * and TrustZone is asked to authenticate it and run it. The vendor's driver does this before it
- * starts the 3D core's command processor (a6xx_rb_start: a6xx_microcode_load), Linux after;
- * this phone's own order is kept. Once that is done the memory is TrustZone's, and nothing
- * here can see whether it is so; to write there again would be the end of the run. Our kernels
- * come and go without the phone restarting, so a kernel leaves no zap shader behind: when it
- * gives the GPU back it has TrustZone take the shader away again (gpu_block_stop(); the
- * vendor's driver does the same when it is unloaded: kgsl_zap_shader_unload), and the next one
- * loads it as if the phone had just started. A kernel that did not end in order cannot have
- * done that. So the same request is made here first: TrustZone answers it with success whether
- * it had a shader or not, and hands the memory back cleared (it then reads as zeroes). Should
- * it ever refuse, and then refuse the header or the place too, that is taken to mean that it
- * has a zap shader from before and keeps it: it is used as it is, and nothing is written.
- * (Step 21 is what tells whether the 3D core gets out of secure mode with it.) There was a
- * boot-arg adreno_zap=0 for the second and later runs of a started phone; nothing reads it now.
+ * qcom_mdt_load; adreno_gpu.c: zap_shader_load_mdt): TrustZone is given the image's header,
+ * told where the image will be, the image's one segment (the .mbn's single PT_LOAD,
+ * relocatable: at the start of that memory) is put there, and TrustZone is asked to
+ * authenticate it and run it. The vendor's driver does this before it starts the 3D core's
+ * command processor (a6xx_rb_start: a6xx_microcode_load), Linux after; this phone's own
+ * order is kept. Once that is done the memory is TrustZone's, and nothing here can see
+ * whether it is so; to write there again would be the end of the run.
+ *
+ * R21, three things of redwood's that this phone does not have, all found in the round's
+ * work:
+ *   - The give-up call first (service 2 command 6). Redwood's TrustZone answers it with
+ *     success whether it had a shader or not (on redwood kernels come and go without the
+ *     phone restarting, so a kernel leaves one behind, and the next one has it taken away
+ *     again); raphael's took the processor with it (R20: the log stops at "about to ask
+ *     TrustZone to give up the zap shader" and the wrapper's answer line never comes) and
+ *     never gave it back. This phone's boots go through XBL every time -- TrustZone is new
+ *     every boot, no kernel before this one can have left a shader -- and this phone's own
+ *     driver (dt: qcom,kgsl-hyp, compatible "qcom,pil-tz-generic", firmware a640_zap,
+ *     pas-id 13) sends no give-up when it starts the GPU. So it is not sent by default any
+ *     more; adreno_tzunload=1 asks for it, at the very end of the step, with the channel
+ *     proven, where a wedge costs the least. What is asked first instead is what this
+ *     phone's own Linux asks TrustZone before anything else: whether the calls are
+ *     available (service 6 command 1), for the signature, for the place, for the
+ *     authentication.
+ *   - The place, 0x8b71a000. Redwood's dt reserves gpu_micro_code@8b71a000 for the zap
+ *     shader; this phone's dt reserves pil_gpu_region@98f15000, 8 KB (between the IPA's
+ *     and the spss's regions, the same two pages redwood's had). A refusal of the
+ *     signature or of the place is a failure now -- nothing can have been left from before
+ *     to keep -- and the step's diagnostics then ask which images TrustZone "supports"
+ *     (the GPU's, and the audio's for comparison), and, last, the give-up call itself.
+ *   - The hashes of the .mbn: phdr[1] with the type mark at 24 of p_flags, not in the low
+ *     bits (zap_header()).
  */
-#define ZAP_MEMORY              0x8b71a000ull
+#define ZAP_MEMORY              0x98f15000ull   /* this phone's dt: reserved-memory
+                                                 * pil_gpu_region@98f15000, 8 KB */
 #define ZAP_MEMORY_SIZE         0x2000u
 #define SCM_PAS_MEM_SETUP       SCM_CALL(2, 2)
 #define SCM_THREE_VALUES        3
@@ -3101,7 +3136,7 @@ zap_unload(void)
 {
         uint64_t answer = ~0ull;
 
-        return scm("to give up the zap shader", SCM_64 | SCM_SIP | SCM_PAS_SHUTDOWN, SCM_ONE_VALUE, PAS_GPU, 0, 0, &answer) == 0 &&
+        return scm("to give up the zap shader", scm_how | SCM_SIP | SCM_PAS_SHUTDOWN, SCM_ONE_VALUE, PAS_GPU, 0, 0, &answer) == 0 &&
                answer == 0;
 }
 
@@ -3111,13 +3146,39 @@ step_zap_load(void)
         const uint8_t *segment;
         volatile uint8_t *memory;
         uint64_t size = 0, header = 0, answer = ~0ull;
+        uint32_t tzunload = 0;
 
         if (!cx_ready() || !core_is_on) {
                 return false;
         }
-        announce("ask TrustZone to give up a zap shader that a kernel before this one may have left");
-        printf("adreno: %u: %s\n", step, zap_unload() ? "TrustZone has given up what it had (it says so with none, too)" :
-            "TRUSTZONE DOES NOT GIVE IT UP: the next answers tell whether it keeps one");
+        announce("establish the channel first -- the questions this phone's own Linux asks TrustZone before anything else "
+            "(R21: the give-up call is not sent by default; raphael's TrustZone took the processor with it and never gave it back)");
+        if (scm("whether it can be asked", scm_how | SCM_IS_CALL_AVAILABLE, SCM_ONE_VALUE, SCM_SIP | SCM_IS_CALL_AVAILABLE, 0,
+            0, &answer) != 0 || answer != 1) {
+                scm_how = SCM_FAST | SCM_SIP;   /* the same with 32-bit arguments, Linux's second try */
+                if (scm("the same, the 32-bit way", scm_how | SCM_IS_CALL_AVAILABLE, SCM_ONE_VALUE, SCM_SIP | SCM_IS_CALL_AVAILABLE,
+                    0, 0, &answer) != 0 || answer != 1) {
+                        printf("adreno: %u: TRUSTZONE DOES NOT ANSWER THE WAY IT ANSWERS LINUX: no zap shader can be asked "
+                            "for (not the give-up call alone: the whole door is dark)\n", step);
+                        return false;
+                }
+        }
+        answer = ~0ull;
+        scm("for the call that takes an image's signature", scm_how | SCM_IS_CALL_AVAILABLE, SCM_ONE_VALUE,
+            SCM_SIP | SCM_PAS_INIT_IMAGE, 0, 0, &answer);
+        answer = ~0ull;
+        scm("for the call that tells where an image goes", scm_how | SCM_IS_CALL_AVAILABLE, SCM_ONE_VALUE,
+            SCM_SIP | SCM_PAS_MEM_SETUP, 0, 0, &answer);
+        answer = ~0ull;
+        scm("for the call that authenticates and starts an image", scm_how | SCM_IS_CALL_AVAILABLE, SCM_ONE_VALUE,
+            SCM_SIP | SCM_PAS_AUTH_AND_RESET, 0, 0, &answer);
+        PE_parse_boot_argn("adreno_tzunload", &tzunload, sizeof(tzunload));
+        if (tzunload) {
+                announce("ask TrustZone to give up a zap shader that a kernel before this one may have left (adreno_tzunload: "
+                    "the call that wedged R20, asked now with the channel proven)");
+                printf("adreno: %u: %s\n", step, zap_unload() ? "TrustZone has given up what it had (it says so with none, too)" :
+                    "TRUSTZONE DOES NOT GIVE IT UP: the next answers tell whether it keeps one");
+        }
         {
                 /* the one PT_LOAD segment, inside the same .mbn as the header (p_offset/p_filesz) */
                 const uint8_t *file;
@@ -3152,19 +3213,15 @@ step_zap_load(void)
         if (!zap_header(&header)) {
                 return false;
         }
-        if (scm("to take the zap shader's signature", SCM_64 | SCM_SIP | SCM_PAS_INIT_IMAGE, SCM_VALUE_AND_BUFFER, PAS_GPU,
+        if (scm("to take the zap shader's signature", scm_how | SCM_SIP | SCM_PAS_INIT_IMAGE, SCM_VALUE_AND_BUFFER, PAS_GPU,
             header, 0, &answer) != 0 || answer != 0) {
-                printf("adreno: %u: TrustZone does not take the signature (%#llx): TAKEN TO MEAN THAT IT KEEPS A ZAP SHADER FROM "
-                    "BEFORE, which is used as it is\n", step, answer);
-                zap_is_loaded = true;
-                return true;
+                printf("adreno: %u: TrustZone does not take the signature (%#llx)\n", step, answer);
+                goto refused;
         }
-        if (scm("where the image will be", SCM_64 | SCM_SIP | SCM_PAS_MEM_SETUP, SCM_THREE_VALUES, PAS_GPU, ZAP_MEMORY, 0x1000,
-            &answer) != 0 || answer != 0) {
-                printf("adreno: %u: TrustZone does not take the place (%#llx): TAKEN TO MEAN THAT IT KEEPS A ZAP SHADER FROM "
-                    "BEFORE, which is used as it is\n", step, answer);
-                zap_is_loaded = true;
-                return true;
+        if (scm("where the image will be", scm_how | SCM_SIP | SCM_PAS_MEM_SETUP, SCM_THREE_VALUES, PAS_GPU, ZAP_MEMORY,
+            ZAP_MEMORY_SIZE, &answer) != 0 || answer != 0) {
+                printf("adreno: %u: TrustZone does not take the place %#llx (%#llx)\n", step, ZAP_MEMORY, answer);
+                goto refused;
         }
         /* (the memory is looked at only now: TrustZone has just said that it is not its own) */
         memory = (volatile uint8_t *)ml_io_map_wcomb(ZAP_MEMORY, ZAP_MEMORY_SIZE);
@@ -3177,14 +3234,31 @@ step_zap_load(void)
                 memory[i] = i < size ? segment[i] : 0;
         }
         settle();
-        if (scm("to authenticate the zap shader and run it", SCM_64 | SCM_SIP | SCM_PAS_AUTH_AND_RESET, SCM_ONE_VALUE, PAS_GPU, 0,
+        if (scm("to authenticate the zap shader and run it", scm_how | SCM_SIP | SCM_PAS_AUTH_AND_RESET, SCM_ONE_VALUE, PAS_GPU, 0,
             0, &answer) != 0 || answer != 0) {
                 printf("adreno: %u: TrustZone does not authenticate the zap shader (%#llx)\n", step, answer);
-                return false;
+                goto refused;
         }
         printf("adreno: %u: TRUSTZONE HAS AUTHENTICATED AND STARTED THE ZAP SHADER\n", step);
         zap_is_loaded = true;
         return true;
+refused:
+        /*
+         * The channel is alive (the answers came back) but this image or this place is not
+         * taken -- on this phone that cannot mean a shader from before (XBL made TrustZone
+         * new this boot), so it is a failure. The diagnostics come now, at the end, where a
+         * wedge costs the least: which images TrustZone "supports" (the GPU's, and the
+         * audio's for comparison -- this phone starts its audio through TrustZone too), and
+         * the give-up call itself, the one that wedged R20, asked once.
+         */
+        answer = ~0ull;
+        scm("whether it \"supports\" the GPU's image", scm_how | SCM_PAS_IS_SUPPORTED, SCM_ONE_VALUE, PAS_GPU, 0, 0, &answer);
+        answer = ~0ull;
+        scm("the same of the audio's, for comparison", scm_how | SCM_PAS_IS_SUPPORTED, SCM_ONE_VALUE, 1, 0, 0, &answer);
+        if (!tzunload) {
+                zap_unload();
+        }
+        return false;
 }
 
 /* ---- step 20: the 3D core's registers, its command processor started, its first command ------------------- */
