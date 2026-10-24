@@ -263,18 +263,16 @@ jobs:
         run: |
           set -eu
           cd hackios
-          if curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 \
-               -o userland/flashboot.apfs "${{ inputs.flashboot_url }}"; then
-            python3 - <<'PY'
-            d = open('userland/flashboot.apfs', 'rb').read(36)
-            assert d[32:36] == b'NXSB', f'flashboot.apfs 不是 APFS 容器（@+32 读到 {d[32:36]!r}）'
-            print('✓ flashboot.apfs 是 APFS 容器 = md0 stage0')
-            PY
-            7z l userland/flashboot.apfs | grep -q 'launchd' || { echo "::error::flashboot.apfs 里没有 sbin/launchd"; exit 1; }
-          else
-            echo "::error::flashboot.apfs 直取失败（R13 release 不可达？）——它没有 iOS 之外的替代来源，请检查 URL"
-            exit 1
-          fi
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 \
+               -o userland/flashboot.apfs "${{ inputs.flashboot_url }}" \
+            || { echo "::error::flashboot.apfs 直取失败（R13 release 不可达？）——它没有 iOS 之外的替代来源，请检查 URL"; exit 1; }
+          # 顶层顶格 heredoc（r13 的教训：<< 终止符不许缩进，run 40060156833 的 ④b 又撞了一次）
+          python3 - <<'PY'
+          d = open('userland/flashboot.apfs', 'rb').read(36)
+          assert d[32:36] == b'NXSB', f'flashboot.apfs 不是 APFS 容器（@+32 读到 {d[32:36]!r}）'
+          print('✓ flashboot.apfs 是 APFS 容器 = md0 stage0')
+          PY
+          7z l userland/flashboot.apfs | grep -q 'launchd' || { echo "::error::flashboot.apfs 里没有 sbin/launchd"; exit 1; }
           ls -lh userland/flashboot.apfs
 
       # ---------------------------------------------------------------
