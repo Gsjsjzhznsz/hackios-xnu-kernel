@@ -1853,7 +1853,33 @@ image_file(const char *directory, const char *name, uint64_t *size)
  * call says that for these calls the hypervisor itself arranges TrustZone's access to the memory
  * ("creates SHM bridges on behalf of Linux"), and that TrustZone protects the memory while it
  * works: so it is not touched again here, and never freed.
+ *
+ * R23, what the refusal turned out to be: not the call at all.  This platform's own Linux, on
+ * its own phones, refuses ONE image with exactly -3145797 while six others pass the very same
+ * boot (the spss refusal: "scm_call failed: func id 0x42000201, ret: -3145797" then
+ * "Initializing image failed(rc:-22)"), and it loads a640_zap.mbn through the same three calls
+ * fine.  The code is the image's, not the call's.  And the file this tree has carried since R13
+ * is signed with Qualcomm's SecTools TEST certificates -- its hashes end in a chain that names
+ * itself "Generated Test Attestation CA" and "General Use Test Key (for testing only)": a chain
+ * a fused phone's TrustZone cannot take from anyone.  The chain's own names are read out of the
+ * hashes here, before the first call is made, so the log decides the file question by itself.
  */
+/* A bounded strstr: does the first len bytes of buf carry the needle whole?  (The hashes are one blob, not a string.) */
+static bool
+zap_chain_has(const uint8_t *buf, uint64_t len, const char *needle)
+{
+        uint64_t n = strlen(needle), i, j;
+
+        for (i = 0; i + n <= len; i++) {
+                for (j = 0; j < n && buf[i + j] == (uint8_t)needle[j]; j++) {
+                }
+                if (j == n) {
+                        return true;
+                }
+        }
+        return false;
+}
+
 /* The zap shader's metadata in a page of ours, as TrustZone wants it; where that page is in physical memory. */
 static bool
 zap_header(uint64_t *phys, bool whole)
@@ -1902,6 +1928,51 @@ zap_header(uint64_t *phys, bool whole)
                 printf("adreno: %u: that file does not make a one-page metadata the way it is asked (%llu bytes, hashes %#x at "
                     "%#x)\n", step, size, hash_bytes, hash_at);
                 return false;
+        }
+        {
+                /* R23: the file's own verdict.  The certificates the signature check runs
+                 * against name their maker in plain sight inside the hashes; the scan prints
+                 * the readable runs (the first few) and, bounded, looks for the test signer's
+                 * exact names.  "Generated Test Attestation CA" and "General Use Test Key
+                 * (for testing only)" are Qualcomm SecTools' test chain: no fused phone's
+                 * TrustZone takes it, whoever calls, wherever the page sits. */
+                const uint8_t *hashes = header + hash_at;
+                uint32_t at, run_at = 0, run = 0;
+                unsigned names = 0;
+                bool test_signed = zap_chain_has(hashes, hash_bytes, "Generated Test") ||
+                                   zap_chain_has(hashes, hash_bytes, "General Use Test Key");
+
+                for (at = 0; at <= hash_bytes; at++) {
+                        uint8_t c = at < hash_bytes ? hashes[at] : 32;
+
+                        if (c >= 32 && c < 127) {
+                                if (run == 0) {
+                                        run_at = at;
+                                }
+                                run++;
+                                continue;
+                        }
+                        if (run >= 8) {
+                                char word[48];
+                                uint32_t i;
+
+                                for (i = 0; i < run && i < sizeof(word) - 1; i++) {
+                                        word[i] = (char)hashes[run_at + i];
+                                }
+                                word[i] = 0;
+                                if (names < 6) {
+                                        printf("adreno: %u:   the hashes carry \"%s\" (at %#x)\n", step, word,
+                                            hash_at + run_at);
+                                        names++;
+                                }
+                        }
+                        run = 0;
+                }
+                printf("adreno: %u: THE SIGNATURE CHAIN SAYS: %s\n", step, test_signed ?
+                    "A TEST KEY (Qualcomm SecTools \"Generated Test\"/\"General Use Test Key\") -- a fused phone's "
+                    "TrustZone refuses this file whoever calls: a640_zap.mbn must be THIS phone's own signed file "
+                    "(the stock ROM's vendor.img, vendor/firmware/)" :
+                    "no test-key marks -- the chain reads like the phone's own");
         }
         if (kmem_alloc(kernel_map, &page, PAGE_SIZE, KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
                 printf("adreno: %u: no memory\n", step);
@@ -3137,9 +3208,29 @@ step_core_space(void)
  *   - The hashes of the .mbn: phdr[1] with the type mark at 24 of p_flags, not in the low
  *     bits (zap_header()).
  *
- * R22, the refusal decoded and the matrix: the R21 report has TrustZone refuse the signature
- * with -3145797, answer 0 -- the channel alive, the call answered, the image not taken. Two
- * things of ours differed from the two working forms (redwood's, and Linux's):
+ * R23, what the refusal is: the image's.  The R22 matrix closed the call's variables -- the
+ * same -3145797 under every layout, every form, every page -- and the wild logs of this
+ * platform's own Linux now show what that code means: on an sm8150-class phone, spss's
+ * PAS_INIT_IMAGE dies with EXACTLY this code (func id 0x42000201, ret -3145797, then
+ * "Initializing image failed(rc:-22)") while cdsp, adsp, slpi, ipa_fws, venus and modem all
+ * pass the very same boot, and a640_zap itself comes up ("a640_zap: Brought out of reset")
+ * through the same three calls, its place a dynamically allocated page.  The code is what
+ * TrustZone answers when THE IMAGE cannot be taken -- and the file this tree has shipped since
+ * R13 answers that description without any help: its hashes carry Qualcomm's SecTools TEST
+ * certificates ("Generated Test Attestation CA", "General Use Test Key (for testing only)"), a
+ * chain a fused phone's TrustZone refuses from anyone.  So the step now: the file's own chain
+ * is read out first (zap_header()), one canonical attempt is sent -- the whole .mbn over a
+ * preemptible call, both working callers' form -- and on a refusal the controls are asked: the
+ * same call over a page of zeroes, for the GPU's id and the audio's.  A different code there
+ * means TrustZone READ our page and refused what it parsed (the image's side, its signature
+ * for one); the same code means the refusal comes before any image is read (the memory or the
+ * caller -- then the file question still stands, but the environment moved up the list).
+ * The place: the dt's pil_gpu_region@98f15000 is referenced by NOTHING (the qcom,kgsl-hyp node
+ * carries no memory-region at all, and nothing else points at it), and the working phone's own
+ * log loads its zap from a page the pil framework allocates ("loading from 0xfe500000 to
+ * 0xfe501000" -- one page, dynamically placed).  So the vendor-faithful place is a fresh page
+ * of ours; adreno_zapmem=<phys> forces the dt's region back, for an A/B.
+ * R22, the matrix that closed the call's variables (its verdict is what stands):
  *   - The form of the call. R21 sent the PAS calls "at once" (SCM_FAST, as the probes are
  *     sent); both working forms send them as calls that MAY BE PREEMPTED -- redwood's step 12
  *     and Linux's qcom_scm.c alike (a signature is checked for longer than an "at once" call
@@ -3157,9 +3248,8 @@ step_core_space(void)
  * authentication. Each attempt prints its own refusal code: the same code under every layout
  * and form is the code of something else (the memory, or the state), and the tree moves on.
  */
-#define ZAP_MEMORY              0x98f15000ull   /* this phone's dt: reserved-memory
-                                                 * pil_gpu_region@98f15000, 8 KB */
-#define ZAP_MEMORY_SIZE         0x2000u
+#define ZAP_MEMORY_SIZE         0x1000u         /* the grant: the image's one page -- the working
+                                                 * phone's own size, "to 0xfe501000" from 0xfe500000 */
 #define SCM_PAS_MEM_SETUP       SCM_CALL(2, 2)
 #define SCM_THREE_VALUES        3
 
@@ -3177,10 +3267,12 @@ static bool
 step_zap_load(void)
 {
         const uint8_t *segment;
-        volatile uint8_t *memory;
-        uint64_t size = 0, header = 0, answer = ~0ull, mem_how = scm_how;
+        volatile uint8_t *zap_memory = NULL;
+        vm_offset_t zap_page = 0;
+        uint64_t zap_place = 0, size = 0, header = 0, answer = ~0ull;
         int32_t got;
         uint32_t tzunload = 0;
+        bool zap_ours = false;
 
         if (!cx_ready() || !core_is_on) {
                 return false;
@@ -3243,62 +3335,63 @@ step_zap_load(void)
                 return false;
         }
         announce("hand the zap shader's metadata to TrustZone, tell it where the image goes, put the image there, and ask "
-            "TrustZone to authenticate and run it (R22: three attempts -- the whole .mbn as the metadata over a call that may "
-            "be preempted, as Linux's is; then R21's packed metadata over that call; then the whole .mbn over a call \"at "
-            "once\", R21's form -- between the attempts the give-up call, which R21 proved answered, takes the refusal back)");
-        {
-                static const struct {
-                        const char *what;
-                        bool whole, fast;
-                } tries[] = {
-                        { "the whole .mbn as the metadata, a call that may be preempted (Linux's form)", true, false },
-                        { "R21's packed metadata, a call that may be preempted", false, false },
-                        { "the whole .mbn as the metadata, a call \"at once\" (R21's form)", true, true },
-                };
-                bool won = false;
-
-                for (unsigned t = 0; t < sizeof(tries) / sizeof(tries[0]); t++) {
-                        if (t != 0) {
-                                printf("adreno: %u: %s\n", step, zap_unload() ? "the give-up call takes the refusal back" :
-                                    "the give-up call does not take it back; the next attempt goes on all the same");
-                        }
-                        printf("adreno: %u: attempt %u of 3: %s\n", step, t + 1, tries[t].what);
-                        if (!zap_header(&header, tries[t].whole)) {
-                                return false;
-                        }
-                        mem_how = tries[t].fast ? scm_how : (scm_how & ~SCM_FAST);
-                        got = scm("to take the zap shader's signature", mem_how | SCM_SIP | SCM_PAS_INIT_IMAGE,
-                            SCM_VALUE_AND_BUFFER, PAS_GPU, header, 0, &answer);
-                        if (got == 0 && answer == 0) {
-                                won = true;
-                                break;
-                        }
-                        printf("adreno: %u: attempt %u refused: the call returns %d, its answer %#llx\n", step, t + 1, got,
-                            answer);
-                }
-                if (!won) {
-                        goto refused;
-                }
+            "TrustZone to authenticate and run it (R23: the file's own signature chain is read out first, then one canonical "
+            "attempt -- the whole .mbn over a call that may be preempted, both working callers' form -- and on a refusal the "
+            "controls: zeroes as the metadata, for the GPU's id and the audio's)");
+        printf("adreno: %u: one attempt, the form both working callers use (the R22 matrix proved the code does not move "
+            "with the layout, the form or the page)\n", step);
+        if (!zap_header(&header, true)) {
+                return false;
         }
-        if (scm("where the image will be", mem_how | SCM_SIP | SCM_PAS_MEM_SETUP, SCM_THREE_VALUES, PAS_GPU, ZAP_MEMORY,
-            0x1000, &answer) != 0 || answer != 0) {
-                /* 0x1000: the image's one page -- redwood's working call says 0x1000 of its two-page region too */
-                printf("adreno: %u: TrustZone does not take the place %#llx (%#llx)\n", step, ZAP_MEMORY, answer);
+        got = scm("to take the zap shader's signature", (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_INIT_IMAGE,
+            SCM_VALUE_AND_BUFFER, PAS_GPU, header, 0, &answer);
+        if (got != 0 || answer != 0) {
+                printf("adreno: %u: refused: the call returns %d, its answer %#llx\n", step, got, answer);
                 goto refused;
         }
-        /* (the memory is looked at only now: TrustZone has just said that it is not its own) */
-        memory = (volatile uint8_t *)ml_io_map_wcomb(ZAP_MEMORY, ZAP_MEMORY_SIZE);
-        printf("adreno: %u: the reserved memory begins %02x %02x %02x %02x, the zap shader %02x %02x %02x %02x\n", step,
-            memory[0], memory[1], memory[2], memory[3], segment[0], segment[1], segment[2], segment[3]);
-        printf("adreno: %u: about to write %llu bytes at %#llx\n", step, size, ZAP_MEMORY);
-        snprintf(last_write, sizeof(last_write), "step %u wrote the zap shader into memory at %#llx", step, ZAP_MEMORY);
+        {
+                /* the place.  The vendor-faithful shape: a page of ours, like the working phone's "loading from
+                 * 0xfe500000 to 0xfe501000" -- the dt's pil_gpu_region@98f15000 is referenced by nothing (the
+                 * qcom,kgsl-hyp node has no memory-region at all), so nothing ever used it for this. */
+                uint32_t forced = 0;
+
+                PE_parse_boot_argn("adreno_zapmem", &forced, sizeof(forced));
+                if (forced) {
+                        zap_place = forced;
+                        zap_memory = (volatile uint8_t *)ml_io_map_wcomb(forced, ZAP_MEMORY_SIZE);
+                        printf("adreno: %u: the place forced by the boot arg: %#x\n", step, forced);
+                } else {
+                        if (kmem_alloc(kernel_map, &zap_page, PAGE_SIZE, KMA_KOBJECT | KMA_ZERO | KMA_DATA,
+                            VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+                                printf("adreno: %u: no memory for the zap image\n", step);
+                                return false;
+                        }
+                        zap_place = kvtophys(zap_page);
+                        zap_memory = (volatile uint8_t *)zap_page;
+                        zap_ours = true;
+                        printf("adreno: %u: the place is a fresh page of ours, physical %#llx (the vendor's own shape: the "
+                            "dt's pil_gpu_region is referenced by nothing)\n", step, zap_place);
+                }
+        }
+        if (scm("where the image will be", (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_MEM_SETUP, SCM_THREE_VALUES, PAS_GPU,
+            zap_place, ZAP_MEMORY_SIZE, &answer) != 0 || answer != 0) {
+                printf("adreno: %u: TrustZone does not take the place %#llx (%#llx)\n", step, zap_place, answer);
+                goto refused;
+        }
+        printf("adreno: %u: the place begins %02x %02x %02x %02x, the zap shader %02x %02x %02x %02x\n", step,
+            zap_memory[0], zap_memory[1], zap_memory[2], zap_memory[3], segment[0], segment[1], segment[2], segment[3]);
+        printf("adreno: %u: about to write %llu bytes at %#llx\n", step, size, zap_place);
+        snprintf(last_write, sizeof(last_write), "step %u wrote the zap shader into memory at %#llx", step, zap_place);
         hold(true);
-        for (uint64_t i = 0; i < 0x1000; i++) {
-                memory[i] = i < size ? segment[i] : 0;
+        for (uint64_t i = 0; i < ZAP_MEMORY_SIZE; i++) {
+                zap_memory[i] = i < size ? segment[i] : 0;
+        }
+        if (zap_ours) {
+                to_memory((vm_offset_t)zap_memory, ZAP_MEMORY_SIZE);
         }
         settle();
-        if (scm("to authenticate the zap shader and run it", mem_how | SCM_SIP | SCM_PAS_AUTH_AND_RESET, SCM_ONE_VALUE, PAS_GPU,
-            0, 0, &answer) != 0 || answer != 0) {
+        if (scm("to authenticate the zap shader and run it", (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_AUTH_AND_RESET,
+            SCM_ONE_VALUE, PAS_GPU, 0, 0, &answer) != 0 || answer != 0) {
                 printf("adreno: %u: TrustZone does not authenticate the zap shader (%#llx)\n", step, answer);
                 goto refused;
         }
@@ -3314,6 +3407,35 @@ refused:
          * audio's for comparison -- this phone starts its audio through TrustZone too), and
          * the give-up call itself, the one that wedged R20, asked once.
          */
+        {
+                /* the controls (R23): the same call over a page of zeroes.  A different code = TrustZone read our
+                 * page and refused what it parsed (the image's side).  The same -3145797 = the refusal comes before
+                 * any image is read (the memory or the caller).  The audio's id over the same zeroes tells image
+                 * vs peripheral.  The page is not freed: after a PAS call it is TrustZone's to look at, like the
+                 * metadata page above. */
+                vm_offset_t zero_page = 0;
+
+                if (kmem_alloc(kernel_map, &zero_page, PAGE_SIZE, KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) == KERN_SUCCESS) {
+                        uint64_t zero_phys = kvtophys(zero_page), zero_answer = ~0ull;
+                        int32_t zero_got;
+
+                        to_memory(zero_page, PAGE_SIZE);
+                        zero_got = scm("the control: a page of zeroes as the GPU's metadata",
+                            (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_INIT_IMAGE, SCM_VALUE_AND_BUFFER, PAS_GPU, zero_phys,
+                            0, &zero_answer);
+                        printf("adreno: %u: control, the GPU's id over zeroes: returns %d, answer %#llx -- %s\n", step,
+                            zero_got, zero_answer, zero_got == -3145797 ?
+                            "THE SAME CODE: the refusal comes BEFORE the image is read -- the memory or the caller, not the file" :
+                            "A DIFFERENT ANSWER: TrustZone does read the buffer -- the refusal of the real file is about the "
+                            "image itself (its signature)");
+                        zero_answer = ~0ull;
+                        zero_got = scm("the control: the same zeroes as the audio's metadata",
+                            (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_INIT_IMAGE, SCM_VALUE_AND_BUFFER, 1, zero_phys, 0,
+                            &zero_answer);
+                        printf("adreno: %u: control, the audio's id over the same zeroes: returns %d, answer %#llx\n", step,
+                            zero_got, zero_answer);
+                }
+        }
         answer = ~0ull;
         scm("whether it \"supports\" the GPU's image", scm_how | SCM_PAS_IS_SUPPORTED, SCM_ONE_VALUE, PAS_GPU, 0, 0, &answer);
         answer = ~0ull;

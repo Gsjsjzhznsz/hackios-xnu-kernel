@@ -526,3 +526,24 @@ Stage Summary:
   出安全模式）→ 21（commands）
 - 判读树：尝试1 收 = 布局+形态是墙；尝试2 收 = 形态是墙；尝试3 收 = 布局是墙；
   三试同码 = 码属于内存/状态（R23 = 元数据放哪 / kgsl-hyp 的 PAS 环境）；换码 = 进展
+
+## R23 · 拒绝码结案 + 文件受审（-3145797 的真身）
+
+**结论先行：-3145797 = TZ 对"这一个镜像"的认证拒绝，与调用形态/内存布局/地址无关；而随卷的 a640_zap.mbn 是高通 SecTools 测试签名的固件——熔丝手机的 TZ 谁叫都不收这条链。**
+
+### 四问裁决（R22 战报的 a-d）
+- **a) -3145797 (0xFFCFFFBB) 的含义**：TZBSP PIL 服务层拒绝码（x0 携带，不属 SCM 分发器小负数集 {-1,-2,-3,-4,-5,-12,-55}，本谱系内核 `scm_remap_error` 未知码一律 remap 成 -EINVAL，真机日志正是 `rc:-22`）。行为语义由真机日志实锤：SM8150 系手机上 spss 的 PAS_INIT_IMAGE（同一 func id 0x42000201）吃一模一样的码，同一次开机 cdsp/adsp/slpi/ipa_fws/venus/modem 六镜像全过、a640_zap 也过（"Brought out of reset"）——完美调用者照样吃码，前提是镜像过不了。精确枚举名未公开，行为定性已闭合。
+- **b) hyp 是否为 PAS 0xd 配 SHM 池**：没有。DT 全表（t17-dtb.bin）：唯一 TZ 面向的共享池 = qseecom_region@0x9e400000（20MB shared-dma-pool，QSEE 应用用）；PAS 元数据就是普通 DRAM（vendor 内核用 dma_alloc_coherent，六镜像同机全过为证）。"SHM 桥"是 redwood（SM7325 代 TZ）的特性，SM8150 代 TZ 用 XPU 临时保护元数据（qcom_scm.c 注释原话），无需登记。zap 落位区也不在 DT：kgsl-hyp 节点没有 memory-region，pil_gpu_region@0x98f15000 无人引用（孤儿），真机 zap 用动态分配页（0xfe500000，1 页）。
+- **c) 元数据可否放 hyp 已 shared 的页/先注册再 INIT**：不需要。vendor 形态 = dma_alloc_coherent 普通页（连续、4K 对齐、缓存清理后发调用）。R22 矩阵已证地址无关。R23 落位改用我们自己的新页（vendor 同款），adreno_zapmem= 可强制回 DT 区做 A/B。
+- **d) INIT_IMAGE 前是否有漏掉的前置调用**：没有。vendor 全流程 = is_call_available 探针（可选）→ INIT_IMAGE(整 .mbn) → MEM_SETUP(动态页, 0x1000)（relocatable 才有）→ 写段 → AUTH_AND_RESET。唯一额外动作 = qcom_scm_clk_enable（DT 时钟；本机 DT 无 scm 节点，非判别项——spss 先例证明时钟全开照样能拒镜像）。
+
+### 文件取证（本案钥匙）
+- 随卷 a640_zap.mbn（14256B，sha256 a17975ca…，R13 起随 md1，卷内字节与 fw-gpu-raphael 全等）哈希段尾证书链：**"Generated Test Attestation CA" / "Generated Test Root CA" / SecTools / San Diego / CDMA Technologies / "General Use Test Key (for testing only)"** —— 高通 SecTools 测试链，非量产签名。
+- phdr 表：phdr[0] type 0（头对）、phdr[1] type 0 + 哈希标记 bit24-26（0x1a38@0x1000）、phdr[2] PT_LOAD（0x7b0@0x3000, relocatable）。解析器选段正确；调用形态与 vendor 完全一致。
+- 真机对照（sm8150 同谱系 4.14 内核，PIL 内存图与本机一致：ipa@0x98f00000/spss@0x99000000/cdsp@0x99100000 全同）：zap 三连成功、spss 拒绝同码。
+
+### 内核改动（raphael_adreno.c，+176/−54）
+- `zap_chain_has()`：哈希 blob 内有界查针。
+- `zap_header()`：发调用前扫描证书链可读名（前 6 个）+ 测试签名有界查证，打印 **"THE SIGNATURE CHAIN SAYS: A TEST KEY …"** 或 "no test-key marks"。
+- step 19：矩阵退役，单一规范尝试（整 .mbn + 可抢占）；落位 = 自家新页（vendor 同款，0x1000 授权），`adreno_zapmem=<phys>` 可强制 DT 区；拒绝路径加**零页对照**（GPU id / audio id 各一发，同码=调用级、换码=镜像级）。
+- 门禁：+15 条 R23 标记、−7 条 R22 矩阵标记（退役清单入 CI）。
