@@ -1791,6 +1791,7 @@ static struct gpu_block gmu_blocks[12], gmu_log, gmu_hfi;
 static unsigned gmu_block_count;
 static const uint8_t *gmu_firmware;
 static uint64_t gmu_firmware_size;
+static uint32_t gmu_fw_core;           /* the loaded firmware's core version word, read back in step 14 */
 static bool gmu_space_is_on, gmu_runs, gmu_talks, core_is_on, rsc_awake, cx_off;
 static void gmu_post_mortem(void);
 
@@ -1963,8 +1964,9 @@ step_gmu_firmware(void)
 		printf("adreno: %u: %u words of the GMU's own memory do not read back as written\n", step, wrong);
 		return false;
 	}
+	gmu_fw_core = rd(gmu.base + GMU_DTCM_VERSIONS);
 	printf("adreno: %u: THE GMU'S FIRMWARE IS LOADED; its versions, read back from the GMU: core %#x, power %#x, HFI %#x\n",
-	    step, rd(gmu.base + GMU_DTCM_VERSIONS), rd(gmu.base + GMU_DTCM_VERSIONS + 8), rd(gmu.base + GMU_DTCM_VERSIONS + 16));
+	    step, gmu_fw_core, rd(gmu.base + GMU_DTCM_VERSIONS + 8), rd(gmu.base + GMU_DTCM_VERSIONS + 16));
 	return true;
 }
 
@@ -1993,6 +1995,7 @@ step_gmu_firmware(void)
 #define GMU_CHIP                0x06040001      /* dt: "qcom,adreno-640.1" */
 #define GMU_STARTED_MASK        0x1ff           /* of fw_init_result, for firmware newer than core 0x20010004 */
 #define GMU_STARTED             0x100
+#define GMU_BOOTED_BABEFACE     0xbabeface      /* the whole verdict of an older firmware (vendor's a6xx_gmu_device_start) */
 #define GMU_FAILED              0xe00
 
 /* The table at the head of the HFI page and the three queues after it, as the vendor's driver lays them out. */
@@ -2017,7 +2020,18 @@ static bool
 step_gmu_start(void)
 {
 	static const uint8_t priority[HFI_QUEUES] = { 10, 10, 40 };
+	/*
+	 * What "started" looks like is the firmware's own business: the vendor's
+	 * a6xx_gmu_device_start waits for the whole word 0xbabeface on firmware whose
+	 * core version is 0x20010004 or older, and for bit 8 only on newer ones.  Ours
+	 * (step 14 says which) is 0x20000105, an older one -- R13 waited for bit 8 all
+	 * the same, and so timed out against a firmware that had said babeface and was
+	 * sitting there waiting for its first message.
+	 */
+	uint32_t mask = gmu_fw_core <= 0x20010004 ? 0xffffffffu : GMU_STARTED_MASK;
+	uint32_t value = gmu_fw_core <= 0x20010004 ? GMU_BOOTED_BABEFACE : GMU_STARTED;
 	uint32_t result = 0;
+	bool started = false;
 
 	if (!cx_ready() || !gmu_space_is_on) {
 		return false;
@@ -2080,17 +2094,20 @@ step_gmu_start(void)
 	set(&gmu, "rpmh_ctrl", GMU_RPMH_CTRL, GMU_RPMH_CTRL_ALL);
 	put(&gmu, "gmu2host_intr_clr", GMU_GMU2HOST_INTR_CLR, 0xffffffff);
 
+	printf("adreno: %u: this firmware's verdict of started: (result & %#x) == %#x (its core version is %#x)\n", step, mask,
+	    value, gmu_fw_core);
 	gmu_runs = true;
 	put(&gmu, "cm3_sysreset", GMU_CM3_SYSRESET, 0);
-	for (int i = 0; i < 5000 && (result & GMU_STARTED_MASK) != GMU_STARTED && !(result & GMU_FAILED); i++) {
+	for (int i = 0; i < 50000 && (result & mask) != value && !(result & GMU_FAILED); i++) {
 		sleep_us(100);
 		result = rd(gmu.base + GMU_CM3_FW_INIT_RESULT);
 	}
+	started = (result & mask) == value;
 	get(&gmu, "cm3_fw_init_result", GMU_CM3_FW_INIT_RESULT);
 	get(&gmu, "gmu2host_intr_info", GMU_GMU2HOST_INTR_INFO);
 	get(&gmu, "ao_host_interrupt_status", GMU_AO_HOST_INTERRUPT_STATUS);
 	get(&gmu, "hfi_ctrl_status", GMU_HFI_CTRL_STATUS);
-	if (space_faulted(&gmu_space) || (result & GMU_STARTED_MASK) != GMU_STARTED) {
+	if (space_faulted(&gmu_space) || !started) {
 		printf("adreno: %u: the GMU's firmware does not come up\n", step);
 		gmu_post_mortem();
 		return false;

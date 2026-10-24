@@ -250,6 +250,14 @@ find_channel(struct peripheral *p, uint32_t channels)
 #define REG_INT_LATCHED         0x18
 #define REG_INT_PENDING         0x19
 
+/* the power-on block's key inputs have pull-ups of their own, and a debouncer; both decide
+ * whether a press can be seen at all (pm8941-pwrkey.c: PON_PULL_CTL, PON_DBC_CTL -- where
+ * Linux *writes* these, we only look: a wrong write to the phone's supplies is not ours to
+ * risk, but a resin whose pull-up the boot chain left off is exactly what a dead volume
+ * down without a dead power key looks like) */
+#define PON_REG_PULL_CTL        0x70            /* [0]: resin's pull-up, [1]: the power key's */
+#define PON_REG_DBC_CTL         0x71            /* the debouncer's time, as a code */
+
 /* the power-on block: which generation tells which bits of the status are the keys
  * (drivers/input/misc/pm8941-pwrkey.c) */
 #define PON_TYPE                0x01
@@ -289,6 +297,30 @@ static struct button {
 
 /* Which status bits the PON's keys are, set by step 3 (the subtype says the generation). */
 static uint8_t pon_kpdpwr_bit = PON_KPDPWR_CLASSIC, pon_resin_bit = PON_RESIN_CLASSIC;
+
+/* The raw status bytes the key events are built from, and what they did.  A key that fires
+ * nothing is judged by whether its byte ever moved: the witness lines below make "the
+ * hardware (or its pull-up, or its debouncer) never saw the press" tellable from "the driver
+ * dropped what the hardware saw", which the R14 volume-key question needs. */
+static struct {
+        uint8_t pon, pin;
+        bool pon_seen, pin_seen;
+        uint32_t pon_moves, pin_moves, said;
+} raw;
+
+static void
+witness(uint8_t *was, bool *seen, uint32_t *moves, const char *what, uint8_t now)
+{
+        if (*seen && now != *was) {
+                (*moves)++;
+                if (raw.said < 40) {
+                        raw.said++;
+                        printf("buttons: %s's status byte changed to %#x (was %#x)\n", what, now, *was);
+                }
+        }
+        *was = now;
+        *seen = true;
+}
 
 /* "12.345 s (08:13:05.918 UTC)": since boot as in the log's own stamps, and as the daemons' lines have it */
 static void
@@ -349,6 +381,7 @@ buttons_poll(void)
         if (power.usable || volume_down.usable) {
                 problem = spmi_read(&pon, REG_RT_STATUS, &status, 1);
                 if (problem == NULL) {
+                        witness(&raw.pon, &raw.pon_seen, &raw.pon_moves, "the power-on block", status);
                         button_look(&power, status & pon_kpdpwr_bit);
                         button_look(&volume_down, status & pon_resin_bit);
                 } else if (said < 8) {
@@ -359,6 +392,7 @@ buttons_poll(void)
         if (volume_up.usable) {
                 problem = spmi_read(&pin, REG_RT_STATUS, &status, 1);
                 if (problem == NULL) {
+                        witness(&raw.pin, &raw.pin_seen, &raw.pin_moves, "volume up's pin", status);
                         button_look(&volume_up, !(status & GPIO_LEVEL));
                 } else if (said < 8) {
                         said++;
@@ -398,12 +432,15 @@ static void
 pon_inputs(uint8_t subtype)
 {
         const char *problem;
-        uint8_t r[8], more[2];
+        uint8_t r[8], more[2], pull[2] = { 0, 0 }, pulled = 0;
 
         printf("buttons: next: read the status and the interrupt setup of %s (registers 0x810 to 0x819)\n", pon.name);
         problem = spmi_read(&pon, REG_RT_STATUS, r, 8);
         if (problem == NULL) {
                 problem = spmi_read(&pon, REG_INT_LATCHED, more, 2);
+        }
+        if (problem == NULL) {
+                pulled = spmi_read(&pon, PON_REG_PULL_CTL, pull, 2) == NULL;    /* a look, not a gate */
         }
         if (problem != NULL) {
                 printf("buttons: %s: %s\n", pon.name, problem);
@@ -419,6 +456,11 @@ pon_inputs(uint8_t subtype)
             (r[0] & pon_kpdpwr_bit) ? "HELD" : "released", (r[0] & pon_resin_bit) ? "HELD" : "released",
             r[REG_INT_SET_TYPE - REG_RT_STATUS], r[REG_INT_POLARITY_HIGH - REG_RT_STATUS],
             r[REG_INT_POLARITY_LOW - REG_RT_STATUS], r[REG_INT_ENABLED - REG_RT_STATUS], more[0], more[1]);
+        if (pulled) {
+                printf("buttons: the power-on block's pull-ups: resin's bit is %s, the power key's %s; the debouncer says %#x\n",
+                    (pull[0] & 1) ? "on" : "OFF (a volume down would read as never pressed)",
+                    (pull[0] & 2) ? "on" : "OFF", pull[1]);
+        }
         power.usable = volume_down.usable = true;
         power.last = r[0] & pon_kpdpwr_bit;
         volume_down.last = r[0] & pon_resin_bit;
@@ -465,6 +507,12 @@ say_summary(void)
             power.down ? " power" : "", volume_up.down ? " volume-up" : "", volume_down.down ? " volume-down" : "",
             (power.down || volume_up.down || volume_down.down) ? " held" : " none held", bus.reads,
             bus.reads ? bus.total_ns / bus.reads / 1000 : 0, bus.longest_ns / 1000, bus.failed);
+        printf("buttons: the raw bytes: power-on block %#x (moved %u times%s), volume up's pin %#x (moved %u times%s)\n",
+            raw.pon, raw.pon_moves, raw.pon_seen ? "" : ", not yet read", raw.pin, raw.pin_moves,
+            raw.pin_seen ? "" : ", not yet read");
+        if (raw.said > 40) {
+                printf("buttons: ... and %u more changes of a raw byte, no longer said one by one\n", raw.said - 40);
+        }
 }
 
 static void
