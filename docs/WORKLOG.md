@@ -481,3 +481,48 @@ Stage Summary:
 - 判读树按楔死位置分层：0xc2000601 本身楔 = 整门皆暗（R22 = HVC/
   kgsl-hyp）；0xc2000201 楔 = PAS 族暗（R22 = 内存归属）；
   0xc2000205 楔 = 最接近；返回错误码 = 通道全活、码即答案
+
+## R22 · -3145797 拆案（元数据布局 × 调用形态的三连矩阵）
+
+- R21 战报判读：通道全活——0xc2000601 探针（本体 + 0x2000201/2/5 三条可用性）全答
+  0/0x1；0xc2000206（give-up，SMC64 快调用 + 通道已建）干净返回 0/0（R20 的楔死
+  从此定性为"冷通道首发的 SMC32 give-up"，纪律保持：先探针、只走 0xC2xxxxxx）。
+  但 PAS_INIT_IMAGE (0xc2000201, pas 13, 元数据 0xff014000) 返回 **-3145797
+  (0xFFCFFFBB), answer 0** ——调用有答、镜像不收；0xc2000207 对 GPU/audio 都答 0
+  （该问句语义不明，不能作为"TZ 封杀 GPU"的证据）；MEM_SETUP/AUTH_AND_RESET 未到达。
+- 拆案（两份源码 + .mbn 实测三方对照）：
+  1. **元数据布局**（zap_header()，+113/−39 的 R21 版）：TrustZone 按缓冲里 ELF 头
+     自己声明的 p_offset 取 hash 段（mdt_loader.c: qcom_mdt_read_metadata；Linux 的
+     zap 路径干脆整个 .mbn 传进去：qcom_scm_pas_init_image(13, fw->data, fw->size)）。
+     a640_zap.mbn 实测（scripts 侧解析）：header pair 0x94B、hashes 0x1a38B @
+     **p_offset 0x1000**、PT_LOAD 0x7b0B @0x3000、全文件 14256B。R21 把 hash 打包到
+     0x94（.mdt 形态——.mdt 里那确实是 p_offset），TZ 到 0x1000 处读到的是打包块
+     中段 → -3145797。14256B < 16KB 页：整个文件放进单页即可（16K 页 XNU，物理连续）。
+  2. **调用形态**：R21 的 PAS 调用带 SCM_FAST（与探针同型）；参考 redwood step 12 与
+     Linux 都发**可抢占**调用（redwood 原话 "a call that may be preempted, as
+     Linux's is"；wrapper 的 SCM_INTERRUPTED + session 重试舞步就是为此存在，R21 里
+     从未走过）。签名校验时长不保证"一次答完"。
+- R22 修改（xnu/files/bsd/dev/raphael_adreno.c，+99/−36）：
+  · zap_header(phys, whole)：双形态元数据——whole=true 整个 .mbn（Linux 形态，每个
+    p_offset 都指着真字节）；whole=false R21 打包形态（留作变量隔离）；单页 16KB、
+    物理连续、to_memory 清缓存；打印 hash 的文件偏移
+  · step 19 三连矩阵：①整 .mbn + 可抢占调用 ②R21 打包 + 可抢占 ③整 .mbn + FAST。
+    尝试间补发 give-up（R21 证明有答、返回 0）清场；每试打印自己的拒绝码；获胜
+    形态（mem_how）接管 MEM_SETUP(2,2)（落位尺寸改 0x1000——redwood 的活调用也是
+    0x1000，尽管区域是两页）与 AUTH_AND_RESET(2,5)
+  · wrapper：被抢占 N 次后应答时打印 N（重试舞步首次可见）
+  · step 12（mask 跳过中）同步 zap_header 新签名
+- 流水线：scripts/r22_pipeline.py 派生 tools/r22-flash-build.sh（门禁 +R22 十一条、
+  R21 全部保留、R18/R19 退役名单原样）+ .github/workflows/r22-springboard.yml
+  （缓存键迁 r22-、ccache 回退链补 r21-ccache-；README/release body 全量换 R22 判读树；
+  bash -n + yaml 校验过）
+- 静态校验：R21/R20 全部保留标记在场（含被换行/转义拆开的两条按编译后拼接形态复验）；
+  退役标记不在场；括号平衡；补丁 download/r22-trustzone-zap-matrix.patch（沙箱侧）
+
+Stage Summary:
+- R22 定性：-3145797 = TZ 有答的拒绝，两个待隔离变量（元数据布局 0x94→0x1000/整文件、
+  调用形态 FAST→可抢占）；三连矩阵一轮开机完成归因
+- 胜利线不变：TRUSTZONE HAS AUTHENTICATED AND STARTED THE ZAP SHADER → step 20（CP
+  出安全模式）→ 21（commands）
+- 判读树：尝试1 收 = 布局+形态是墙；尝试2 收 = 形态是墙；尝试3 收 = 布局是墙；
+  三试同码 = 码属于内存/状态（R23 = 元数据放哪 / kgsl-hyp 的 PAS 环境）；换码 = 进展

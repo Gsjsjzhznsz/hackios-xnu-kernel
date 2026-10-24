@@ -1738,6 +1738,10 @@ scm(const char *what, uint64_t function, uint64_t arguments, uint64_t first, uin
                     "+r" (x7) : : "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "memory");
                 session = x6;
                 if (x0 != SCM_INTERRUPTED) {
+                        if (i != 0) {
+                                printf("adreno: %u: the call was preempted %d time%s before it was answered\n", step, i,
+                                    i == 1 ? "" : "s");
+                        }
                         printf("adreno: %u: TrustZone returns %d, answer %#llx\n", step, (int32_t)x0, x1);
                         *answer = x1;
                         return (int32_t)x0;
@@ -1828,29 +1832,32 @@ image_file(const char *directory, const char *name, uint64_t *size)
 
 /*
  * The first of the three calls with which Linux has a zap shader loaded (mdt_loader.c:
- * qcom_mdt_pas_init, qcom_scm.c: qcom_scm_pas_init_image): TrustZone is given the image's header --
- * the ELF header and the block of hashes and certificates, taken out of the file a640_zap.mbn
- * -- and checks the signature. Nothing of the GPU is involved, so it can be asked now. The other
- * two (where the image will be, and "authenticate and start") need the 3D core powered.
+ * qcom_mdt_pas_init, qcom_scm.c: qcom_scm_pas_init_image): TrustZone is given the image's
+ * metadata -- the ELF header and the block of hashes and certificates -- and checks the
+ * signature. Nothing of the GPU is involved, so it can be asked now. The other two (where the
+ * image will be, and "authenticate and start") need the 3D core powered.
+ *
+ * R22, what the metadata is, after the R21 battle report: TrustZone reads the buffer through
+ * the header IT carries -- it parses the ELF header in the buffer and takes the hashes from
+ * the phdr's own p_offset (mdt_loader.c: qcom_mdt_read_metadata puts them there; for a
+ * redwood .mdt that place IS right after the header pair, so "nothing between them" was true
+ * there). a640_zap.mbn declares its hashes at p_offset 0x1000: R21 packed them at 0x94, so
+ * TrustZone looked at 0x1000 and found the middle of the packed block -- the -3145797 refusal
+ * of the R21 report. Linux's own zap path passes the whole .mbn (qcom_scm.c:
+ * qcom_scm_pas_init_image(13, fw->data, fw->size)), in which every p_offset points at the
+ * real bytes by construction; 14256 bytes fit in one page of this kernel (16 KB). Both forms
+ * are built here, for the round's matrix: the whole file (Linux's), and R21's packed one (the
+ * .mdt's shape, kept to isolate the variable).
  *
  * The header goes in memory of ours, page-aligned and in one piece. Qualcomm's note at that
  * call says that for these calls the hypervisor itself arranges TrustZone's access to the memory
  * ("creates SHM bridges on behalf of Linux"), and that TrustZone protects the memory while it
  * works: so it is not touched again here, and never freed.
  */
-/* The zap shader's header in a page of ours, as TrustZone wants it; where that page is in physical memory. */
+/* The zap shader's metadata in a page of ours, as TrustZone wants it; where that page is in physical memory. */
 static bool
-zap_header(uint64_t *phys)
+zap_header(uint64_t *phys, bool whole)
 {
-        /*
-         * A single-file "mbn": an ELF32 whose hash segment (a program header whose p_flags'
-         * type mark is 2 -- redwood's .mdt carried it in the low three bits, this phone's
-         * .mbn carries it at 24) and whose loadable segment are both inside the one file, at
-         * their p_offsets. What TrustZone takes at the first call is the ELF header and the
-         * hash segment, put together with nothing between them (mdt_loader.c,
-         * qcom_mdt_read_metadata). The redwood phone's zap was an .mdt whose whole file was
-         * just that pair; this phone's carries the program too.
-         */
         const uint8_t *header;
         vm_offset_t page = 0;
         uint64_t size = 0;
@@ -1887,19 +1894,25 @@ zap_header(uint64_t *phys)
                         break;
                 }
         }
-        printf("adreno: %u: an ELF of %u segments: the header pair %#x bytes, the hashes %#x at %#x, the whole file %llu bytes\n",
-            step, segments, header_bytes, hash_bytes, hash_at, size);
-        if (header_bytes == 0 || header_bytes > PAGE_SIZE || hash_bytes == 0 ||
-            (uint64_t)hash_at + hash_bytes > size || header_bytes + (uint64_t)hash_bytes > PAGE_SIZE) {
-                printf("adreno: %u: that file's header and hashes do not make what TrustZone takes\n", step);
+        printf("adreno: %u: an ELF of %u segments: the header pair %#x bytes, the hashes %#x at %#x, the whole file %llu bytes; "
+            "the metadata is built as %s\n", step, segments, header_bytes, hash_bytes, hash_at, size,
+            whole ? "the whole file, every p_offset at the real bytes (Linux's)" : "the header pair with the hashes packed "
+            "behind them (R21's, kept for the matrix)");
+        if (header_bytes == 0 || hash_bytes == 0 || (uint64_t)hash_at + hash_bytes > size || size > PAGE_SIZE) {
+                printf("adreno: %u: that file does not make a one-page metadata the way it is asked (%llu bytes, hashes %#x at "
+                    "%#x)\n", step, size, hash_bytes, hash_at);
                 return false;
         }
         if (kmem_alloc(kernel_map, &page, PAGE_SIZE, KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
                 printf("adreno: %u: no memory\n", step);
                 return false;
         }
-        memcpy((void *)page, header, header_bytes);
-        memcpy((void *)(page + header_bytes), header + hash_at, hash_bytes);
+        if (whole) {
+                memcpy((void *)page, header, size);     /* the whole file: the header pair at 0, the hashes at 0x1000 */
+        } else {
+                memcpy((void *)page, header, header_bytes);     /* R21's packed form: the hashes at 0x94 */
+                memcpy((void *)(page + header_bytes), header + hash_at, hash_bytes);
+        }
         to_memory(page, PAGE_SIZE);             /* TrustZone reads memory, not this processor's cache */
         *phys = kvtophys(page);
         return true;
@@ -1912,7 +1925,7 @@ step_zap_signature(void)
         int32_t result;
 
         announce("find the zap shader, fw/a640_zap.mbn, in the small image that came with the kernel");
-        if (!zap_header(&header)) {
+        if (!zap_header(&header, true)) {
                 return false;
         }
         announce("hand the header to TrustZone to check its signature (image 13); a call that may be preempted, as Linux's is");
@@ -3123,6 +3136,26 @@ step_core_space(void)
  *     (the GPU's, and the audio's for comparison), and, last, the give-up call itself.
  *   - The hashes of the .mbn: phdr[1] with the type mark at 24 of p_flags, not in the low
  *     bits (zap_header()).
+ *
+ * R22, the refusal decoded and the matrix: the R21 report has TrustZone refuse the signature
+ * with -3145797, answer 0 -- the channel alive, the call answered, the image not taken. Two
+ * things of ours differed from the two working forms (redwood's, and Linux's):
+ *   - The form of the call. R21 sent the PAS calls "at once" (SCM_FAST, as the probes are
+ *     sent); both working forms send them as calls that MAY BE PREEMPTED -- redwood's step 12
+ *     and Linux's qcom_scm.c alike (a signature is checked for longer than an "at once" call
+ *     promises; TrustZone may answer such a call with SCM_INTERRUPTED and take it up where it
+ *     left it, which the wrapper here handles, session and all). The probes keep their form:
+ *     they are "at once" on redwood too, and R21 proved them answered here.
+ *   - The layout of the metadata (zap_header()): R21 packed the hashes right after the header
+ *     pair, at 0x94 -- the .mdt's shape, where that IS the hash segment's p_offset. This
+ *     phone's .mbn declares its hashes at p_offset 0x1000; TrustZone read the header in the
+ *     buffer, looked at 0x1000 and found the middle of the packed block instead.
+ * The step now tries, in order: the whole .mbn as the metadata over a preemptible call; R21's
+ * packed metadata over that call; the whole .mbn over an "at once" call. Between the attempts
+ * the give-up call -- the one R21 proved answered, returns 0 -- is asked once, to take the
+ * refusal back. Whichever attempt wins, the step goes on with its form for the place and the
+ * authentication. Each attempt prints its own refusal code: the same code under every layout
+ * and form is the code of something else (the memory, or the state), and the tree moves on.
  */
 #define ZAP_MEMORY              0x98f15000ull   /* this phone's dt: reserved-memory
                                                  * pil_gpu_region@98f15000, 8 KB */
@@ -3145,7 +3178,8 @@ step_zap_load(void)
 {
         const uint8_t *segment;
         volatile uint8_t *memory;
-        uint64_t size = 0, header = 0, answer = ~0ull;
+        uint64_t size = 0, header = 0, answer = ~0ull, mem_how = scm_how;
+        int32_t got;
         uint32_t tzunload = 0;
 
         if (!cx_ready() || !core_is_on) {
@@ -3208,18 +3242,47 @@ step_zap_load(void)
         if (segment == NULL || size == 0 || size > 0x1000) {
                 return false;
         }
-        announce("hand the zap shader's header to TrustZone, tell it where the image goes, put the image there, and ask "
-            "TrustZone to authenticate and run it");
-        if (!zap_header(&header)) {
-                return false;
+        announce("hand the zap shader's metadata to TrustZone, tell it where the image goes, put the image there, and ask "
+            "TrustZone to authenticate and run it (R22: three attempts -- the whole .mbn as the metadata over a call that may "
+            "be preempted, as Linux's is; then R21's packed metadata over that call; then the whole .mbn over a call \"at "
+            "once\", R21's form -- between the attempts the give-up call, which R21 proved answered, takes the refusal back)");
+        {
+                static const struct {
+                        const char *what;
+                        bool whole, fast;
+                } tries[] = {
+                        { "the whole .mbn as the metadata, a call that may be preempted (Linux's form)", true, false },
+                        { "R21's packed metadata, a call that may be preempted", false, false },
+                        { "the whole .mbn as the metadata, a call \"at once\" (R21's form)", true, true },
+                };
+                bool won = false;
+
+                for (unsigned t = 0; t < sizeof(tries) / sizeof(tries[0]); t++) {
+                        if (t != 0) {
+                                printf("adreno: %u: %s\n", step, zap_unload() ? "the give-up call takes the refusal back" :
+                                    "the give-up call does not take it back; the next attempt goes on all the same");
+                        }
+                        printf("adreno: %u: attempt %u of 3: %s\n", step, t + 1, tries[t].what);
+                        if (!zap_header(&header, tries[t].whole)) {
+                                return false;
+                        }
+                        mem_how = tries[t].fast ? scm_how : (scm_how & ~SCM_FAST);
+                        got = scm("to take the zap shader's signature", mem_how | SCM_SIP | SCM_PAS_INIT_IMAGE,
+                            SCM_VALUE_AND_BUFFER, PAS_GPU, header, 0, &answer);
+                        if (got == 0 && answer == 0) {
+                                won = true;
+                                break;
+                        }
+                        printf("adreno: %u: attempt %u refused: the call returns %d, its answer %#llx\n", step, t + 1, got,
+                            answer);
+                }
+                if (!won) {
+                        goto refused;
+                }
         }
-        if (scm("to take the zap shader's signature", scm_how | SCM_SIP | SCM_PAS_INIT_IMAGE, SCM_VALUE_AND_BUFFER, PAS_GPU,
-            header, 0, &answer) != 0 || answer != 0) {
-                printf("adreno: %u: TrustZone does not take the signature (%#llx)\n", step, answer);
-                goto refused;
-        }
-        if (scm("where the image will be", scm_how | SCM_SIP | SCM_PAS_MEM_SETUP, SCM_THREE_VALUES, PAS_GPU, ZAP_MEMORY,
-            ZAP_MEMORY_SIZE, &answer) != 0 || answer != 0) {
+        if (scm("where the image will be", mem_how | SCM_SIP | SCM_PAS_MEM_SETUP, SCM_THREE_VALUES, PAS_GPU, ZAP_MEMORY,
+            0x1000, &answer) != 0 || answer != 0) {
+                /* 0x1000: the image's one page -- redwood's working call says 0x1000 of its two-page region too */
                 printf("adreno: %u: TrustZone does not take the place %#llx (%#llx)\n", step, ZAP_MEMORY, answer);
                 goto refused;
         }
@@ -3234,7 +3297,7 @@ step_zap_load(void)
                 memory[i] = i < size ? segment[i] : 0;
         }
         settle();
-        if (scm("to authenticate the zap shader and run it", scm_how | SCM_SIP | SCM_PAS_AUTH_AND_RESET, SCM_ONE_VALUE, PAS_GPU, 0,
+        if (scm("to authenticate the zap shader and run it", mem_how | SCM_SIP | SCM_PAS_AUTH_AND_RESET, SCM_ONE_VALUE, PAS_GPU,
             0, &answer) != 0 || answer != 0) {
                 printf("adreno: %u: TrustZone does not authenticate the zap shader (%#llx)\n", step, answer);
                 goto refused;
