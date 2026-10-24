@@ -141,7 +141,6 @@ jobs:
             r17-ccache-
             r16-ccache-
             r15-ccache-
-            r14-ccache-
 
       # ---------------------------------------------------------------
       - name: "③/⑥ 内核源码构建（theos + xnu/apply.sh + xnu-deps + ccache + make）"
