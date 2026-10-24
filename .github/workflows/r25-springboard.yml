@@ -1,0 +1,544 @@
+name: R25 · SpringBoard 一键流水线（boot-only · R13 全量小卷直取）
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_repo:
+        description: "hackios 内核树 fork（含 xnu/ + tools/r25-flash-build.sh）"
+        required: true
+        default: "Gsjsjzhznsz/hackios-xnu-kernel"
+      userland_repo:
+        description: "hackios userland 树 fork"
+        required: true
+        default: "Gsjsjzhznsz/hackios-xnu-userland"
+      release_tag:
+        description: "Release tag（直链的一部分）"
+        required: true
+        default: "r25-springboard"
+      flashboot_url:
+        description: "启动卷 md0 直链（R13 全量字节，真机验证过）"
+        required: false
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r13-springboard/raphael-r13-flashboot.apfs"
+      root_url:
+        description: "小卷 md1（= /redwood = 系统根！）直链（R13 全量字节）"
+        required: false
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r13-springboard/r13-boot-volume-root.apfs"
+permissions:
+  contents: write
+concurrency:
+  group: r25-springboard
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 200
+    env:
+      REL: ${{ github.workspace }}/release
+      THEOS: /home/runner/theos     # (literal: GitHub Actions' env: block expands nothing)
+      CCACHE_DIR: ${{ github.workspace }}/hackios/.ccache
+    steps:
+      # ---------------------------------------------------------------
+      - name: "①/⑥ 磁盘准备与依赖（内核构建工具链 + 打包工具）"
+        run: |
+          set -eu
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+                       /usr/local/share/boost /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential python3-dev clang lld ccache \
+                       flex bison m4 perl python3 autoconf automake libtinfo6 xz-utils uuid-dev 7zip >/dev/null
+          command -v clang && command -v ccache && command -v 7z
+          # dsymutil：Ubuntu 的 apt clang 不往 /usr/bin 放它（R11 run 39973048286 的教训）
+          DS=$(command -v dsymutil || clang --print-prog-name=dsymutil 2>/dev/null || true)
+          [ -x "$DS" ] || DS=$(ls /usr/lib/llvm-*/bin/dsymutil 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$DS" ] && [ -x "$DS" ]; then
+            sudo ln -sf "$DS" /usr/bin/dsymutil
+          else
+            printf '#!/bin/sh\nexit 0\n' | sudo tee /usr/bin/dsymutil >/dev/null && sudo chmod +x /usr/bin/dsymutil
+          fi
+          mkdir -p "$REL"
+          df -h /
+
+      # ---------------------------------------------------------------
+      - name: "②/⑥ 取树（kernel fork + userland fork）"
+        run: |
+          set -eu
+          git clone --depth 1 "https://github.com/${{ inputs.kernel_repo }}.git" hackios
+          cd hackios
+          if ! USERLAND_URL="https://github.com/${{ inputs.userland_repo }}.git" common/setup.sh; then
+            echo "::warning::userland fork 拉取失败，回退上游 oosexgang/hackios-xnu-userland"
+            rm -rf .userland.git
+            USERLAND_URL="https://github.com/oosexgang/hackios-xnu-userland.git" common/setup.sh
+          fi
+          echo "→ raphael 启动链与 R25 打包器（含原厂签名 zap 固件与置换锚件）："
+          ls -lh prebuilt/raphael/ tools/r25-flash-build.sh fw-gpu-raphael/
+          git log -1 --format='→ kernel 树 @ %h %s'
+
+      # ---------------------------------------------------------------
+      - name: "②b/⑥ 编译门禁（loader：编译 + 特征串全验，内核构建前快速失败）"
+        run: |
+          set -eu
+          cd hackios
+          bash xnuloader/build.sh
+          python3 - <<'PY'
+          d = open('xnuloader/loader.efi', 'rb').read()
+          for feat in (b'oem gic', b'oem sgi', b'oem peek', b'NXSB at +32',
+                     b'as the firmware left it', b'never showed up as pending', b'oem gicset',
+                     b'oem gicgroup', b'group repair', b'pre-arm before CPU_ON',
+                     b'at the hung verdict',
+                     b'oem irqtest', b'DELIVERS as a Group 1 NS IRQ', b'R10 branch',
+                     b'the readback reads 0',
+                     b'R10 clean screen round', b'screen cleared for the handoff',
+                     b'oem logdump', b'no logdump partition',
+                     b'cores for the kernel, in the order it takes them'):
+              assert feat in d, f'loader.efi 缺特征串 {feat!r}'
+          assert b'debug=0x8' not in d, 'loader.efi 仍带 debug=0x8'
+          print(f'✓ R25 loader（R10 0.10 + oem logdump 取证通道）{len(d):,} B')
+          PY
+
+      # ---------------------------------------------------------------
+      # 缓存三连：theos / xnu-deps / ccache（键迁 r25-，ccache 最鲜腿 = r24b-；r16-ccache- 让位保 10 条上限。卷缓存回退链从 r23- 起，绝不挂 r24-/r24b-——那里面是换过血的卷）
+      - name: "②c/⑥ 缓存：theos（工具链 + iPhoneOS16.5.sdk）"
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/theos
+          key: r25-theos-v1
+          restore-keys: |
+            r23-theos-v1
+            r22-theos-v1
+            r20-theos-v1
+            r19-theos-v1
+            r18-theos-v1
+            r17-theos-v1
+            r16-theos-v1
+            r15-theos-v1
+            r14-theos-v1
+      - name: "②d/⑥ 缓存：xnu-deps（Apple 开源件 + host 工具 + SDK 链接树）"
+        uses: actions/cache@v4
+        with:
+          path: hackios/xnu-deps
+          key: r25-xnu-deps-v1
+          restore-keys: |
+            r23-xnu-deps-v1
+            r22-xnu-deps-v1
+            r20-xnu-deps-v1
+            r19-xnu-deps-v1
+            r18-xnu-deps-v1
+            r17-xnu-deps-v1
+            r16-xnu-deps-v1
+            r15-xnu-deps-v1
+            r14-xnu-deps-v1
+      - name: "②e/⑥ 缓存：ccache（内核编译）"
+        uses: actions/cache@v4
+        with:
+          path: hackios/.ccache
+          key: r25-ccache-${{ github.run_id }}
+          restore-keys: |
+            r25-ccache-
+            r24b-ccache-
+            r23-ccache-
+            r22-ccache-
+            r21-ccache-
+            r20-ccache-
+            r19-ccache-
+            r18-ccache-
+            r17-ccache-
+
+      # ---------------------------------------------------------------
+      - name: "③/⑥ 内核源码构建（theos + xnu/apply.sh + xnu-deps + ccache + make）"
+        run: |
+          set -eu
+          if [ ! -x "$THEOS/toolchain/linux/iphone/bin/ld64" ]; then
+            # 缓存可能带来残缺树（run 40059592397：r13-theos-v1 只有 158MB、无 toolchain）——
+            # git clone 不进非空目录，先清场再取
+            rm -rf "$THEOS"
+            git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
+            mkdir -p "$THEOS/toolchain"
+            curl -sL https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-x86_64.tar.xz | tar -xJ -C "$THEOS/toolchain/"
+          fi
+          "$THEOS/toolchain/linux/iphone/bin/ld64" --version || true
+          if [ ! -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include" ]; then
+            rm -rf "$THEOS/sdks/iPhoneOS16.5.sdk" /tmp/theos-sdks
+            git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/theos-sdks
+            git -C /tmp/theos-sdks sparse-checkout set iPhoneOS16.5.sdk
+            mkdir -p "$THEOS/sdks"
+            mv /tmp/theos-sdks/iPhoneOS16.5.sdk "$THEOS/sdks/"
+            rm -rf /tmp/theos-sdks
+          fi
+          test -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include" || { echo "::error::theos/sdks 的 iPhoneOS16.5.sdk 就位失败"; exit 1; }
+          df -h /
+          cd hackios
+          xnu/apply.sh
+          bash xnu-deps/setup.sh || { echo "::error::setup.sh 失败——exporthdrs.log 尾部："; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
+          export XNU_CCACHE=1 CCACHE_COMPILERCHECK=content
+          ccache -M 2G >/dev/null 2>&1 || true
+          echo "→ ccache 起步统计："; ccache -s 2>/dev/null | head -8 || true
+          ./xnu-build.sh -j4 -k || echo "（make 退出码 $?——上游文档：链接后的检查，内核若已产出即成功）"
+          K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
+          ls -la "$K" || { echo "::error::内核没有产出——exporthdrs.log 与 make 日志尾部："; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
+          echo "→ ccache 收官统计："; ccache -s 2>/dev/null | head -8 || true
+          python3 - "$K" <<'PY'
+          import sys
+          d = open(sys.argv[1], 'rb').read()
+          for marker, what in ((b'\x9f\x4e\x00\x71', 'cmp w20,#0x13（门铃 19 分发）'),
+                               (b'\x08\x01\xa0\x52', 'movz w8,#0x8,lsl#16（门铃 19 使能）'),
+                               (b'RAPHAEL TOUCH', '触摸驱动'),
+                               (b'buttons: step 1', '按键驱动'),
+                               (b'a640_gmu.bin', 'GPU 驱动（a640 固件名）'),
+                               (b'a640_zap.mbn', 'GPU 驱动（zap mbn）'),
+                               (b'the panel dimmed to', 'fbdim 调光'),
+                               (b'going on with the configured rates', 'R12 测量降级（adreno step5）'),
+                               (b'going with the ID registers', 'R13 SMMU 修复（IDR 优先）'),
+                               (b'was not started: the firmware answers', 'PSCI SMP 起核路径'),
+                               (b"this firmware's verdict of started", 'R14 GMU 判据分支'),
+                               (b"the power-on block's pull-ups", 'R14 PON 拉电阻回读'),
+                               (b"'s status byte changed to", 'R14 按键原始字节见证'),
+                               (b"the two pages the GMU's own code asks for", 'R15 GMU scratch 两页'),
+                               (b'cb tlbiall', 'R15 上下文银行全量 TLB 清洗'),
+                               (b'a context bank nobody used before', 'R16 处女银行（GMU 路径）'),
+                               (b'trying context bank', 'R16 银行候选（GMU 路径）'),
+                               (b'tlbiallnsnh', 'R16 全局 TLB 失效'),
+                               (b'the stream the bank names for it', 'R16 故障流 ID 取证'),
+                               (b'what our own tables say for', 'R16 页表 walk 转储'),
+                               (b'arrived late', 'R16 迟到答案'),
+                               (b'make the SMMU forget every translation again', 'R16 msg30 前再清洗'),
+                               (b'survivable, cleared, the wait goes on', 'R17 可活故障容忍'),
+                               (b'while the GMU was deciding', 'R17 等待期故障轮询'),
+                               (b'has stopped answering', 'R17 假失败判据修复'),
+                               (b'with a bus error', 'R17 致命故障分类'),
+                               (b'the patience was not wasted', 'R17 答案耗时标定'),
+                               (b'while the 3D core was powered', 'R17 OOB 循环故障轮询'),
+                               (b'the bank is programmed and ON before the stream table is touched', 'R19 先开后表的参考顺序（保留）'),
+                               (b"the core's second stream (1) through the same context", 'R19 二流绑定（=1 实验分支在场）'),
+                               (b"raphael's dt gives the gfx streams the mask 0x401", 'R21 本机 DT 形态判词'),
+                               (b"the second stream (1) under entry 0's own wing", 'R21 二流默认罩住'),
+                               (b"raphael's TrustZone took the processor with it", 'R21 判词：give-up 不再默认发'),
+                               (b"the give-up call is not sent by default", 'R21 通道先行'),
+                               (b"no zap shader can be asked for", 'R21 通道暗门判词'),
+                               (b"the whole door is dark", 'R21 整门皆暗'),
+                               (b"adreno_tzunload", 'R21 give-up 实验开关'),
+                               (b"with the channel proven", 'R21 通道验证后补发'),
+                               (b'whether it "supports" the GPU\'s image', 'R21 supports 诊断'),
+                               (b"the same of the audio's, for comparison", 'R21 audio 对照'),
+                               (b"the metadata is built as", 'R22 元数据形态宣告'),
+                               (b"the whole file, every p_offset at the real bytes (Linux's)", 'R22 全文件形态'),
+                               (b"the call was preempted %d time%s before it was answered", 'R22 被抢占计数'),
+                               (b"a one-page metadata the way it is asked", 'R22 单页元数据判词'),
+                               (b"THE SIGNATURE CHAIN SAYS", 'R23 签名链判词'),
+                               (b'the hashes carry "', 'R23 哈希段明文名字'),
+                               (b"A TEST KEY (Qualcomm SecTools", 'R23 测试签名判词（防旧件回流）'),
+                               (b"one attempt, the form both working callers use", 'R23 单一规范尝试'),
+                               (b"the R22 matrix proved the code does not move", 'R23 矩阵结论入档'),
+                               (b"the control: a page of zeroes as the GPU's metadata", 'R23 零页对照宣告'),
+                               (b"control, the GPU's id over zeroes", 'R23 GPU 零页对照'),
+                               (b"control, the audio's id over the same zeroes", 'R23 audio 零页对照'),
+                               (b"THE SAME CODE: the refusal comes BEFORE the image", 'R23 同码判词（调用级）'),
+                               (b"A DIFFERENT ANSWER: TrustZone does read the buffer", 'R23 换码判词（镜像级）'),
+                               (b"the place is a fresh page of ours", 'R23 动态页落位'),
+                               (b"dt's pil_gpu_region is referenced by nothing", 'R23 孤儿区判词'),
+                               (b"adreno_zapmem", 'R23 落位覆盖开关'),
+                               (b"no memory for the zap image", 'R23 落位分配判词'),
+                               (b"Xiaomi Attestation CA", 'R25 小米量产链探针'),
+                               (b"Xiaomi Root CA", 'R25 小米根链探针'),
+                               (b"THE PHONE'S OWN PRODUCTION CHAIN", 'R25 量产链判词'),
+                               (b"no test-key marks and no Xiaomi marks", 'R25 三岔兜底判词'),
+                               (b"R25 E1: Linux's shape", 'R25 规范尝试带 size（三参形态）'),
+                               (b'R25: the shape sweeps', 'R25 形状扫描总宣告'),
+                               (b'E2: the size sweep', 'R25 E2 尺寸扫描'),
+                               (b'E2 control: the hash table corrupted', 'R25 E2 损坏哈希表对照'),
+                               (b'E3: the argument word sweep', 'R25 E3 参数字扫描'),
+                               (b'E4: the id sweep', 'R25 E4 id 扫描'),
+                               (b'E5: the same call again', 'R25 E5 状态测试'),
+                               (b'E5: after the give-up', 'R25 E5 give-up 后再发'),
+                               (b'secboot and rollback fuses', 'R25 E7 qfprom 窗口全查')):
+              assert marker in d, f'源码构建的内核缺 {what}'
+          for gone, what in ((b'of the stream table does not keep what is written', 'R18 条目 0 拒写取证'),
+                             (b'of the stream table instead', 'R18 换条目路由'),
+                             (b'the free entries are offered one by one', 'R18 条目候选搜索'),
+                             (b'refused every entry', 'R18 全条目拒绝判词'),
+                             (b'the hypervisor drops SMR/S2CR', 'R19 看守者判词（R21 证伪并除名）'),
+                             (b'TAKEN TO MEAN THAT IT KEEPS A ZAP SHADER', 'R21 除名：拒绝即失败'),
+                             (b'attempt %u of 3', 'R22 三连矩阵（R23 除名）'),
+                             (b"R21's packed metadata, a call that may be preempted", 'R22 尝试2（R23 除名）'),
+                             (b'the whole .mbn as the metadata, a call "at once"', 'R22 尝试3（R23 除名）'),
+                             (b'the give-up call takes the refusal back', 'R22 尝试间清理（R23 除名）'),
+                             (b'attempt %u refused: the call returns', 'R22 逐试拒绝码（R23 除名）'),
+                             (b'the next attempt goes on all the same', 'R22 矩阵判读（R23 除名）'),
+                             (b'three attempts -- the whole .mbn as the metadata', 'R22 矩阵宣告（R23 除名）'),
+                             (b"no test-key marks -- the chain reads like the phone's own", 'R23 两岔兜底（R25 三岔除名）')):
+              assert gone not in d, f'已退役标记未删净：{what}（{gone!r} 仍在二进制里）'
+          print(f'✓ 源码构建的内核带齐 R11-R25 全部标记、退役标记已删净（{len(d):,} B）')
+          PY
+          df -h /
+
+      # ---------------------------------------------------------------
+      # ④ 双卷获取（R15 起的纪律——R14 事故的封堵）：
+      #   顺序 = 缓存(.volumes) → R13 release 全量字节 → 都没有则【失败即止】。
+      #   八道内容门禁（缺一 = 构建失败，不发空壳卷）。
+      - name: "②f/⑥ 缓存：双卷（root.apfs + flashboot.apfs，验证通过才入缓存）"
+        uses: actions/cache@v4
+        with:
+          path: hackios/userland/.volumes
+          key: r25-volumes-v1
+          restore-keys: |
+            r23-volumes-v1
+            r22-volumes-v1
+            r20-volumes-v1
+            r19-volumes-v1
+            r18-volumes-v1
+            r17-volumes-v1
+            r16-volumes-v1
+            r15-volumes-v1
+            r14-volumes-v1
+
+      - name: "④/⑥ 双卷就位 + 八道内容门禁（缺一即停，绝不发空壳卷）"
+        run: |
+          set -eu
+          cd hackios
+          mkdir -p userland/.volumes
+          python3 - "${{ inputs.root_url }}" "${{ inputs.flashboot_url }}" <<'PY'
+          import hashlib, os, subprocess, sys
+
+          root, flash = 'userland/root.apfs', 'userland/flashboot.apfs'
+          vol_root, vol_flash = 'userland/.volumes/root.apfs', 'userland/.volumes/flashboot.apfs'
+
+          def nxsb(path):
+              return open(path, 'rb').read(36)[32:36] == b'NXSB'
+
+          def listed(path, needle):
+              out = subprocess.run(['7z', 'l', path], capture_output=True, text=True)
+              return needle in out.stdout
+
+          ROOT_NEEDS = ('fw/a640_gmu.bin', 'lib/libredwood.dylib',
+                        'LaunchDaemons/com.apple.SpringBoard.plist',
+                        'etc/var.skel', 'etc/inject.conf', 'etc/rc',
+                        'xpc/extensions.plist', 'bin/child', 'sbin/init')
+          FLASH_NEEDS = ('sbin/launchd',)
+
+          def gates(rootp, flashp, strict):
+              ok = nxsb(rootp) and nxsb(flashp)
+              why = []
+              for f, needs, what in ((rootp, ROOT_NEEDS, 'root.apfs (md1 = /redwood = 系统根)'),
+                                     (flashp, FLASH_NEEDS, 'flashboot.apfs (md0 = 启动卷)')):
+                  for n in needs:
+                      if not listed(f, n):
+                          ok = False
+                          why.append(f'{what} 缺 {n}')
+              return ok, why
+
+          got = False
+          # 第一优先：缓存里验证过的双卷
+          if os.path.isfile(vol_root) and os.path.isfile(vol_flash) and os.path.isfile('userland/.volumes/.verified'):
+              ok, why = gates(vol_root, vol_flash, True)
+              if ok:
+                  import shutil
+                  shutil.copyfile(vol_root, root)
+                  shutil.copyfile(vol_flash, flash)
+                  got = True
+                  print('✓ 双卷取自缓存（上轮验证过的同一批字节）')
+              else:
+                  print('::warning::缓存卷校验不过：' + '; '.join(why) + '——转 R13 资产')
+                  for f in (vol_root, vol_flash, 'userland/.volumes/.verified'):
+                      if os.path.isfile(f):
+                          os.remove(f)
+          # 第二优先：R13 release 的全量字节（R13 真机日志就是它的内容清单）
+          if not got:
+              root_url, flash_url = sys.argv[1], sys.argv[2]
+              for url, out in ((root_url, root), (flash_url, flash)):
+                  r = subprocess.run(['curl', '-fL', '--retry', '3', '--retry-delay', '5',
+                                      '--connect-timeout', '30', '-o', out, url])
+                  if r.returncode != 0:
+                      print(f'::error::下载失败 {url}')
+                      sys.exit(1)
+              ok, why = gates(root, flash, True)
+              if not ok:
+                  print('::error::R13 资产双卷未过内容门禁——按 R14 事故纪律，宁可构建失败也不发空壳卷：')
+                  for w in why:
+                      print('::error::  ' + w)
+                  sys.exit(1)
+              import shutil
+              shutil.copyfile(root, vol_root)
+              shutil.copyfile(flash, vol_flash)
+              open('userland/.volumes/.verified', 'w').write('ok')
+              got = True
+              print('✓ 双卷取自 R13 release 全量字节，八道门禁全过，已入缓存')
+          if not got:
+              print('::error::双卷无来源。R15 起不再无 iOS 直造（R14 黑屏事故：骨架 root.apfs 上了 /redwood）——'
+                    '补回 R13 release 资产或恢复 iOS 获取后重跑')
+              sys.exit(1)
+
+          for f, what in ((root, 'md1 /redwood = 系统根'), (flash, 'md0 启动卷')):
+              size = os.path.getsize(f)
+              digest = hashlib.sha256(open(f, 'rb').read()).hexdigest()[:16]
+              print(f'✓ {f} = {what}（{size:,} B, sha256 {digest}…）')
+          # 把 libredwood.dylib 解出来亮个相：内容门禁的实物证据
+          subprocess.run(['rm', '-rf', '/tmp/r25chk'])
+          if subprocess.run(['7z', 'e', root, '-o/tmp/r25chk', 'libredwood.dylib', '-r'],
+                            capture_output=True).returncode == 0:
+              hits = [os.path.join(dp, fn) for dp, _, fns in os.walk('/tmp/r25chk')
+                      for fn in fns if fn == 'libredwood.dylib']
+              if hits:
+                  print(f'✓ 卷内 libredwood.dylib 实物在案（{os.path.getsize(hits[0]):,} B）')
+          PY
+
+      # ---------------------------------------------------------------
+      - name: "④b/⑥ 换血+审计：md1 卷内 fw/a640_zap.mbn → 原厂签名（同长置换）+ 结构自证"
+        run: |
+          set -eu
+          cd hackios
+          python3 - <<'PY'
+          import hashlib, os
+
+          new = open('fw-gpu-raphael/a640_zap.mbn', 'rb').read()
+          old = open('fw-gpu-raphael/a640_zap.mbn.testkey-r13', 'rb').read()
+          assert len(old) == len(new) == 14256, f'同长置换前提破了: old={len(old)} new={len(new)}'
+          assert b'Xiaomi Attestation CA' in new and b'Xiaomi Root CA' in new, '新件不是小米量产链'
+          assert b'Generated Test' not in new, '新件混入测试签名'
+          assert b'Generated Test Attestation CA' in old, '锚件不是测试签名件'
+
+          def swap(path):
+              vol = open(path, 'rb').read()
+              n_old, n_new = vol.count(old), vol.count(new)
+              if n_new and not n_old:
+                  print(f'✓ {path}: 已是原厂签名文件（幂等跳过）')
+                  return
+              assert n_old == 1, f'{path}: 旧件命中 {n_old} 次（要 1 次），拒绝盲换'
+              at = vol.find(old)
+              open(path, 'wb').write(vol[:at] + new + vol[at + len(old):])
+              print(f'✓ {path}: fw/a640_zap.mbn 已置换 @ {at:#x}（同长 {len(new)} B，测试链 → 小米量产链）')
+
+          swap('userland/root.apfs')
+          if os.path.isfile('userland/.volumes/root.apfs'):
+              swap('userland/.volumes/root.apfs')     # 缓存源一起换：下轮 restore 即幂等
+          for p in ('userland/root.apfs', 'userland/.volumes/root.apfs'):
+              if os.path.isfile(p):
+                  chk = open(p, 'rb').read()
+                  assert chk[32:36] == b'NXSB', f'{p}: 置换后 NXSB 破了'
+                  assert chk.count(old) == 0 and chk.count(new) == 1, f'{p}: 置换后验数不过'
+                  print(f'✓ {p}: NXSB 完好、测试链清零、小米链唯一在案（new sha {hashlib.sha256(new).hexdigest()[:16]}…）')
+          PY
+          # R25：结构审计——卷自证（元数据校验和、extent 归属、与 step18/GMU 固件零重叠、
+          # 原厂件就地 sha256）。R25 黑屏取证已证置换机制无损，这道门禁让每一轮构建都机器复证。
+          python3 tools/r24b_volume_audit.py gate userland/root.apfs
+
+      # ---------------------------------------------------------------
+      - name: "⑤/⑥ 打 r25 双启动镜像（r1 固件 + r2 shim + R10 loader + 本仓库源码内核 + cpus=8 + 全量小卷 md1）"
+        run: |
+          set -eu
+          cd hackios
+          bash tools/r25-flash-build.sh .
+          cp userland/raphael-xnu-r25-flash.img "$REL/"
+          cp userland/raphael-xnu-r25-gpu-flash.img "$REL/"
+          cp userland/flashboot.apfs "$REL/raphael-r25-flashboot.apfs"
+          cp userland/root.apfs "$REL/r25-md1-root.apfs"
+          ls -lh "$REL"
+          df -h .
+
+      # ---------------------------------------------------------------
+      - name: "⑥/⑥ SHA256 + README + 发布 Release（只有 boot 资产，几十 MB）"
+        run: |
+          set -eu
+          cd "$REL"
+          : > SHA256SUMS
+          for f in raphael-xnu-r25-flash.img raphael-xnu-r25-gpu-flash.img \
+                   raphael-r25-flashboot.apfs r25-md1-root.apfs; do
+            sha256sum "$f" >> SHA256SUMS
+          done
+          REPO="${{ github.repository }}"
+          TAG="${{ inputs.release_tag }}"
+          cat > README.txt <<EOF
+          ============================================================
+           R25 · 纯血 hackios SpringBoard 交付包（raphael / K20 Pro）
+           —— INIT_IMAGE 的形状（E1）+ 形状扫描（E2-E5）+ qfprom 全查（E7）
+          ============================================================
+          ⚠️⚠️⚠️ 启动卷只 stage 一个文件：raphael-r25-flashboot.apfs ⚠️⚠️⚠️
+            （R14 事故纪律不变：md1 备份不要 stage，flash.img 已内嵌全量小卷）
+          主镜像   : raphael-xnu-r25-flash.img（触摸 + 按键 + 八核；
+                     cmdline touchscreen=1 buttons=1 cpus=8；不跑 GPU 步骤）
+          GPU 镜像 : raphael-xnu-r25-gpu-flash.img（同上 + gpu=1）
+          启动卷   : raphael-r25-flashboot.apfs（stage0 = md0；R13 全量字节）
+          小卷备份 : r25-md1-root.apfs（md1 同字节备份，勿 stage）
+          内核     : R24b 内核 + 118/-5（E1 三参带 size、拒绝路径形状扫描、
+                     qfprom 窗口全查）；R21-R24 机制全部原样保留。
+          卷       : 与 R24/R24b 逐字节相同（换血卷原样；审计门每轮复证）。
+
+          【R25 判读树（GPU 镜像，step 19）】
+            1. E1（规范尝试，三参带 size）：
+               'TrustZone returns 0, answer 0' = 被收 → 落位 → 写 1968B →
+               0xc2000205 → 'TRUSTZONE HAS AUTHENTICATED AND STARTED THE ZAP
+               SHADER' → step 20/21 = 新水域（adreno_keep=0 可止步于通关前）。
+            2. 拒绝（任何码）→ 形状扫描逐项看：
+               · E2 损坏哈希表对照换码 = 内容比对阶段在场（签名段自己的码）；
+               · E4 其他 id 收下同一页 = pas 13 被单独针对；
+               · E5 两次/give-up 后换码 = 状态答案；
+               · 任何一处与规范尝试不同码 = 进展，整段回传。
+            3. 全部同码 = 形状也不是 —— 案子移交 tz 侧（本机 tz.img 反汇编
+               已在分析侧进行）。
+            4. 'A TEST KEY' 判词 = 旧卷压过置换（缓存链事故），整段回传。
+            黑屏/早死取证（任何一轮都适用）：
+              fastboot oem logdump && fastboot get_staged r25-logdump.bin
+            （内核还在跑时用 oem log；返回后 oem log 只剩装载器侧。）
+            adreno_tzunload=1 / adreno_zapmem=0x98f15000 / adreno_keep=0
+            三个开关沿用。
+
+          【手机端（Termux / bootloader）】
+            fastboot boot  raphael-xnu-r25-flash.img
+            fastboot oem  ramdisk
+            fastboot stage raphael-r25-flashboot.apfs
+            fastboot oem  run         # 黑屏 → 桌面；八核自动上；+5s 触摸
+            # GPU 实验（第二次开机）：
+            fastboot boot  raphael-xnu-r25-gpu-flash.img
+            fastboot oem  ramdisk
+            fastboot stage raphael-r25-flashboot.apfs
+            fastboot oem  run
+          直链：
+            https://github.com/${REPO}/releases/download/${TAG}/raphael-xnu-r25-flash.img
+            https://github.com/${REPO}/releases/download/${TAG}/raphael-xnu-r25-gpu-flash.img
+            https://github.com/${REPO}/releases/download/${TAG}/raphael-r25-flashboot.apfs
+            https://github.com/${REPO}/releases/download/${TAG}/SHA256SUMS
+          ⚠️ userdata 上的 iOS 卷是唯一存货：绝不要让 MIUI 开机
+             （Android 会重格回 f2fs，iOS 卷即毁）。
+          ⚠️ 每次开机都要重复 boot/oem ramdisk/stage/oem run 四步
+             （启动卷住 RAM 不落盘，"不写手机闪存"设计的一部分）。
+          ⚠️ 含 Apple 版权内容，仅个人研究；下载完成后请尽快删除本 Release。
+          EOF
+          echo "→ SHA256SUMS："
+          cat SHA256SUMS
+
+      - name: "⑥b/⑥ 发布 Release（直链交付）"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: "R25 · 纯血 hackios SpringBoard · R25 构建保留 + oem logdump 取证通道"
+          body: |
+            raphael (K20 Pro) R25 交付包：**INIT_IMAGE 的形状（E1）+ 拒绝路径形状扫描（E2-E5）+ qfprom 全查（E7）**。
+
+            R24b 实测（量产链同码 -3145797、零页对照 -3145738）证伪了镜像侧全部三假设
+            （链/防回滚/版本），-3145797 定性修正为"策略段拒绝"；七轮尝试唯一从未动过的
+            变量是调用形状：Linux 发 pas_init_image(13, 页, **14256**)（三参，带 size），
+            R21-R24b 全发 (13, 页, **0**)（双参）。R25 的规范尝试带上 size（E1）；拒绝
+            路径跑形状扫描（全部只发 INIT_IMAGE，绝不 auth_and_reset）：E2 尺寸 +
+            损坏哈希表对照、E3 参数字、E4 id、E5 状态（两次 + give-up 后再发）；
+            step 2 全查 qfprom 两窗口（0x780000/0x784000，secboot/回滚熔丝入档）。
+
+            卷与装载器与 R24b 逐字节相同；内核 +118/-5。md1 零新置换。
+            判读树见 README.txt；黑屏取证：fastboot oem logdump。
+
+            ⚠️ 含 Apple 版权内容，仅供个人研究；下载完成后请尽快删除本 Release。
+          fail_on_unmatched_files: true
+          files: |
+            release/raphael-xnu-r25-flash.img
+            release/raphael-xnu-r25-gpu-flash.img
+            release/raphael-r25-flashboot.apfs
+            release/r25-md1-root.apfs
+            release/SHA256SUMS
+            release/README.txt
+
+      - name: "直链汇总（跑完看这里，复制即用）"
+        run: |
+          set -eu
+          echo "════════════ 全部下载直链 ════════════"
+          for f in "$REL"/raphael-xnu-r25-flash.img "$REL"/raphael-xnu-r25-gpu-flash.img \
+                   "$REL"/raphael-r25-flashboot.apfs "$REL"/r25-md1-root.apfs \
+                   "$REL"/SHA256SUMS "$REL"/README.txt; do
+            echo "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/$(basename "$f")"
+          done

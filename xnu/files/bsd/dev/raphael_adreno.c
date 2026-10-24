@@ -453,6 +453,26 @@ step_fuses(void)
         bin = get8(&qfprom, "raw speed bin, low", QFPROM_GPU_SPEED_BIN);
         bin |= get8(&qfprom, "raw speed bin, high", QFPROM_GPU_SPEED_BIN + 1) << 8;
         printf("adreno: %u: raw speed bin %u\n", step, bin >> 5 & 0xff);
+
+        /*
+         * R25 E7: the secboot and rollback fuses, on the record.  The image-side hypotheses are
+         * closed; whatever this phone's bottom line for an image is, it lives in these windows
+         * (qfprom raw 0x780000 and the error-corrected 0x784000): the secure-boot row, the
+         * anti-rollback rows, the debug state.  The non-zero words only -- a zero fuse is a
+         * fuse not blown.
+         */
+        announce("read the secboot and rollback fuses (E7: the whole qfprom windows 0x780000 and 0x784000, "
+            "the non-zero words -- a zero fuse is a fuse not blown)");
+        for (unsigned w = 0; w < 2; w++) {
+                uint32_t base = w == 0 ? 0 : QFPROM_CORRECTED;
+                printf("adreno: %u: qfprom %#x window, non-zero words:\n", step, qfprom.phys + base);
+                for (uint32_t off = 0; off < 0x400; off += 4) {
+                        uint32_t v = rd(qfprom.base + base + off);
+                        if (v != 0) {
+                                printf("adreno: %u:   %#x = %#010x\n", step, qfprom.phys + base + off, v);
+                        }
+                }
+        }
         return true;
 }
 
@@ -1696,6 +1716,8 @@ space_off(struct gpu_space *space, uint32_t match)
 #define SCM_PAS_IS_SUPPORTED    SCM_CALL(2, 7)
 #define SCM_ONE_VALUE           1                       /* the word describing the arguments: one, a plain number */
 #define SCM_VALUE_AND_BUFFER    (2 | 2 << 6)            /* two: a number, and the address of memory it may read and write */
+#define SCM_VALUE_BUFFER_VALUE  (3 | 2 << 6)            /* three (R25): a number, the address of memory it may read and
+                                                         * write, and a number -- Linux's pas_init_image(pas, meta, size) */
 #define SCM_INTERRUPTED         1                       /* a call that was preempted says so, and is made again so */
 #define PAS_GPU                 13
 
@@ -3286,7 +3308,7 @@ step_zap_load(void)
         const uint8_t *segment;
         volatile uint8_t *zap_memory = NULL;
         vm_offset_t zap_page = 0;
-        uint64_t zap_place = 0, size = 0, header = 0, answer = ~0ull;
+        uint64_t zap_place = 0, size = 0, header = 0, whole = 0, answer = ~0ull;
         int32_t got;
         uint32_t tzunload = 0;
         bool zap_ours = false;
@@ -3324,8 +3346,8 @@ step_zap_load(void)
         }
         {
                 /* the one PT_LOAD segment, inside the same .mbn as the header (p_offset/p_filesz) */
-                const uint8_t *file;
-                uint64_t whole = 0;
+                const uint8_t *file;      /* whole lives in the step's own frame now (R25): the
+                                         * canonical attempt sends it as the third word */
                 uint32_t segments, phoff, i;
 
                 segment = NULL;
@@ -3360,8 +3382,9 @@ step_zap_load(void)
         if (!zap_header(&header, true)) {
                 return false;
         }
-        got = scm("to take the zap shader's signature", (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_INIT_IMAGE,
-            SCM_VALUE_AND_BUFFER, PAS_GPU, header, 0, &answer);
+        got = scm("to take the zap shader's signature (R25 E1: Linux's shape -- the size goes with it: "
+            "a number, the buffer, a number)", (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_INIT_IMAGE,
+            SCM_VALUE_BUFFER_VALUE, PAS_GPU, header, whole, &answer);
         if (got != 0 || answer != 0) {
                 printf("adreno: %u: refused: the call returns %d, its answer %#llx\n", step, got, answer);
                 goto refused;
@@ -3453,12 +3476,102 @@ refused:
                             zero_got, zero_answer);
                 }
         }
+        /*
+         * R25, the shape sweeps (the refusal path only -- the taken path never lands here):
+         * the image-side hypotheses all closed with R24b (the production chain refused with
+         * the same code the test chain was), and the one variable seven rounds never moved is
+         * the SHAPE of the call itself.  The canonical attempt carries the size now (E1);
+         * these map the rest of the shape's neighborhood.  All of them are INIT_IMAGE alone:
+         * nothing authenticates, nothing starts, nothing is asked of any peripheral but this.
+         */
+        {
+                vm_offset_t sweep_page = 0;
+                uint64_t sweep_answer = ~0ull;
+                int32_t sweep_got;
+
+                announce("R25: the shape sweeps -- E2 the size word, E3 the argument word, E4 the id, "
+                    "E5 the state; all INIT_IMAGE alone, nothing authenticated, nothing started");
+                /* E2: the third word.  The canonical attempt took the file's whole size (E1);
+                 * these are the other sizes the callers of this phone's world use. */
+                {
+                        static const uint64_t e2[] = { 0x1000, 0x2000, 0xffffffffull };
+                        for (unsigned i = 0; i < sizeof(e2) / sizeof(e2[0]); i++) {
+                                sweep_got = scm("E2: the size sweep", (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_INIT_IMAGE,
+                                    SCM_VALUE_BUFFER_VALUE, PAS_GPU, header, e2[i], &sweep_answer);
+                                printf("adreno: %u: E2: size %#llx: %d, answer %#llx\n", step, e2[i], sweep_got,
+                                    sweep_answer);
+                        }
+                }
+                /* E2's control: the same file with the hash table's one entry corrupted, in a copy
+                 * that lives only in this memory.  Parse fields stay whole; the signature's own
+                 * bytes break.  A code that moves = the content was being compared at this call;
+                 * a code that stays = the refusal comes before any content is. */
+                if (kmem_alloc(kernel_map, &sweep_page, PAGE_SIZE, KMA_KOBJECT | KMA_ZERO | KMA_DATA,
+                    VM_KERN_MEMORY_IOKIT) == KERN_SUCCESS) {
+                        uint64_t sweep_phys = kvtophys(sweep_page);
+                        const uint8_t *src;
+                        uint64_t src_size = 0;
+
+                        if ((src = image_file("fw", "a640_zap.mbn", &src_size)) != NULL && src_size <= PAGE_SIZE) {
+                                memcpy((void *)sweep_page, src, src_size);
+                                for (uint32_t i = 0x1000 + 0xa8; i < 0x1000 + 0xe8; i++) {
+                                        ((volatile uint8_t *)sweep_page)[i] ^= 0xaa;
+                                }
+                                to_memory(sweep_page, PAGE_SIZE);
+                                sweep_got = scm("E2 control: the hash table corrupted in a RAM copy (parse "
+                                    "intact, the signature's own bytes broken)",
+                                    (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_INIT_IMAGE, SCM_VALUE_BUFFER_VALUE,
+                                    PAS_GPU, sweep_phys, whole, &sweep_answer);
+                                printf("adreno: %u: E2 control: corrupted hash table: %d, answer %#llx -- %s\n", step,
+                                    sweep_got, sweep_answer, sweep_got == -3145797 ?
+                                    "THE SAME CODE: the refusal comes before the content is compared" :
+                                    "A DIFFERENT ANSWER: the content was on the table");
+                        }
+                }
+                /* E3: the argument word.  0x83 is E1's (three: value, buffer, value); 0x82 was
+                 * R21-R24b's (two: value, buffer, no size); the rest probe the word itself. */
+                {
+                        static const uint64_t e3[] = { 0x82, 0x43, 0x03, 0x81, 0x01 };
+                        for (unsigned i = 0; i < sizeof(e3) / sizeof(e3[0]); i++) {
+                                sweep_got = scm("E3: the argument word sweep", (scm_how & ~SCM_FAST) | SCM_SIP |
+                                    SCM_PAS_INIT_IMAGE, e3[i], PAS_GPU, header, whole, &sweep_answer);
+                                printf("adreno: %u: E3: word %#llx: %d, answer %#llx\n", step, e3[i], sweep_got,
+                                    sweep_answer);
+                        }
+                }
+                /* E4: the id.  The same metadata page, the same size, the other doors -- audio,
+                 * modem, video, then the rest of the table.  (Nothing but INIT_IMAGE is sent.) */
+                {
+                        static const uint32_t e4[] = { 1, 4, 9, 2, 3, 5, 6, 7, 8, 10, 11, 12, 14, 15 };
+                        for (unsigned i = 0; i < sizeof(e4) / sizeof(e4[0]); i++) {
+                                sweep_got = scm("E4: the id sweep", (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_INIT_IMAGE,
+                                    SCM_VALUE_BUFFER_VALUE, e4[i], header, whole, &sweep_answer);
+                                printf("adreno: %u: E4: id %u: %d, answer %#llx\n", step, e4[i], sweep_got,
+                                    sweep_answer);
+                        }
+                }
+                /* E5: the state.  The same call twice over; a code that moves between the takes
+                 * is a state answer, not a file one.  (The half after the give-up is at the end.) */
+                for (unsigned i = 0; i < 2; i++) {
+                        sweep_got = scm("E5: the same call again", (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_INIT_IMAGE,
+                            SCM_VALUE_BUFFER_VALUE, PAS_GPU, header, whole, &sweep_answer);
+                        printf("adreno: %u: E5: take %u: %d, answer %#llx\n", step, i + 1, sweep_got, sweep_answer);
+                }
+        }
         answer = ~0ull;
         scm("whether it \"supports\" the GPU's image", scm_how | SCM_PAS_IS_SUPPORTED, SCM_ONE_VALUE, PAS_GPU, 0, 0, &answer);
         answer = ~0ull;
         scm("the same of the audio's, for comparison", scm_how | SCM_PAS_IS_SUPPORTED, SCM_ONE_VALUE, 1, 0, 0, &answer);
         if (!tzunload) {
                 zap_unload();
+        }
+        /* E5's other half: after the give-up.  A code that changes here answers for the
+         * state, not for the file. */
+        {
+                uint64_t after_answer = ~0ull;
+                int32_t after_got = scm("E5: after the give-up", (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_INIT_IMAGE,
+                    SCM_VALUE_BUFFER_VALUE, PAS_GPU, header, whole, &after_answer);
+                printf("adreno: %u: E5 after give-up: %d, answer %#llx\n", step, after_got, after_answer);
         }
         return false;
 }
