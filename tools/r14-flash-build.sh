@@ -183,7 +183,7 @@ for feat in (b'RAPHAEL TOUCH', b'GT9886', b'buttons: step 1', b'PMIC arbiter',
              b'going with the ID registers',
              b"this firmware's verdict of started",
              b"the power-on block's pull-ups",
-             b"'s status byte changed to'):
+             b"'s status byte changed to'"):
         if feat not in k:
                 fail(f'the built kernel lacks the R14 marker {feat!r}')
 if ents['ramdisk'] != open(rootapfs_path, 'rb').read():
