@@ -379,3 +379,58 @@ Stage Summary:
 - 流水线：r12-springboard.yml（骨架=r11；②c 标记+R12 串）、
   tools/r12-flash-build.sh（sed 派生）；双镜像 cmdline 与 R11 相同
   （对照实验：只换内核源码）
+
+---
+Task ID: R20
+Task: R19 战报（bank 0 先开后 SMR(0x2ca0800)=0x84000000 仍读回 0）→ 三方向裁决 → 本机 DT 破案 → R20
+
+Work Log:
+- （补记：R13-R19 的 round 记录未随轮入仓——本仓 git log 各轮 commit
+  message 即其存档；R8 规矩自本轮恢复）
+- 三方向裁决（用户 R20 指令）：
+  · 方案一（全局 bypass/PA 直通）→ R21 后备。全局寄存器读回本身不可信
+    （sCR0 读 0x2f0406 而翻译在跑），先修形态再看
+  · 方案二（SMC/SCM 配流表）→ msm-4.14 无此服务（legacy SMMU_PROGRAM
+    是 32 位时代的），非破局点；但 step 19 的 zap/PAS 13 基础设施在场
+  · 方案三（UEFI/loader 抢配）→ 被参考项目否定：xnuloader 全程不碰
+    SMMU，纯 EL1 直写在 sc7280 跑通——无需抢配
+- 破案（决定性）：redwood_adreno.c（sc7280 参考，POCO X5 Pro，
+  SpringBoard GPU 首帧实证）space_stream() 注释——"A match is taken
+  only as the device tree has it"；sc7280 上 mask 0x401 被拒、
+  0x400 被收。解析本机 vendor DTB（499823 B；沙箱脚本
+  raphael_dt_gpu.py，FDT 逐字节，无 dtc）：
+    kgsl-iommu@2CA0000/gfx3d_user   (sid 0, mask 0x401) ← 一条罩
+    streams 0+1（LPAC）；gfx3d_secure (2, 0x400)；
+    gmu@2C6A000/gmu_user/gmu_kernel (4/5, 0x400) ← 与 sc7280 恰同形
+  三轮"hypervisor 拦截"真相：写入形态从来不是本机 DT 原样。GMU 蒙对
+  （5/0x400 同形），gfx 全灭（0/0x400 非本机形态）。R18 扫的 entry 全
+  是 0x400 形态、R19 的 entry 2（1/0x400）同样非本机形态——三轮战报
+  同一机制自洽。附带收获：qsmmu-v500 双 TBU（gfx_0_tbu 0-0x3ff @
+  0x2cc5000 状态窗 0x2cc2200；gfx_1_tbu 0x400-0x7ff @ 0x2cc9000
+  状态窗 0x2cc2208）——R21 取证地址已入库
+- 修改（scripts/r20_apply.py 字节锚定×10 全一次命中；文件 8 空格缩进
+  无 tab、LF——核实后非假设）：
+  · SMMU_STREAM_MASK 拆 SMMU_MASK_GMU 0x400 / SMMU_MASK_GFX 0x401
+    （DT 出处与两向证据写进注释）
+  · space_stream/space_on 增 mask 参数（写入值与校验值同源）
+  · GMU 路径带 SMMU_MASK_GMU（行为不变；bank 候选逻辑未动）
+  · step 18：space_on(core, entry 0, stream 0, SMMU_MASK_GFX) →
+    smr(0x2ca0800) = 0x84010000
+  · stream 1 默认不写 entry 2（0x401 罩住、走 context 0）；
+    adreno_stream1=1（entry 2 走 context 0，sc7280 形态）/2（空上下文）
+    降级为强制实验开关，PE_parse_boot_argn 进 step_core_space
+  · R19 判词 "the hypervisor drops SMR/S2CR" 从代码除名
+  - diff：9 hunks +66/−27，git diff 干净（补丁存
+    download/r20-gpu-step18.patch——沙箱侧）
+- 流水线：r20-springboard.yml（骨架=r19；缓存键迁 r20-；门禁正向 +
+  R18 四条与 R19 判词反向除名）、tools/r20-flash-build.sh（门禁同步；
+  判读段胜利线改为正确的 0x84010000——R19 版 README 里的
+  "0x84400400" 是从未对上实际写入值的笔误，R20 一并纠正）
+- 静态校验：标记串正反三方核对（源码/flash-build/workflow）全过；
+  括号/花括号平衡；YAML 解析过；r20-flash-build.sh 可执行位就位
+
+Stage Summary:
+- R20 定性：不是"无条件拦截"，是写入形态从来不是这部手机的 DT 原样
+- 胜利线：smmu smr (0x2ca0800) = 0x84010000（R17 以来 gfx 流首次落地）
+- 失败分支（0x84010000 仍读 0）R21 战场已排定：TCU/TBU 取证 →
+  sCR0.USFCFG → loader 时间线二分

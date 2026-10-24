@@ -1229,7 +1229,15 @@ step_gmu_memory(void)
 
 #define SMMU_S2CR_FAULT         (2u << 16)
 #define SMMU_SMR_VALID          (1u << 31)
-#define SMMU_STREAM_MASK        0x400           /* dt: the second cell of every "iommus" of this SMMU */
+/* R20: the second cell of the "iommus" each stream comes through, as the phone's own dt has it.
+ * The port carried sc7280's over unchanged -- one mask 0x400 for everything -- but raphael's dt
+ * (kgsl-iommu@2ca0000: gfx3d_user sid 0, gfx3d_secure sid 2; gmu@2c6a000: gmu_user sid 4,
+ * gmu_kernel sid 5) gives the gfx streams 0x401 -- one entry for streams 0 and 1 -- and the gmu
+ * streams 0x400, which is by coincidence the form sc7280 uses for everything. What R17-R19 wrote
+ * for the gfx streams was sc7280's form, and the SMMU took none of it; the gmu's landed every
+ * time. Read out of this phone's own dtb (the 499823-byte one), not sc7280's. */
+#define SMMU_MASK_GMU           0x400           /* dt raphael: gmu_user/gmu_kernel (4/5) -- sc7280's form, by coincidence; the GMU's writes have always landed */
+#define SMMU_MASK_GFX           0x401           /* dt raphael: gfx3d_user (0) -- one entry for streams 0 and 1 */
 #define SMMU_CBAR_STAGE_1       (1u << 16 | 3u << 8 | 0xfu << 12)       /* our tables alone decide; weakest defaults */
 #define SMMU_CBA2R(n)           (0x800 + 4 * (n))                       /* in the second page, like CBAR */
 #define SMMU_CBA2R_64_BIT       1
@@ -1564,14 +1572,17 @@ space_check(const struct gpu_space *space, const char *when)
 
 /*
  * One more stream through a context that is on. A match is taken only as the device tree has
- * it, a stream and the mask 0x400: one entry for streams 0 and 1 (mask 0x401) reads back 0.
+ * it: on sc7280 (whose driver this one is ported from) a stream and the mask 0x400, one entry
+ * for streams 0 and 1 (mask 0x401) reading back 0; on raphael it is the other way round -- the
+ * gfx streams' dt mask is 0x401 and the gmu's is 0x400 -- so the mask has come in as an
+ * argument since R20, the value written and the value read back the same one.
  */
 static bool
-space_stream(struct gpu_space *space, uint32_t match, uint32_t stream)
+space_stream(struct gpu_space *space, uint32_t match, uint32_t stream, uint32_t mask)
 {
         put(&smmu, "s2cr", SMMU_S2CR(match), space->context);
-        put(&smmu, "smr", SMMU_SMR(match), SMMU_SMR_VALID | SMMU_STREAM_MASK << 16 | stream);
-        if (get(&smmu, "smr", SMMU_SMR(match)) != (SMMU_SMR_VALID | SMMU_STREAM_MASK << 16 | stream) ||
+        put(&smmu, "smr", SMMU_SMR(match), SMMU_SMR_VALID | mask << 16 | stream);
+        if (get(&smmu, "smr", SMMU_SMR(match)) != (SMMU_SMR_VALID | mask << 16 | stream) ||
             (get(&smmu, "s2cr", SMMU_S2CR(match)) & 0x300ff) != space->context) {
                 printf("adreno: %u: the SMMU did not take what was written: stream %u is not going through context %u\n", step,
                     stream, space->context);
@@ -1582,7 +1593,7 @@ space_stream(struct gpu_space *space, uint32_t match, uint32_t stream)
 
 /* Give a context our tables and send a stream through it; `match` is the entry of the stream table to use. */
 static bool
-space_on(struct gpu_space *space, uint32_t match, uint32_t stream)
+space_on(struct gpu_space *space, uint32_t match, uint32_t stream, uint32_t mask)
 {
         uint32_t context = smmu_context(space);
         uint64_t root = space->tables[0].phys | (uint64_t)space->context << 48;        /* tagged with the context's number */
@@ -1626,10 +1637,10 @@ space_on(struct gpu_space *space, uint32_t match, uint32_t stream)
         }
         put(&smmu, "cb sctlr", context + SMMU_CB_SCTLR, SMMU_SCTLR_ON | space->control);
         put(&smmu, "s2cr", SMMU_S2CR(match), space->context);
-        put(&smmu, "smr", SMMU_SMR(match), SMMU_SMR_VALID | SMMU_STREAM_MASK << 16 | stream);
+        put(&smmu, "smr", SMMU_SMR(match), SMMU_SMR_VALID | mask << 16 | stream);
 
         /* the global ones are the hypervisor's to grant: see what it made of them */
-        if (get(&smmu, "smr", SMMU_SMR(match)) != (SMMU_SMR_VALID | SMMU_STREAM_MASK << 16 | stream) ||
+        if (get(&smmu, "smr", SMMU_SMR(match)) != (SMMU_SMR_VALID | mask << 16 | stream) ||
             (get(&smmu, "s2cr", SMMU_S2CR(match)) & 0x300ff) != space->context ||
             (get(&smmu, "cbar", smmu_page + SMMU_CBAR(space->context)) & 0x30000) != (SMMU_CBAR_STAGE_1 & 0x30000) ||
             (get(&smmu, "cb sctlr", context + SMMU_CB_SCTLR) & SMMU_SCTLR_ON) != SMMU_SCTLR_ON ||
@@ -2047,7 +2058,7 @@ step_gmu_space(void)
                 gmu_space.context = candidates[i] < smmu_contexts ? candidates[i] : 1;
                 printf("adreno: %u: trying context bank %u for the GMU%s\n", step, gmu_space.context,
                     gmu_space.context == 1 ? " (the fallback: Android's own GMU bank)" : "");
-                if (space_on(&gmu_space, GMU_MATCH, GMU_STREAM)) {
+                if (space_on(&gmu_space, GMU_MATCH, GMU_STREAM, SMMU_MASK_GMU)) {
                         break;
                 }
                 if (i + 1 == sizeof(candidates) / sizeof(candidates[0])) {
@@ -2886,9 +2897,12 @@ step_core_power(void)
  * both): once started, the microcode starts a second command processor ("LPAC"), which fetches
  * its own part of the microcode as that stream at once -- seen on the phone as a request for
  * 0x7e60 into the microcode, refused by an empty context given to stream 1 (adreno_stream1=2).
- * With nothing at all set up for stream 1 the phone resets without a word the moment the
- * command processor is started (adreno_stream1=0); a start with the microcode nowhere
- * (adreno_blind=1) does not get that far.
+ * R20: stream 1 stays under entry 0's own wing by default -- raphael's dt has no separate
+ * entry for it, the mask 0x401 covering streams 0 and 1 through context 0 -- and
+ * adreno_stream1=1/2 is demoted to an experiment that forces sc7280's form (the pre-R20
+ * port's) for comparison. The old observations (the refusal above; the reset with nothing
+ * at all set up) were made before R20, when what was written for the entry was never this
+ * phone's dt form in the first place.
  */
 #define SMMU_SCTLR_SERVE_AFTER_FAULT (1u << 8)
 static struct gpu_space core_space = { .name = "the 3D core", .context = 0, .control = SMMU_SCTLR_SERVE_AFTER_FAULT };
@@ -2897,9 +2911,11 @@ static struct gpu_space second_space = {
         .name = "the 3D core's second stream", .context = 2, .control = SMMU_SCTLR_SERVE_AFTER_FAULT,
 };
 #define SECOND_MATCH            2
-/* R19: the entries are as the device tree has them again -- entry 0 for stream 0, entry 2 for
- * the second stream; what R17 and R18 read as refusals was the dead bank behind the entry, and
- * the fix is the bank's order, not the table's (space_match_take is gone with that theory) */
+/* R20: the form written is the phone's own at last. R17-R19 wrote sc7280's mask (0x400) for
+ * the gfx streams -- the port carried it over -- and the SMMU took none of it; the gmu's
+ * landed every time because raphael's gmu form is, by coincidence, sc7280's. The bank-first
+ * order R19 restored stays; what changes is the value: raphael's dt gives the gfx streams
+ * 0x401 (one entry for streams 0 and 1) and the gmu streams 0x400. */
 static uint32_t core_match = CORE_MATCH, second_match = SECOND_MATCH;
 static bool second_space_is_on, second_stream_is_on;
 static struct gpu_block core_ring, core_sqe, core_scratch, core_target;
@@ -2989,10 +3005,12 @@ step_core_space(void)
 {
         const uint8_t *microcode;
         uint64_t size = 0;
+        uint32_t stream1 = 0;    /* R20: 0 = entry 0's own wing covers stream 1 (the phone's dt form); 1/2 = the sc7280-form experiment */
 
         if (!cx_ready() || !core_is_on) {
                 return false;
         }
+        PE_parse_boot_argn("adreno_stream1", &stream1, sizeof(stream1));
         announce("make the 3D core's memory: its ring, its microcode (fw/a630_sqe.fw), a page to try writing to");
         microcode = image_file("fw", "a630_sqe.fw", &size);
         if (microcode == NULL || size < 8 || size > 0x40000 ||
@@ -3006,23 +3024,44 @@ step_core_space(void)
 
         /* the reference's order (the phone the driver comes from, and the GMU's own step 13 here):
          * the bank is programmed COMPLETELY and switched ON first, then the stream table is told
-         * where the stream goes -- the hypervisor drops SMR/S2CR writes that would route a stream
-         * into a bank whose translation is OFF (what R17 met through bank 4 and bank 0, and R18
-         * met through every entry of the table; the R18 scanning is gone with them) */
+         * where the stream goes. R20: what the stream table is TOLD is the phone's own form at
+         * last -- the mask is raphael's dt 0x401 for the gfx streams, not sc7280's 0x400 the port
+         * carried over; the gmu's 0x400 landed every time because raphael's gmu form is, by
+         * coincidence, sc7280's. The bank-first order R19 restored stays as it was. */
         announce("give the SMMU's context 0 these tables and send the 3D core's requests (stream 0) through it: "
-            "the bank is programmed and ON before the stream table is touched -- the hypervisor drops SMR/S2CR "
-            "writes that would route a stream into a bank that is not translating (what R17 and R18 met)");
+            "the bank is programmed and ON before the stream table is touched, and what the entry takes is "
+            "the phone's own form -- raphael's dt gives the gfx streams the mask 0x401 (one entry for streams "
+            "0 and 1); sc7280's 0x400, which the port carried over, is what R17, R18 and R19 kept writing, "
+            "and the SMMU kept none of");
         core_match = CORE_MATCH;
         core_space_is_on = true;
-        if (!space_on(&core_space, CORE_MATCH, CORE_STREAM)) {
+        if (!space_on(&core_space, CORE_MATCH, CORE_STREAM, SMMU_MASK_GFX)) {
                 return false;
         }
-        announce("the core's second stream (1) through the same context, at the stream table's entry 2: "
-            "without it the phone resets without a word once the command processor starts");
-        second_match = SECOND_MATCH;
-        second_stream_is_on = true;
-        if (!space_stream(&core_space, SECOND_MATCH, 1)) {
-                return false;
+        if (stream1 == 2) {
+                /* the experiment: an empty context of the stream's own, to see what it asks for */
+                announce("the core's second stream (1) given a context of its own with nothing in it "
+                    "(sc7280's form, entry 2) -- the experiment adreno_stream1=2 asks for");
+                if ((second_space.root = space_new_table(&second_space)) == NULL) {
+                        return false;
+                }
+                second_space_is_on = true;
+                if (!space_on(&second_space, SECOND_MATCH, 1, SMMU_MASK_GMU)) {
+                        return false;
+                }
+        } else if (stream1 == 1) {
+                /* sc7280's form for comparison: entry 2, through the same context */
+                announce("the core's second stream (1) through the same context, at the stream table's "
+                    "entry 2 -- sc7280's form, the experiment adreno_stream1=1 asks for");
+                second_stream_is_on = true;
+                if (!space_stream(&core_space, SECOND_MATCH, 1, SMMU_MASK_GMU)) {
+                        return false;
+                }
+        } else {
+                /* the default: no entry 2 -- raphael's dt has no separate entry for the second
+                 * stream; the mask 0x401 on entry 0 covers streams 0 and 1, both through context 0 */
+                announce("the second stream (1) under entry 0's own wing: raphael's dt has no separate "
+                    "entry for it, and the mask 0x401 covers streams 0 and 1 through context 0");
         }
         get(&gpu, "rbbm_status", RBBM_STATUS);
         return !space_faulted(&core_space);
