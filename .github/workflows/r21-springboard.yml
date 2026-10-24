@@ -386,7 +386,7 @@ jobs:
                      全量字节，真机验证过）
           小卷备份 : r21-md1-root.apfs（md1 同字节备份，勿 stage）
           内核     : 本仓库源码构建；R21 = TrustZone，按本机自己的
-                     方式问。R21 首句 TZ 对话（give-up，svc2/cmd6）
+                     方式问。R20 首句 TZ 对话（give-up，svc2/cmd6）
                      吞掉 vCPU 一去不回——本机每次过 XBL、TZ 全新、
                      不可能有"上次的 shader"，本机自家驱动进场也
                      从不发 give-up。R21 默认不发；改问本机 Linux
@@ -416,7 +416,7 @@ jobs:
               —— 返回错误码 = 通道全活，错误码就是答案；随后诊断
                  打印 TZ "supports" 哪些镜像（GPU vs audio 对照），
                  最后补发一次 give-up（adreno_tzunload=1 则提前到
-                 链路前、故意复现 R21 的楔死实验）
+                 链路前、故意复现 R20 的楔死实验）
           - adreno_tzunload=1（cmdline）：give-up 提前发（通道验证后）
           - 任何一步停住：整段回传 klog（fastboot oem log +
             get_staged r21-klog.txt）
@@ -436,78 +436,6 @@ jobs:
             https://github.com/${REPO}/releases/download/${TAG}/raphael-xnu-r21-gpu-flash.img
             https://github.com/${REPO}/releases/download/${TAG}/raphael-r21-flashboot.apfs
             https://github.com/${REPO}/releases/download/${TAG}/SHA256SUMS
-
-          ⚠️ userdata 上的 iOS 卷是唯一存货：绝不要让 MIUI 开机
-             （Android 会重格回 f2fs，iOS 卷即毁）。
-          ⚠️ 每次开机都要重复 boot/oem ramdisk/stage/oem run 四步
-             （启动卷住 RAM 不落盘，"不写手机闪存"设计的一部分）。
-          ⚠️ 含 Apple 版权内容，仅个人研究；下载完成后请尽快删除本 Release。
-          EOF
-              ============================================================
-           R21 · 纯血 hackios SpringBoard 交付包（raphael / K20 Pro）
-           —— boot-only：iOS 卷不随行（手机里已刷好，R5-R13 字节相同）
-          ============================================================
-          ⚠️⚠️⚠️ 启动卷只 stage 一个文件：raphael-r21-flashboot.apfs ⚠️⚠️⚠️
-            （R14 事故纪律不变：md1 备份不要 stage，flash.img 已内嵌全量小卷）
-          主镜像   : raphael-xnu-r21-flash.img（触摸 + 按键 + 八核；
-                     cmdline touchscreen=1 buttons=1 cpus=8）
-          GPU 镜像 : raphael-xnu-r21-gpu-flash.img（同上 + gpu=1：
-                     梯子进 step 18 的新水域）
-          启动卷   : raphael-r21-flashboot.apfs（stage0 = md0；R13
-                     全量字节，真机验证过）
-          小卷备份 : r21-md1-root.apfs（md1 同字节备份，勿 stage）
-          内核     : 本仓库源码构建；R21 改值不改序——
-                     smr(entry 0) = VALID | 0x401<<16 | stream 0 =
-                     0x84010000（R17-R19 写的是 0x84000000：sc7280 的
-                     mask 0x400 被移植原样抄给 gfx 流，而本机 DT 的
-                     gfx3d_user 是 (sid 0, mask 0x401)；GMU 的 5/0x400
-                     恰好同形所以次次落地）。stream 1 默认由 entry 0 的
-                     0x401 罩住（本机 DT 无独立条目）；adreno_stream1=1/2
-                     降级为强制实验开关。
-
-          【R21 判读】（GPU 镜像，klog 里 adreno: N）
-          - step 1-17 照旧全绿："the GMU accepts" ×4、"THE 3D CORE HAS
-            POWER AND ANSWERS"
-          - step 18 新看点（本机 DT 形态）：
-            · announce 新判词："... the bank is programmed and ON
-              before the stream table is touched, and what the entry
-              takes is the phone's own form -- raphael's dt gives the
-              gfx streams the mask 0x401 (one entry for streams 0 and
-              1); sc7280's 0x400 ... is what R17, R18 and R19 kept
-              writing, and the SMMU kept none of"
-            · 胜利线（R17 以来 gfx 流的 SMR 第一次落地）：
-                about to write smmu smr at 0x2ca0800: 0x84010000
-                smmu smr (0x2ca0800) = 0x84010000   ← 读回来了！
-              （R17-R19 在这里写 0x84000000、读回 0。）
-            · 默认路径打印 "the second stream (1) under entry 0's own
-              wing"——不再有 entry 2 写入
-            · step 18 done → 19（zap / TZ PAS 13）→ 20（CP 起）→
-              21（commands）新水域
-          - 若 0x84010000 仍读回 0：klog 整段回传——gfx 流存在超出
-            DT 形态的封锁，R21 战场按序：TCU/TBU（gfx_0_tbu@0x2cc5000
-            状态窗 @0x2cc2200；gfx_1_tbu@0x2cc9000 @0x2cc2208）→ 全局
-            sCR0.USFCFG → loader 时间线二分
-          - adreno_stream1=1/2（cmdline）强制旧实验对照：1 = entry 2
-            走 context 0（sc7280 形态 0x84000001）；2 = 空上下文
-          - 任何一步停住：整段回传 klog（fastboot oem log +
-            get_staged r21-klog.txt）
-
-          【手机端（Termux / bootloader）】
-            fastboot boot  raphael-xnu-r21-flash.img
-            fastboot oem  ramdisk
-            fastboot stage raphael-r21-flashboot.apfs
-            fastboot oem  run         # 黑屏 → 桌面；八核自动上；+5s 触摸
-            # GPU 实验（第二次开机）：
-            fastboot boot  raphael-xnu-r21-gpu-flash.img
-            fastboot oem  ramdisk
-            fastboot stage raphael-r21-flashboot.apfs
-            fastboot oem  run
-          直链：
-            https://github.com/${REPO}/releases/download/${TAG}/raphael-xnu-r21-flash.img
-            https://github.com/${REPO}/releases/download/${TAG}/raphael-xnu-r21-gpu-flash.img
-            https://github.com/${REPO}/releases/download/${TAG}/raphael-r21-flashboot.apfs
-            https://github.com/${REPO}/releases/download/${TAG}/SHA256SUMS
-
           ⚠️ userdata 上的 iOS 卷是唯一存货：绝不要让 MIUI 开机
              （Android 会重格回 f2fs，iOS 卷即毁）。
           ⚠️ 每次开机都要重复 boot/oem ramdisk/stage/oem run 四步
@@ -538,7 +466,7 @@ jobs:
             手机端：主镜像四步开机；GPU 镜像第二刷。判读树见附件 README.txt。
 
             ⚠️ 含 Apple 版权内容，仅供个人研究；下载完成后请尽快删除本 Release。
-              fail_on_unmatched_files: true
+          fail_on_unmatched_files: true
           files: |
             release/raphael-xnu-r21-flash.img
             release/raphael-xnu-r21-gpu-flash.img
