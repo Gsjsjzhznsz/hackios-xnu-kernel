@@ -2249,7 +2249,9 @@ note_kernel_progress(const struct kernel_live *live, uint64_t slide, uint64_t se
         if (len > live->log_head + live->log_ring) {
                 len = 0;
         }
-        from = len > 240 ? len - 240 : 0;
+        from = len > 960 ? len - 960 : 0;       /* (R24b: 240 left a black screen's last
+                                                 * moments between two heartbeats -- the
+                                                 * echo now carries four times as much) */
         flush_dcache((uint64_t)(uintptr_t)log + from, (uint64_t)(uintptr_t)log + len);
         print("%d s: the kernel has logged %d bytes, heartbeat %d; the last of it:\n", seconds, (uint64_t)len, live->heartbeat);
         for (uint32_t i = from; i < len; i++) {
@@ -4380,6 +4382,35 @@ fb_command(char *cmd)
                                 compose_logs(NULL, 0);
                         }
                         fb_reply("OKAY", "");
+                } else if (starts_with(cmd, "oem logdump")) {
+                        /* R24b: stage the logdump partition for "get_staged".  A kernel that
+                         * came back on its own (reason 0, a panic's way back included) leaves
+                         * its full log HERE, and "oem log" holds only the loader's own side --
+                         * the R24 black screen's kernel log was in this partition and nothing
+                         * could fetch it.  Read the first 4 MB (the composed log never grows
+                         * past 2 MB of loader log plus the kernel's ring) and stage it. */
+                        efi_block_io *ldbio = find_log_partition();
+
+                        if (busy) {
+                                fb_reply("FAIL", "the kernel is running; stop it first");
+                        } else if (ldbio == NULL) {
+                                fb_reply("FAIL", "no logdump partition");
+                        } else {
+                                uint64_t lbs = ldbio->media->block_size;
+                                uint64_t want = sizeof(block_buffer) / lbs * lbs;
+
+                                if (want > (ldbio->media->last_block + 1) * lbs) {
+                                        want = (ldbio->media->last_block + 1) * lbs;
+                                }
+                                if (lbs == 0 || EFI_ERROR(ldbio->read_blocks(ldbio, ldbio->media->media_id, 0,
+                                    want, block_buffer))) {
+                                        fb_reply("FAIL", "read failed");
+                                } else {
+                                        staged_data = (const char *)block_buffer;
+                                        staged_len = want;
+                                        fb_reply("OKAY", "");
+                                }
+                        }
                 } else if (starts_with(cmd, "reboot") || starts_with(cmd, "oem reboot")) {
                         fb_reply("OKAY", "");
                         BS->stall(200000);
