@@ -309,6 +309,23 @@ jobs:
                   del mp[k:k+4]
                   break
           run('no-pan', mp)
+          print('IR PROBES (-O2 in clean already; the trailing -O0 wins):')
+          def probe(tag, extra):
+              out = f'/tmp/probe_{tag}.ll'
+              cmd = [tcc] + base + clean + ['-S', '-emit-llvm'] + extra + ['-o', out]
+              r = subprocess.run(cmd, capture_output=True, text=True)
+              n = -1
+              try:
+                  n = open(out, errors='replace').read().count('T2 VERDICT:')
+              except Exception:
+                  pass
+              print(f'  {tag:16s} T2VERDICT-in-IR={n}  rc={r.returncode}')
+              if r.returncode != 0 and r.stderr:
+                  print('    ERR:', r.stderr.splitlines()[0][:200])
+          probe('frontend', ['-Xclang', '-disable-llvm-passes'])
+          probe('O2mid',    ['-O2'])
+          probe('O0mid',    ['-O0'])
+          print('IR DONE. frontend=0 -> the front end eats it; O2mid=0 & frontend=3 -> the mid end; O2mid=3 & .o=0 -> the AArch64 back end.')
           print('REPLAY DONE. as-is=0 and any variant=3 -> that variant is the fix or the trigger.')
 
           PY
@@ -470,6 +487,21 @@ jobs:
           df -h /
 
       # ---------------------------------------------------------------
+
+      - name: "诊断产物（.o 与 .ll，失败也上传）"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: t2-diag
+          path: |
+            /tmp/var_as-is.o
+            /tmp/var_O0.o
+            /tmp/var_O1.o
+            /tmp/probe_frontend.ll
+            /tmp/probe_O2mid.ll
+            /tmp/probe_O0mid.ll
+          if-no-files-found: ignore
+
       - name: "⑤/⑥ 打 r28i 双启动镜像（外科手术：只换 kernel 条目；装载器 v7 / ramdisk / cmdline / DTB / 头字段 = R28d 原字节）"
         run: |
           set -eu
