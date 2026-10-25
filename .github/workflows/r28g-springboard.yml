@@ -67,16 +67,16 @@ jobs:
         run: |
           set -eu
           git clone --depth 1 "https://github.com/${{ inputs.kernel_repo }}.git" hackios
+          # 上游 userland：只借它的 APFS 读者/作者（tools/apfs）。与内核树并排放在工作区根，
+          # 正是 tools/r28g-flash-build.sh 的 APFS_TOOLS 默认路径（hackios/../hackios-xnu-userland）。
+          git clone --depth 1 https://github.com/oosexgang/hackios-xnu-userland.git hackios-xnu-userland
+          ls hackios-xnu-userland/tools/apfs/apfs.py hackios-xnu-userland/tools/apfs/mkapfs.py
           cd hackios
           echo "→ 内核树 @ $(git log -1 --format='%h %s')"
           ls -lh xnu/files/bsd/dev/raphael_adreno.c fw-gpu-raphael/adsp.mbn \
                 tools/r28g-flash-build.sh tools/r28g-volume-build.py tools/r28g-kernel-id.py
-          # 上游 userland：只借它的 APFS 读者/作者（tools/apfs），与内核树并排放在工作区根，
-          # 正是 tools/r28g-flash-build.sh 的 APFS_TOOLS 默认路径。
-          git clone --depth 1 https://github.com/oosexgang/hackios-xnu-userland.git hackios-xnu-userland
-          ls hackios-xnu-userland/tools/apfs/apfs.py hackios-xnu-userland/tools/apfs/mkapfs.py
           # R28d 的四件资产：两张镜像是外科手术的底板（装载器 v7 原字节在里面），
-          # 启动卷与 md1 卷本轮原样沿用/对照。
+          # 启动卷与 md1 卷本轮原样沿用/对照。r28d/ 在内核树内（本步 cwd）。
           mkdir -p r28d
           curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o r28d/raphael-xnu-r28d-flash.img  "${{ inputs.r28d_image }}"
           curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o r28d/raphael-xnu-r28d-gpu-flash.img "${{ inputs.r28d_gpu_image }}"
@@ -337,11 +337,11 @@ jobs:
         run: |
           set -eu
           cd hackios
-          bash tools/r28g-flash-build.sh ../r28d/raphael-xnu-r28d-flash.img ../r28d/raphael-xnu-r28d-gpu-flash.img
+          bash tools/r28g-flash-build.sh r28d/raphael-xnu-r28d-flash.img r28d/raphael-xnu-r28d-gpu-flash.img
           cp raphael-xnu-r28g-flash.img "$REL/"
           cp raphael-xnu-r28g-gpu-flash.img "$REL/"
           cp r28g-md1-root.apfs "$REL/"
-          cp ../r28d/raphael-r28d-flashboot.apfs "$REL/raphael-r28g-flashboot.apfs"
+          cp r28d/raphael-r28d-flashboot.apfs "$REL/raphael-r28g-flashboot.apfs"
           # 对打包后的双镜像离线复证（与 ③ 源码构建、⑤ 打包内打印三方对齐）
           python3 tools/r28g-kernel-id.py \
                   "$REL/raphael-xnu-r28g-flash.img" "$REL/raphael-xnu-r28g-gpu-flash.img" | tee r28g-kernel-id.txt
