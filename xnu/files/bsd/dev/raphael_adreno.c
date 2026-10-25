@@ -3369,7 +3369,15 @@ adsp_pas_test(uint32_t asked)
          * at 24 of p_flags */
         memcpy(&phoff, adsp + 28, sizeof(phoff));
         memcpy(&phentsize, adsp + 42, sizeof(phentsize));
-        memcpy(&segments, adsp + 44, sizeof(segments));
+        memcpy(&segments, adsp + 44, 2);              /* e_phnum is the 16-bit field at 44. The
+                                                       * 4-byte read here also pulled e_shnum (at
+                                                       * 46) into the high half: 15 segments read
+                                                       * as 0x28000F, so 'segments > 32' folded to
+                                                       * a compile-time true and the whole parse
+                                                       * path below went unreachable -- the CI's
+                                                       * pass dump, PromotePass, run 40226656873.
+                                                       * R28g's volume read rode the same bug; the
+                                                       * embedded copy is what made it provable. */
         /* The size check stays off on purpose (R28i): the adsp's .mdt is 7,820 B and PAGE_SIZE
          * is 4,096 -- with the .mdt embedded, the compiler folds adsp_size into the test and
          * proves the whole parse path dead at compile time, deleting the scm call and the
