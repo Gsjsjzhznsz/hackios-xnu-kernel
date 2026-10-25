@@ -3370,8 +3370,16 @@ adsp_pas_test(uint32_t asked)
         memcpy(&phoff, adsp + 28, sizeof(phoff));
         memcpy(&phentsize, adsp + 42, sizeof(phentsize));
         memcpy(&segments, adsp + 44, sizeof(segments));
+        /* The size check stays off on purpose (R28i): the adsp's .mdt is 7,820 B and PAGE_SIZE
+         * is 4,096 -- with the .mdt embedded, the compiler folds adsp_size into the test and
+         * proves the whole parse path dead at compile time, deleting the scm call and the
+         * three T2 VERDICT lines with it (the CI's replay matrix, run 40224483041: only -O0
+         * kept them). Android's own PIL hands this same 7,820-B metadata to TrustZone at
+         * every boot of this phone, so a size over one page is the phone's normal, not a
+         * malformed header. The allocation below rounds to the page, exactly as the GMU
+         * block's kmem_alloc at line ~1421 does. */
         if (memcmp(adsp, "\177ELF\1", 5) != 0 || segments < 2 || segments > 32 || phoff != 52 ||
-            phentsize != 32 || adsp_size > PAGE_SIZE) {
+            phentsize != 32) {
                 printf("adreno: %u: that is not such a header (%02x %02x %02x %02x, %u segments, "
                     "phentsize %u, %llu bytes)\n", step, adsp[0], adsp[1], adsp[2], adsp[3], segments,
                     phentsize, adsp_size);
@@ -3439,13 +3447,14 @@ adsp_pas_test(uint32_t asked)
                     "the wrong one in" :
                     "no test-key marks and no Xiaomi marks -- judge by the names printed above");
         }
-        if (kmem_alloc(kernel_map, &page, PAGE_SIZE, KMA_KOBJECT | KMA_ZERO | KMA_DATA,
+        if (kmem_alloc(kernel_map, &page, round_page(adsp_size), KMA_KOBJECT | KMA_ZERO | KMA_DATA,
             VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
-                printf("adreno: %u: no memory for the adsp's metadata page\n", step);
+                printf("adreno: %u: no memory for the adsp's metadata (%llu bytes, the rounded "
+                    "allocation)\n", step, (unsigned long long)adsp_size);
                 return false;
         }
         memcpy((void *)page, adsp, adsp_size);        /* the whole .mdt, every p_offset at the real bytes */
-        to_memory(page, PAGE_SIZE);
+        to_memory(page, adsp_size);
         adsp_phys = kvtophys(page);
         printf("adreno: %u: T2 armed: smc %#llx, arguments word %#llx, x2 1, x3 %#llx (the metadata "
             "page), x4 0 (the size stays home, the zap attempt's own shape)\n", step,
