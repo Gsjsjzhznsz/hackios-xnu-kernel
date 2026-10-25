@@ -25,13 +25,14 @@ for a in "$@"; do
     *) args+=("$a");;
   esac
 done
-# XNU_WRAPPER_LOG: one line per invocation, the full argv -- the CI's R28i diagnostics
-# read the raphael_adreno line out of it to replay the exact real command with variants.
+# XNU_WRAPPER_LOG: one line per invocation = the real CWD, a TAB, then the full argv --
+# the CI's R28i diagnostics replay the raphael_adreno line from the exact directory make
+# ran it in (the relative -I paths of the kernel build only resolve there).
 # %q keeps every argument one argument even when the kernel's own defines carry spaces
 # (e.g. -DCONFIG_NMBCLUSTERS=((1024 * 256) / MCLBYTES)); shlex splits them back.
 if [ -n "${XNU_WRAPPER_LOG:-}" ]; then
   qargs=(); for a in "${args[@]}"; do qargs+=("$(printf '%q' "$a")"); done
-  printf '%s\n' "${qargs[*]}" >> "$XNU_WRAPPER_LOG" 2>/dev/null || true
+  printf '%s\t%s\n' "$PWD" "${qargs[*]}" >> "$XNU_WRAPPER_LOG" 2>/dev/null || true
 fi
 # XNU_CCACHE=1 (with ccache on the PATH): compile through ccache. The wrapper always adds the
 # same flags for the same tree, so a rebuild of an unchanged kernel is nearly all cache hits;
