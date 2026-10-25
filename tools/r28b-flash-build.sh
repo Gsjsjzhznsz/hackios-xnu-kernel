@@ -377,7 +377,7 @@ if '-v' in packed.split():
 if len(payload) > (64 << 20) - 0x10000:
         fail('payload too big for the loader window')
 print(f'r28b image verified: {img_path}: {len(img):,} B | payload {len(payload):,} B | cmdline "{cmdline}"')
-print(f'  loader sha {hashlib.sha256(loader).hexdigest()[:16]} (v6, byte-identical to R28) '
+print(f'  loader sha {hashlib.sha256(loader).hexdigest()[:16]} (v6, source-identical to R28 -- only the PE build timestamp differs) '
       f'kernel sha {hashlib.sha256(k).hexdigest()[:16]} (SOURCE-BUILT r28b)')
 print(f'  md1 zap chain: Xiaomi-signed (the swap took), test chain absent')
 print(f'  shim {hashlib.sha256(shim).hexdigest()[:16]} '
