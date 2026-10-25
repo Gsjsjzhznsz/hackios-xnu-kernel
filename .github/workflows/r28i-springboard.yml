@@ -229,13 +229,16 @@ jobs:
           clean, skip = [], False
           for a in argv:
               if skip:
-                  skip = False; continue
+                  skip = False
+                  continue
               if a in drop_flags:
-                  skip = True; continue
+                  skip = True
+                  continue
               if a.startswith(('-MF=', '-MT=', '-MQ=')) or a == '-c':
                   continue
               clean.append(a)
           os.chdir(src)
+
           def run(tag, m):
               out = f'/tmp/var_{tag}.o'
               cmd = [tcc] + m + ['-c', '-o', out]
@@ -249,39 +252,47 @@ jobs:
               warn = sum(1 for l in r.stderr.splitlines() if 'warning' in l.lower())
               print(f'  {tag:12s} T2VERDICT={n}  rc={r.returncode}  warnings={warn}')
               if r.returncode != 0 and r.stderr:
-                  print('    ERR:', r.stderr.splitlines()[0][:160])
+                  print('    ERR:', r.stderr.splitlines()[0][:200])
               return n
-          print('→ 诊断 C：真实命令重放矩阵（变体 → T2 VERDICT 计数）：')
-          run('as-is', list(clean))
+
           def apply(m, old_f, new_f):
-              if old_f:
-                  i = m.index(old_f) if old_f in m else -1
-                  if i >= 0:
-                      if new_f:
-                          m[i] = new_f
-                      elif old_f == '-include':
-                          del m[i:i+2]
-                      else:
-                          del m[i]
+              if not old_f:
+                  m.append(new_f)
                   return m
-              m.append(new_f)
+              i = m.index(old_f) if old_f in m else -1
+              if i < 0:
+                  return m
+              if new_f:
+                  m[i] = new_f
+              elif old_f in ('-include', '-fsanitize-ignorelist'):
+                  del m[i:i+2]
+              else:
+                  del m[i]
               return m
-          for tag, old_f, new_f in [
-              ('O1',      '-O2', '-O1'),
-              ('Os',      '-O2', '-Os'),
-              ('Oz',      '-O2', '-Oz'),
-              ('O0',      '-O2', '-O0'),
-              ('no-w',    '-w', ''),
-              ('no-incl', '-include', ''),
-              ('no-mker', '-mkernel', ''),
-              ('no-merge','-fmerge-all-constants', ''),
+
+          print('REPLAY MATRIX (3 = the string survived, 0 = it was dropped):')
+          run('as-is', list(clean))
+          variants = [
+              ('O1',        '-O2', '-O1'),
+              ('Os',        '-O2', '-Os'),
+              ('O0',        '-O2', '-O0'),
+              ('no-w',      '-w', ''),
+              ('no-incl',   '-include', ''),
+              ('no-mker',   '-mkernel', ''),
+              ('no-merge',  '-fmerge-all-constants', ''),
               ('no-builtin','-fno-builtin', ''),
-              ('no-avz',  '-ftrivial-auto-var-init=zero', ''),
-              ('no-inline','', '-fno-inline-functions'),
-          ]:
-              m = apply(list(clean), old_f, new_f)
-              run(tag, m)
-          print('→ 诊断 D：变体表完（3=保留，0=被删）。as-is=0 且某变体=3 → 该变体即解药/触发器。')
+              ('no-avz',    '-ftrivial-auto-var-init=zero', ''),
+              ('no-inline', '', '-fno-inline-functions'),
+              ('no-san',    '-fsanitize=signed-integer-overflow', ''),
+              ('no-sanrt',  '-fsanitize-minimal-runtime', ''),
+              ('no-pan',    '+pan', ''),
+              ('no-ovmin',  '-miphoneos-version-min=16.5', ''),
+              ('no-dvolat', '-Dvolatile=__volatile', ''),
+          ]
+          for tag, old_f, new_f in variants:
+              run(tag, apply(list(clean), old_f, new_f))
+          print('REPLAY DONE. as-is=0 and any variant=3 -> that variant is the fix or the trigger.')
+
           PY
           echo "→ ccache 收官统计："; ccache -s 2>/dev/null | head -8 || true
           # ---- R28i 门禁：本轮自己的标记（含内嵌 .mdt 的字节级证明）、保留的先轮标记、退役措辞反查、
