@@ -72,12 +72,10 @@ jobs:
           ls -lh xnu/files/bsd/kern/kern_minimac.c tools/r28d-flash-build.sh tools/r28d-kernel-id.py
           # R28c 的四件资产：两张镜像是外科手术的底板（装载器 v7 原字节在里面），两卷改名沿用
           mkdir -p r28c
-          for pair in "r28c_image=raphael-xnu-r28c-flash.img" "r28c_gpu_image=raphael-xnu-r28c-gpu-flash.img" \
-                      "r28c_flashboot=raphael-r28c-flashboot.apfs" "r28c_root=r28c-md1-root.apfs"; do
-            key=${pair%%=*}; out=${pair##*=}
-            url=$(eval echo "\${{ inputs.$key }}")
-            curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o "r28c/$out" "$url"
-          done
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o r28c/raphael-xnu-r28c-flash.img  "${{ inputs.r28c_image }}"
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o r28c/raphael-xnu-r28c-gpu-flash.img "${{ inputs.r28c_gpu_image }}"
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o r28c/raphael-r28c-flashboot.apfs "${{ inputs.r28c_flashboot }}"
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o r28c/r28c-md1-root.apfs "${{ inputs.r28c_root }}"
           sha256sum r28c/* | tee r28c/SHA256SUMS.r28c
           # 立等可取的装载器门禁：R28c 镜像里的 loader 条目必须是设备已验证的 v7（ec15106d…）
           python3 tools/r28d-kernel-id.py r28c/raphael-xnu-r28c-flash.img r28c/raphael-xnu-r28c-gpu-flash.img | tee r28c-id.txt
