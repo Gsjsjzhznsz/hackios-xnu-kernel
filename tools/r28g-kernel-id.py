@@ -28,9 +28,15 @@ Known kernel-entry sha256s (the rounds so far):
     R28d        99b9ea75de307be1fe2fb368a67493d850c762f71580bb6d1a4e4b010c698603 (run 40174469602, clean build)
     R28g        (registered by the round's follow-up commit once the build has run)
 
-Known ramdisk-entry sha256s:
+Known ramdisk-entry sha256s (informational -- zlib's output varies with the
+building machine's library, so a rebuild's bytes differ cross-machine while its
+content is proven equal entry for entry; the VERDICT below is structural):
     R13..R28d   372c7fcb7730726a8fb806eec7251e0e75a4188f64db6fbaedcf5b7663672dd4  (the R13 bytes; R24 swapped the zap inside them)
-    R28g        870650e32ee6694f18a1e8cbe7f2e1d97b131672d782e553b9428065856c9657  (the R28d volume + fw/adsp.mbn, same 1024 blocks)
+    R28g (loc)  870650e32ee6694f18a1e8cbe7f2e1d97b131672d782e553b9428065856c9657  (the sandbox build of this round)
+    R28g (CI)   9308eae198d20a5d257c6dc317e1e0b3c09c3e520bcce1f2b364a63118842bbf  (run 40202807172's build of the same inputs)
+    either way: the volume carries fw/adsp.mbn (the one new entry beside the R28d
+    volume's 80, every old entry byte-identical, all four fw files single in-place
+    extents -- tools/r28g-volume-build.py's own proof, run on the build machine)
 
 A kernel cannot print a string its binary does not carry: markers below ARE the
 runtime lines, counted in the bytes that would print them.
@@ -46,7 +52,8 @@ KNOWN = {
 }
 KNOWN_RAMDISK = {
     '372c7fcb7730726a8fb806eec7251e0e75a4188f64db6fbaedcf5b7663672dd4': 'R13..R28d (the R13 bytes; R24 swapped the zap inside them)',
-    '870650e32ee6694f18a1e8cbe7f2e1d97b131672d782e553b9428065856c9657': 'R28g (the R28d volume + fw/adsp.mbn, 1024 blocks, 844 free)',
+    '870650e32ee6694f18a1e8cbe7f2e1d97b131672d782e553b9428065856c9657': 'R28g (the sandbox build of this round)',
+    '9308eae198d20a5d257c6dc317e1e0b3c09c3e520bcce1f2b364a63118842bbf': 'R28g (the CI build of the same inputs)',
 }
 
 # (family, marker) -- the runtime lines, in the bytes that print them
@@ -157,10 +164,16 @@ def main():
                    else 'R27/R27b or older (R25/R25b step-19 wordings present)'
                    if k.count(b'R25: the shape sweeps') else 'pre-R25 layout -- read the marker table')
         print(f'  VERDICT: the kernel entry is {verdict}')
-        if rmd and hashlib.sha256(rmd).hexdigest() == '870650e32ee6694f18a1e8cbe7f2e1d97b131672d782e553b9428065856c9657':
-            print('  VERDICT: the ramdisk entry is R28g (the R28d volume + fw/adsp.mbn)')
-        elif rmd and hashlib.sha256(rmd).hexdigest() == '372c7fcb7730726a8fb806eec7251e0e75a4188f64db6fbaedcf5b7663672dd4':
-            print('  VERDICT: the ramdisk entry is R13..R28d (no fw/adsp.mbn -- not this round)')
+        if rmd:
+            # structural: the volume either carries the adsp's .mdt beside the three
+            # firmware files (R28g) or it does not (R13..R28d) -- zlib makes the bytes
+            # themselves differ between building machines, so the sha is informational
+            if b'adsp.mbn' in rmd and b'a640_zap.mbn' in rmd:
+                print('  VERDICT: the ramdisk entry is R28g (carries fw/adsp.mbn beside the zap, the GMU and the SQE)')
+            elif hashlib.sha256(rmd).hexdigest() == '372c7fcb7730726a8fb806eec7251e0e75a4188f64db6fbaedcf5b7663672dd4':
+                print('  VERDICT: the ramdisk entry is R13..R28d (no fw/adsp.mbn -- not this round)')
+            else:
+                print('  VERDICT: the ramdisk entry is UNRECOGNIZED (no adsp.mbn name, not the R13 bytes either)')
     print('=' * 96)
 
 

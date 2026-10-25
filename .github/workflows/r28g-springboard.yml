@@ -438,8 +438,8 @@ jobs:
           【离线复验】
             python3 tools/r28g-kernel-id.py <image>
             （代数 grep：R28g 代数戳=2、基线=1、T2 宣告=2、判决=3、
-             开关=3；R28d/R28 旧措辞全 0；ramdisk 判 R28g 卷
-             870650e3…）
+             开关=3；R28d/R28 旧措辞全 0；ramdisk 结构判 R28g
+             （含 fw/adsp.mbn；卷 sha 随构建机 zlib 变化，仅信息性））
 
           【手机端（Termux / bootloader）】
             fastboot boot  raphael-xnu-r28g-flash.img

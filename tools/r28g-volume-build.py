@@ -19,8 +19,11 @@ byte, put fw/adsp.mbn (this tree's fw-gpu-raphael/adsp.mbn, the phone's own
 NON-HLOS ADSP.MDT) beside the three files that are already there, and make
 the volume again with the upstream builder (tools/apfs/mkapfs.py, the same
 -z --plain fw the R13 volume was made with, so the four fw files ride as
-single in-place extents exactly as they always have).  Deterministic: the
-same inputs give the same image byte for byte.
+single in-place extents exactly as they always have).  Deterministic per
+machine: the same inputs give the same image byte for byte on the machine
+that builds it (zlib's compressed forms vary with the library, so a rebuild
+on another machine differs in those bytes -- the content is proven equal
+entry for entry either way, by this script's own verify).
 
 Every claim is then checked by a reader that did not make the image (the
 upstream apfs.py again, plus the kernel's own conventions through
