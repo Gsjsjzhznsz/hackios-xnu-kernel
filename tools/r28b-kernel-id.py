@@ -23,6 +23,7 @@ FD_SIZE = 0x300000
 KNOWN = {
     '372f0b0af38d84f7d343a322f21c41156e6675581e08964b0ac15378be447d9c': 'R27/R27b (v5-loader round)',
     '9e3dd447d1e92158b9e7159cf3508ca3414e6366d066373210ed746f590667b3': 'R28 (two-parameter baseline round)',
+    '36a1e9534da454854a0110724447ffa06d9fcae8995e98cf1487d419cfed3ed6': 'R28b (identity-audit round, generation stamps)',
 }
 
 # (family, marker) -- the runtime lines, in the bytes that print them
@@ -81,12 +82,15 @@ def main():
               + (f'   == {KNOWN[ksha]}' if ksha in KNOWN else ''))
         if ldr:
             lsha = hashlib.sha256(ldr).hexdigest()
-            known_loader = ('9a93cc085b6fcd25' in lsha[:16] and ' == XNULOADER v6 (R28/R28b, byte-identical)'
-                            or '')
-            print(f'  loader sha256 : {lsha}   ({len(ldr):,} B)'
-                  + ('   == XNULOADER v6 (R28/R28b, byte-identical)'
-                     if lsha.startswith('9a93cc085b6fcd25') else
-                     ('   == XNULOADER v5 (R26/R27 era)' if lsha.startswith('d42293ff2beb7653') else '')))
+            if lsha.startswith('9a93cc085b6fcd25'):
+                tag = '   == XNULOADER v6 (R28 build)'
+            elif lsha.startswith('5640b04be0b505fb'):
+                tag = '   == XNULOADER v6 (R28b build; source-identical to R28, only the PE timestamp differs)'
+            elif lsha.startswith('d42293ff2beb7653'):
+                tag = '   == XNULOADER v5 (R26/R27 era)'
+            else:
+                tag = ''
+            print(f'  loader sha256 : {lsha}   ({len(ldr):,} B)' + tag)
         if 'cmdline' in ents:
             print(f'  cmdline       : {ents["cmdline"].rstrip(bytes([0])).decode(errors="replace")}')
         print('  -- kernel-entry marker counts (what this kernel CAN print) --')
