@@ -3410,8 +3410,14 @@ adsp_pas_test(uint32_t asked)
             "the whole file %llu bytes; the metadata is the whole .mdt, as Linux hands a split "
             "image's to TrustZone (the .b0x files carry the code; the .mdt is the metadata)\n",
             step, segments, header_bytes, hash_bytes, hash_at, adsp_size);
-        if (header_bytes == 0 || hash_bytes == 0 || (uint64_t)hash_at + hash_bytes > adsp_size) {
-                printf("adreno: %u: that file does not make a one-page metadata the way it is asked\n", step);
+        /* The hash-segment bounds stay out (R28i): a SPLIT image's hash segment lives in the
+         * concatenated whole (the .b0x files carry the code), not in the .mdt -- hash_at +
+         * hash_bytes = 4096 + 7288 reaching past the 7,820-B metadata is this phone's normal,
+         * and Android's PIL hands this very .mdt over at every boot. The control sends the
+         * whole .mdt and reads no hash bytes itself, so the old one-page gate could only ever
+         * stop the round (it folded to a compile-time return: run 40227717987). */
+        if (header_bytes == 0 || hash_bytes == 0) {
+                printf("adreno: %u: that .mdt carries no header pair or no hash segment\n", step);
                 return false;
         }
         {
