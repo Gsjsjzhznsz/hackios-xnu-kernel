@@ -3696,6 +3696,11 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
         for (const char *c = pi.cmdline; *c && n < BOOT_LINE_LENGTH - 1; c++) {
                 ba->commandLine[n++] = *c;
         }
+        /* R28: every boot states its own extras, in full, on the record -- the R27b residue
+         * question (what rides this boot vs what was cleared) is answered by each run's own
+         * log line, before the kernel is jumped. */
+        print("R28 cmdline: the extras riding this boot: %s\n",
+            extra_cmdline[0] != 0 ? extra_cmdline : "(none)");
         /* R26: the extra arguments set over USB ("oem cmdline-append"), after the payload's own */
         if (extra_cmdline[0] != 0) {
                 if (n < BOOT_LINE_LENGTH - 1) {
@@ -4693,10 +4698,13 @@ fb_command(char *cmd)
                                 }
                         }
                 } else if (starts_with(cmd, "oem cmdline-clear")) {
-                        /* R26: drop the extra kernel arguments ("oem cmdline-append" sets them) */
+                        /* R26: drop the extra kernel arguments ("oem cmdline-append" sets them).
+                         * R28: the state goes IN FULL to the loader's own log -- the fastboot reply
+                         * caps at 59 bytes (the tail truncation the R27b battle report hit); the
+                         * whole record is one "oem log" away, and each boot repeats its own state. */
                         extra_cmdline[0] = 0;
-                        print("cmdline: the extra arguments are dropped\n");
-                        fb_reply("OKAY", "");
+                        print("cmdline: the extra arguments are dropped -- riding the next boot: (none)\n");
+                        fb_reply("OKAY", "the extra arguments are dropped (oem log holds the full state)");
                 } else if (starts_with(cmd, "oem cmdline-append")) {
                         /*
                          * R26: kernel arguments without reflashing.  The payload's cmdline
@@ -4727,6 +4735,13 @@ fb_command(char *cmd)
                                 fb_reply("OKAY", extra_cmdline);
                         }
                 } else if (starts_with(cmd, "oem cmdline")) {
+                        /* R28: the reply caps at 59 bytes, so the FULL state goes to the loader's log
+                         * first ("oem log" reads it whole, no tail truncation); the reply carries
+                         * what fits, or the none-marker. */
+                        if (extra_cmdline[0] != 0) {
+                                print("cmdline: the extra arguments, in full: \"%s\" (%d bytes)\n", extra_cmdline,
+                                    (uint64_t)str_len(extra_cmdline));
+                        }
                         fb_reply("OKAY",
                             extra_cmdline[0] != 0 ? extra_cmdline :
                             "(none; oem cmdline-append sets them, oem cmdline-clear drops them)");
@@ -4898,8 +4913,11 @@ efi_main(efi_handle image, efi_system_table *st)
         BS->set_watchdog_timer(0, 0, 0, NULL);
         /* R27: the loader moves again -- the oem log prefix that hid oem logdump, the
          * whole-log 2-second notes (and their window, 24 s -> 60 s), the flush head,
-         * and the keep warning at oem run. */
-        print("== XNULOADER v5 ==\n");
+         * and the keep warning at oem run.
+         * R28: the cmdline state, said in full and on the record -- the fastboot reply's
+         * 59-byte cap is documented at the three cmdline verbs, every boot states its own
+         * extras before the jump, and oem cmdline echoes to the log whole. */
+        print("== XNULOADER v6 ==\n");
         print("CurrentEL=%x MIDR=%x MMFR0=%x CNTFRQ=%d image=%x\n", READ_SYSREG(CurrentEL) >> 2, READ_SYSREG(MIDR_EL1),
             READ_SYSREG(ID_AA64MMFR0_EL1), READ_SYSREG(CNTFRQ_EL0), (uint64_t)(uintptr_t)&__ImageBase);
 

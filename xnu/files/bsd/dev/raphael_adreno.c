@@ -3311,11 +3311,19 @@ step_zap_load(void)
         uint64_t zap_place = 0, size = 0, header = 0, whole = 0, answer = ~0ull;
         int32_t got;
         uint32_t tzunload = 0;
-        uint32_t qfprom_on = 1;         /* R25b: the fuse sweep rides at the refusal path's
-                                         * end; adreno_qfprom=0 keeps even that out */
-        uint32_t e1_mode = 3;           /* R26: 3 = Linux's shape, the size goes with it
-                                         * (R25b's, the one under trial); 2 = R21-R24b's,
-                                         * the size stays home (the control); adreno_e1_mode */
+        uint32_t qfprom_on = 0;         /* R28: the fuse sweep is RETIRED from the default
+                                         * run (R25b/R27b proved it the t=4s killer); it rides
+                                         * only behind adreno_qfprom=1 */
+        uint32_t e1_mode = 2;           /* R28: 2 = R21-R24b's shape, the size stays home -- the
+                                         * DEFAULT (R27b closed the shape charge: with the size
+                                         * the call dies at the SMC itself, -5, it never reaches
+                                         * the verdict); 3 = Linux's shape, kept for the record,
+                                         * asked for with adreno_e1_mode=3 */
+        uint32_t shape_sweep = 0;       /* R28: the shape sweeps (E2..E5) are RETIRED from the
+                                         * default run (R27b: all three-word forms die at the SMC
+                                         * with -5, the one survivor is E1 two-param's own code --
+                                         * zero information, real reset risk); they ride only
+                                         * behind adreno_shape_sweep=1 */
         bool zap_ours = false;
 
         if (!cx_ready() || !core_is_on) {
@@ -3355,12 +3363,16 @@ step_zap_load(void)
         PE_parse_boot_argn("adreno_tzunload", &tzunload, sizeof(tzunload));
         PE_parse_boot_argn("adreno_qfprom", &qfprom_on, sizeof(qfprom_on));
         PE_parse_boot_argn("adreno_e1_mode", &e1_mode, sizeof(e1_mode));
+        PE_parse_boot_argn("adreno_shape_sweep", &shape_sweep, sizeof(shape_sweep));
         if (e1_mode != 2 && e1_mode != 3) {
-                e1_mode = 3;
+                e1_mode = 2;    /* R28: the fallback is the two-parameter control, not the three */
         }
-        printf("adreno: %u: adreno_e1_mode=%u (%s)\n", step, e1_mode, e1_mode == 3 ?
-            "Linux's shape: a number, the buffer, a number -- the size goes with it (R25b's, the one under trial)" :
-            "R21-R24b's shape: a number, the buffer -- the size stays home (the control)");
+        printf("adreno: %u: R28: the two-parameter baseline -- adreno_e1_mode=%u (%s), the shape sweeps behind "
+            "adreno_shape_sweep=%u, the fuse sweep behind adreno_qfprom=%u\n", step, e1_mode, e1_mode == 3 ?
+            "Linux's shape: a number, the buffer, a number -- the size goes with it (asked for by name; with the size "
+            "the call died at the SMC itself, R27b's verdict)" :
+            "R21-R24b's shape: a number, the buffer -- the size stays home (the default, the shape that answers)",
+            shape_sweep, qfprom_on);
         if (tzunload) {
                 announce("ask TrustZone to give up a zap shader that a kernel before this one may have left (adreno_tzunload: "
                     "the call that wedged R20, asked now with the channel proven)");
@@ -3530,20 +3542,22 @@ refused:
                 }
         }
         /*
-         * R25, the shape sweeps (the refusal path only -- the taken path never lands here):
-         * the image-side hypotheses all closed with R24b (the production chain refused with
-         * the same code the test chain was), and the one variable seven rounds never moved is
-         * the SHAPE of the call itself.  The canonical attempt carries the size now (E1);
-         * these map the rest of the shape's neighborhood.  All of them are INIT_IMAGE alone:
-         * nothing authenticates, nothing starts, nothing is asked of any peripheral but this.
+         * R28, the shape sweeps (the refusal path only -- the taken path never lands here):
+         * RETIRED from the default run.  R27b's battle report closed their charge: every
+         * three-word form died at the SMC itself (-5, it never reached TrustZone's verdict),
+         * and the one code that survived (E3's word 0x82) is the two-parameter shape's own
+         * answer -- the sweeps carried zero information and real reset risk.  They ride only
+         * behind adreno_shape_sweep=1, for the record; the default run goes straight from the
+         * zero-page controls to the supports/give-up diagnostics.
          */
-        {
+        if (shape_sweep) {
                 vm_offset_t sweep_page = 0;
                 uint64_t sweep_answer = ~0ull;
                 int32_t sweep_got;
 
-                announce("R25: the shape sweeps -- E2 the size word, E3 the argument word, E4 the id, "
-                    "E5 the state; all INIT_IMAGE alone, nothing authenticated, nothing started");
+                announce("R28: the shape sweeps, retired behind adreno_shape_sweep=1 -- E2 the size word, "
+                    "E3 the argument word, E4 the id, E5 the state; all INIT_IMAGE alone, nothing "
+                    "authenticated, nothing started");
                 put_the_log_away("the shape sweeps are next; every one of them is INIT_IMAGE alone");
                 /* E2: the third word.  The canonical attempt took the file's whole size (E1);
                  * these are the other sizes the callers of this phone's world use. */
@@ -3623,26 +3637,26 @@ refused:
         if (!tzunload) {
                 zap_unload();
         }
-        put_the_log_away("the give-up's second half is next (after the give-up)");
-        /* E5's other half: after the give-up.  A code that changes here answers for the
-         * state, not for the file. */
-        {
-                uint64_t after_answer = ~0ull;
-                int32_t after_got = scm("E5: after the give-up", (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_INIT_IMAGE,
-                    SCM_VALUE_BUFFER_VALUE, PAS_GPU, header, whole, &after_answer);
-                printf("adreno: %u: E5 after give-up: %d, answer %#llx\n", step, after_got, after_answer);
+        if (shape_sweep) {
+                put_the_log_away("the give-up's second half is next (after the give-up)");
+                /* E5's other half: after the give-up.  A code that changes here answers for the
+                 * state, not for the file. */
+                {
+                        uint64_t after_answer = ~0ull;
+                        int32_t after_got = scm("E5: after the give-up", (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_INIT_IMAGE,
+                            SCM_VALUE_BUFFER_VALUE, PAS_GPU, header, whole, &after_answer);
+                        printf("adreno: %u: E5 after give-up: %d, answer %#llx\n", step, after_got, after_answer);
+                }
         }
         /*
-         * R25b: the fuses, last of all.  R25 read them in step 2 and the phone was gone before
-         * the kernel's first word reached the log -- the sweep's first read (raw 0x780000 + 0)
-         * is a row this phone's Non-secure world had never touched (R24b only ever read the
-         * speed-bin bytes at ...1e9 of each window).  Here, after every other answer of the
-         * step is already in the log, the sweep can only cost itself: corrected window first
-         * (Linux's), raw second, one line every 256 bytes so a death names its row.
+         * R28: the fuses, RETIRED from the default run.  R27b convicted them (R25's t=4s
+         * death was E7's next 256-byte row; moving it to step 19's end in R25b only moved
+         * the body, the trigger stayed).  They ride only behind adreno_qfprom=1: corrected
+         * window first (Linux's), raw second, one line every 256 bytes so a death names its row.
          */
         if (qfprom_on) {
-                announce("read the secboot and rollback fuses (R25b: E7 moved to the end of the refusal path "
-                    "-- corrected window first, raw second, one line every 256 bytes; adreno_qfprom=0 keeps even this out)");
+                announce("read the secboot and rollback fuses (R28: retired behind adreno_qfprom=1, "
+                    "R27b's t=4s verdict -- corrected window first, raw second, one line every 256 bytes)");
                 put_the_log_away("the fuse sweep is next (the R25 killer's family); every row it announces "
                     "is on the storage before it is read");
                 for (unsigned w = 0; w < 2; w++) {
