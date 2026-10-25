@@ -157,7 +157,7 @@ def main():
                    if k.count(b'R28i: the two-parameter baseline') == 1
                    and k.count(b'R28i: the T2 control') == 2
                    and k.count(b"the kernel's own embedded copy") == 2
-                   and k.count(b'adreno_test_adsp') == 3
+                   and k.count(b'adreno_test_adsp') == 4
                    and k.count(b'T2 VERDICT:') == 3
                    and k.count(b'R28g: the two-parameter baseline') == 0 and k.count(b'R28g: the T2 control') == 0
                    and k.count(b'R28d: the two-parameter baseline') == 0 and k.count(b'R28d: the kernel generation line') == 0
