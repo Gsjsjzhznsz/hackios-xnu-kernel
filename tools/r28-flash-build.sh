@@ -183,6 +183,11 @@ if b'debug=0x8' in ents['loader.efi']:
         fail('packed loader still carries debug=0x8')
 if ents['kernel'] != open(kernel_path, 'rb').read():
         fail('kernel identity broken (not the source-built r25 kernel)')
+# R28 audit trail: both images print their kernel-entry hash -- one kernel, two images,
+# provable from the build log alone (the R28 report asked, the answer rides every build)
+print(f'kernel payload sha256 ({img_path}): {hashlib.sha256(ents["kernel"]).hexdigest()}')
+if b'R28: the two-parameter baseline' not in ents['kernel']:
+        fail('the kernel entry lacks the R28 baseline marker -- an R27 kernel slipped in')
 # the doorbell, verified in the SOURCE-BUILT kernel: the macro fix must have compiled in
 k = ents['kernel']
 if b'\x9f\x4e\x00\x71' not in k:                 # cmp w20, #0x13  (the dispatch: INTID==19)
