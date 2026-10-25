@@ -238,10 +238,15 @@ jobs:
                   continue
               clean.append(a)
           os.chdir(src)
+          # the wrapper itself appends these on every exec: -target, -w, -include compat.h
+          compat = os.path.abspath('xnu-deps/hostinc/xnu_clang_compat.h')
+          base = ['-target', 'arm64-apple-ios16.5', '-w']
+          if os.path.exists(compat):
+              base += ['-include', compat]
 
-          def run(tag, m):
+          def run(tag, m, b=None):
               out = f'/tmp/var_{tag}.o'
-              cmd = [tcc] + m + ['-c', '-o', out]
+              cmd = [tcc] + (base if b is None else b) + m + ['-c', '-o', out]
               r = subprocess.run(cmd, capture_output=True, text=True)
               n = -1
               try:
@@ -272,12 +277,13 @@ jobs:
 
           print('REPLAY MATRIX (3 = the string survived, 0 = it was dropped):')
           run('as-is', list(clean))
+          run('no-w', list(clean), [x for x in base if x != '-w'])
+          bi = base.index('-include') if '-include' in base else -1
+          run('no-incl', list(clean), base[:bi] + base[bi+2:] if bi >= 0 else base)
           variants = [
               ('O1',        '-O2', '-O1'),
               ('Os',        '-O2', '-Os'),
               ('O0',        '-O2', '-O0'),
-              ('no-w',      '-w', ''),
-              ('no-incl',   '-include', ''),
               ('no-mker',   '-mkernel', ''),
               ('no-merge',  '-fmerge-all-constants', ''),
               ('no-builtin','-fno-builtin', ''),
@@ -285,12 +291,18 @@ jobs:
               ('no-inline', '', '-fno-inline-functions'),
               ('no-san',    '-fsanitize=signed-integer-overflow', ''),
               ('no-sanrt',  '-fsanitize-minimal-runtime', ''),
-              ('no-pan',    '+pan', ''),
               ('no-ovmin',  '-miphoneos-version-min=16.5', ''),
               ('no-dvolat', '-Dvolatile=__volatile', ''),
           ]
           for tag, old_f, new_f in variants:
               run(tag, apply(list(clean), old_f, new_f))
+          pan_seq = ['-Xclang', '-target-feature', '-Xclang', '+pan']
+          mp = list(clean)
+          for k in range(len(mp) - 3):
+              if mp[k:k+4] == pan_seq:
+                  del mp[k:k+4]
+                  break
+          run('no-pan', mp)
           print('REPLAY DONE. as-is=0 and any variant=3 -> that variant is the fix or the trigger.')
 
           PY
