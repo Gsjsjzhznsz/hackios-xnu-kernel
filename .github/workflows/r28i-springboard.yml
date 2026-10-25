@@ -207,6 +207,28 @@ jobs:
           ./xnu-build.sh -j4 -k || echo "（make 退出码 $?——上游文档：链接后的检查，内核若已产出即成功）"
           K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
           ls -la "$K" || { echo "::error::内核没有产出——exporthdrs.log 与 make 日志尾部："; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
+          # --- R28i 诊断（run 40217090196 仍缺判决行）：把"串消失"劈成编译层/链接层 ---
+          SRC=xnu-src/xnu-8796.121.2
+          AO=$(find $SRC/BUILD/obj -name "raphael_adreno.o" | head -1)
+          echo "→ 诊断 A：raphael_adreno.o = $AO"
+          if [ -n "$AO" ]; then
+            echo "→ 诊断 A1：.o 里 T2 VERDICT 计数 = $(strings -a "$AO" | grep -c 'T2 VERDICT:')（应为 3）"
+            strings -a "$AO" | grep "T2 VERDICT" | head -3 | cut -c1-90
+            echo "→ 诊断 A2：.o 的 clang 版本戳（.comment）"; readelf -p .comment "$AO" 2>/dev/null | head -8 || strings -a "$AO" | grep -m2 "clang version"
+            echo "→ 诊断 A3：强制重编译该文件并抓真实命令行"
+            touch "$SRC/bsd/dev/raphael_adreno.c"
+            ./xnu-build.sh -j4 -k >/tmp/rebuild.log 2>&1 || true
+            grep -m1 "raphael_adreno" /tmp/rebuild.log | cut -c1-400 || true
+            grep -B2 -m1 "raphael_adreno" /tmp/rebuild.log | head -4 | cut -c1-400 || true
+            echo "→ 诊断 A4：重编译后 .o 的 T2 VERDICT 计数 = $(strings -a "$AO" | grep -c 'T2 VERDICT:')"
+          else
+            echo "::warning::诊断：BUILD 里没有 raphael_adreno.o"; find $SRC/BUILD -name "*.o" | head -3
+          fi
+          echo "→ 诊断 B：内核二进制 T2 VERDICT 计数 = $(strings -a "$K" | grep -c 'T2 VERDICT:')（应为 3）"
+          echo "→ 诊断 C：wrapper 实际驱动的编译器：" | tee -a "$REL/toolchain-versions.txt"
+          xnu-deps/host/bin/xnu-clang --version 2>&1 | head -2 | tee -a "$REL/toolchain-versions.txt" || true
+          echo "→ 诊断 D：XNU_HOST_CLANG 是否进入了 make 的世界（wrapper 里再看一眼）：" | tee -a "$REL/toolchain-versions.txt"
+          { XNU_HOST_CLANG="${XNU_HOST_CLANG:-unset}" sh -c 'echo "XNU_HOST_CLANG=$XNU_HOST_CLANG"'; } | tee -a "$REL/toolchain-versions.txt" || true
           echo "→ ccache 收官统计："; ccache -s 2>/dev/null | head -8 || true
           # ---- R28i 门禁：本轮自己的标记（含内嵌 .mdt 的字节级证明）、保留的先轮标记、退役措辞反查、
           # 新 sha 断言（不允许等于任何一代历史内核）
