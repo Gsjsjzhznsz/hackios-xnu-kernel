@@ -162,18 +162,20 @@ jobs:
       - name: "③/⑥ 内核源码构建（theos 固定 v19.0.0-L2 + xnu/apply.sh + xnu-deps + clean ccache + make + R28i 门禁）"
         run: |
           set -eu
-          # theos 本体 + 工具链：R28i 起工具链 URL 钉死在具名 tag v19.0.0-L2（不再
-          # releases/latest——latest 一旦上游发新版本，两次构建之间就会漂移；该 tag
-          # 自 2024-04 未动过，与 R28d/R28g 实际拉到的字节相同，钉死是纯收紧）
+          # theos 本体 + 工具链：R28i 起工具链 URL 钉死（不再 releases/latest——
+          # latest 一旦上游发新版本，两次构建之间就会漂移）。钉的是 git tag
+          # main-update_3-eabca92（release 显示名 v19.0.0-L2）——download URL 只认
+          # git tag，不认显示名，run 40213864365 就是栽在拿显示名当 tag 404；
+          # 该 release 自 2024-04 未动过，与 R28d/R28g 实际拉到的字节相同，纯收紧
           if [ ! -x "$THEOS/toolchain/linux/iphone/bin/ld64" ]; then
             rm -rf "$THEOS"
             git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
             mkdir -p "$THEOS/toolchain"
-            curl -fL --retry 3 --retry-delay 5 -sS https://github.com/L1ghtmann/llvm-project/releases/download/v19.0.0-L2/iOSToolchain-x86_64.tar.xz | tar -xJ -C "$THEOS/toolchain/"
+            curl -fL --retry 3 --retry-delay 5 -sS https://github.com/L1ghtmann/llvm-project/releases/download/main-update_3-eabca92/iOSToolchain-x86_64.tar.xz | tar -xJ -C "$THEOS/toolchain/"
           fi
           "$THEOS/toolchain/linux/iphone/bin/ld64" --version | tee -a "$REL/toolchain-versions.txt" || true
           echo "--- theos toolchain tarball identity ---" | tee -a "$REL/toolchain-versions.txt"
-          echo "L1ghtmann/llvm-project v19.0.0-L2 (pinned by name; R28i discipline)" | tee -a "$REL/toolchain-versions.txt"
+          echo "L1ghtmann/llvm-project v19.0.0-L2 (git tag main-update_3-eabca92; pinned; R28i discipline)" | tee -a "$REL/toolchain-versions.txt"
           if [ ! -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include" ]; then
             rm -rf "$THEOS/sdks/iPhoneOS16.5.sdk" /tmp/theos-sdks
             git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/theos-sdks
