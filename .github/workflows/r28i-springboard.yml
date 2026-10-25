@@ -469,7 +469,7 @@ jobs:
                                 ('R28i T2 宣告（want 2）', b'R28i: the T2 control'),
                                 ('R28i 内嵌副本（want 2）', b"the kernel's own embedded copy"),
                                 ('R28i T2 判决（want 3）', b'T2 VERDICT:'),
-                                ('R28i T2 开关（want 3）', b'adreno_test_adsp'),
+                                ('R28i T2 开关（want 4）', b'adreno_test_adsp'),
                                 ('R28g 代数戳（want 0）', b'R28g: the kernel generation line'),
                                 ('R28g baseline（want 0）', b'R28g: the two-parameter baseline'),
                                 ('R28g T2 宣告（want 0）', b'R28g: the T2 control'),
