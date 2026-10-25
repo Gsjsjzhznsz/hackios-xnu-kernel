@@ -86,7 +86,7 @@ jobs:
           # 立等可取的装载器门禁：R28d 镜像里的 loader 条目必须是设备已验证的 v7（ec15106d…）
           python3 tools/r28g-kernel-id.py r28d/raphael-xnu-r28d-flash.img r28d/raphael-xnu-r28d-gpu-flash.img | tee r28d-id.txt
           grep -q "ec15106da4bad290" r28d-id.txt || { echo "::error::R28d 镜像的 loader 不是设备验证过的 v7（ec15106d…）"; exit 1; }
-          grep -c "loader sha256" r28d-id.txt | grep -qx 2 || { echo "::error::两张 R28d 镜像都要读到 loader 条目"; exit 1; }
+          grep -Ec "loader +sha256" r28d-id.txt | grep -qx 2 || { echo "::error::两张 R28d 镜像都要读到 loader 条目"; exit 1; }
           grep -q "VERDICT: the kernel entry is R28d" r28d-id.txt || { echo "::error::底板镜像的内核不是 R28d"; exit 1; }
           grep -q "VERDICT: the ramdisk entry is R13..R28d" r28d-id.txt || { echo "::error::底板镜像的小卷不是 R13 谱系"; exit 1; }
           # 两张底板镜像的 ramdisk 条目必须就是 r28d-md1-root.apfs 的字节（flash-build 从它换卷）
