@@ -520,7 +520,7 @@ jobs:
           grep -c "ec15106da4bad290" r28i-kernel-id.txt | grep -qx 2 || { echo "::error::双镜像的 loader 必须是设备验证过的 v7（ec15106d…）"; exit 1; }
           grep -q "needs no T2 token" r28i-kernel-id.txt || { echo "::error::cmdline 校验行缺失（本轮 cmdline 必须零改动、无 T2 token）"; exit 1; }
           # GPU 镜像的 cmdline 必须带 gpu=1（R28d 原样）、日常镜像不带（R28d 原样）
-          test "$(grep 'cmdline' r28i-kernel-id.txt | grep -c 'gpu=1')" = 1 || { echo "::error::两张镜像的 cmdline 里必须恰好 GPU 镜像带 gpu=1"; exit 1; }
+          test "$(grep 'cmdline "' r28i-kernel-id.txt | grep -c 'gpu=1')" = 1 || { echo "::error::两张镜像的 cmdline 判决行里必须恰好 GPU 镜像带 gpu=1"; exit 1; }
           echo "（cmdline 检查过：恰好 GPU 镜像带 gpu=1，两行都是 R28d 原字节）"
           ls -lh "$REL"
           df -h .
