@@ -5,6 +5,17 @@
 #  - links with the cctools ld64
 HB="$(cd "$(dirname "$0")" && pwd)"
 case "$(basename "$0")" in *++) drv=clang++; extra=(-fno-use-cxa-atexit);; *) drv=clang; extra=();; esac
+# The kernel's compiler must not float with the build machine. XNU_HOST_CLANG pins it:
+# R28i's CI points it at theos's toolchain clang (the tarball the workflow fetches by its
+# git tag), because /usr/bin/clang is whatever apt ships that month -- one generation of
+# it dropped the three "T2 VERDICT:" strings out of the kernel in silence (the gate
+# caught it, run 40214391444), and the drift from one apt clang to the next is also the
+# prime suspect behind R28g's userland-wide SIGBUS. Local builds that set nothing keep
+# the old /usr/bin behavior.
+CC_BIN="${XNU_HOST_CLANG:-/usr/bin/$drv}"
+if [ -n "${XNU_HOST_CLANG:-}" ] && [ "$drv" = clang++ ]; then
+  CC_BIN="${CC_BIN%clang}clang++"
+fi
 args=()
 for a in "$@"; do
   case "$a" in
@@ -19,8 +30,8 @@ done
 # ccache runs the compiler itself when it is not compiling, so the link passes through too.
 # Nothing changes unless the variable is set: local builds stay exactly as they were.
 if [ -n "${XNU_CCACHE:-}" ] && command -v ccache >/dev/null 2>&1; then
-  exec ccache /usr/bin/$drv -include "$HB/../../hostinc/xnu_clang_compat.h" -target arm64-apple-ios${XNU_SDK_VERSION:-16.5} --ld-path="$HB/ld64" \
+  exec ccache "$CC_BIN" -include "$HB/../../hostinc/xnu_clang_compat.h" -target arm64-apple-ios${XNU_SDK_VERSION:-16.5} --ld-path="$HB/ld64" \
     -w "${extra[@]}" "${args[@]}"
 fi
-exec /usr/bin/$drv -include "$HB/../../hostinc/xnu_clang_compat.h" -target arm64-apple-ios${XNU_SDK_VERSION:-16.5} --ld-path="$HB/ld64" \
+exec "$CC_BIN" -include "$HB/../../hostinc/xnu_clang_compat.h" -target arm64-apple-ios${XNU_SDK_VERSION:-16.5} --ld-path="$HB/ld64" \
   -w "${extra[@]}" "${args[@]}"

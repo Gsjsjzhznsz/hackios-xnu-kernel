@@ -40,7 +40,12 @@ Things to know:
   `exported name not in import list` are about DriverKit RPC names from the `iig` stubs (see below). make
   exits with status 2; the kernel is ready by then -- look at the file's date, not at make's exit status.
 - The path to the repository must not contain spaces (XNU's makefiles do not survive them).
-- The wrapper `xnu-deps/host/bin/xnu-clang` calls `/usr/bin/clang`. Tested with clang 22.1.
+- The wrapper `xnu-deps/host/bin/xnu-clang` calls the compiler `XNU_HOST_CLANG` names, or
+  `/usr/bin/clang` when the variable is not set (the old behavior, for local builds).
+  Tested with clang 22.1; on the CI it is pinned to theos's toolchain clang (v19.0.0-L2,
+  git tag main-update_3-eabca92) -- the apt clang of one runner generation silently
+  dropped the "T2 VERDICT:" strings out of the kernel (R28i run 40214391444), so the
+  kernel's compiler rides the same pinned tarball as its linker does.
 - After changing kernel headers that two outside libraries see (the pthread kext, firehose):
   `xnu-deps/setup.sh --rebuild-libs`.
 - Apple's DriverKit generator (`iig`) is closed source. In its place are the stubs

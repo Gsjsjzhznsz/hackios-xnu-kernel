@@ -188,6 +188,16 @@ jobs:
           df -h /
           cd hackios
           xnu/apply.sh
+          # 内核编译器钉死：theos 工具链的 clang（上面按 git tag 下载的那份），绝不许
+          # runner 的 apt clang 编内核 —— R28i run 40214391444：当日 apt clang 把三个
+          # "T2 VERDICT:" 判决串无声无息地从内核里剥了（-w 吃掉了警告，门禁兜住的）；
+          # R28d→R28g 的 apt clang 漂移也是 lsd SIGBUS 的头号嫌疑。xnu-clang wrapper
+          # 读 XNU_HOST_CLANG（本轮起支持）；host 工具（mig 等）仍用 apt 的。
+          XNU_HOST_CLANG="$THEOS/toolchain/linux/iphone/bin/clang"
+          export XNU_HOST_CLANG
+          test -x "$XNU_HOST_CLANG" || { echo "::error::theos 工具链 clang 缺位（$XNU_HOST_CLANG）"; exit 1; }
+          "$XNU_HOST_CLANG" --version | tee -a "$REL/toolchain-versions.txt"
+          grep -q "eabca92" "$REL/toolchain-versions.txt" || { echo "::error::内核编译器不是钉死的 theos clang（eabca92）"; exit 1; }
           bash xnu-deps/setup.sh || { echo "::error::setup.sh 失败——exporthdrs.log 尾部："; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
           export XNU_CCACHE=1 CCACHE_COMPILERCHECK=content
           ccache -C >/dev/null 2>&1 || true
