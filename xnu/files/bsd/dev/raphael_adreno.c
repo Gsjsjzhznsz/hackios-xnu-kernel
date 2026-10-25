@@ -3367,7 +3367,7 @@ step_zap_load(void)
         if (e1_mode != 2 && e1_mode != 3) {
                 e1_mode = 2;    /* R28: the fallback is the two-parameter control, not the three */
         }
-        printf("adreno: %u: R28: the two-parameter baseline -- adreno_e1_mode=%u (%s), the shape sweeps behind "
+        printf("adreno: %u: R28b: the two-parameter baseline -- adreno_e1_mode=%u (%s), the shape sweeps behind "
             "adreno_shape_sweep=%u, the fuse sweep behind adreno_qfprom=%u\n", step, e1_mode, e1_mode == 3 ?
             "Linux's shape: a number, the buffer, a number -- the size goes with it (asked for by name; with the size "
             "the call died at the SMC itself, R27b's verdict)" :
@@ -5044,7 +5044,8 @@ redwood_adreno_init(void)
         for (newest_step = last_step; newest_step > 0 && (skip_steps & 1u << newest_step); newest_step--) {
         }
 
-        printf("adreno: steps up to %u, without those in mask %#x; step %u is the new one and waits %u ms %s\n", last_step,
+        printf("adreno: steps up to %u, without those in mask %#x; step %u is the new one and waits %u ms %s "
+            "(R28b: the kernel generation line -- one kernel, both images)\n", last_step,
             skip_steps, newest_step, pause_ms, fine ? "before every access" : "after each announcement");
         /*
          * R27: the flush channel's own test, before any step runs.  The loader writes the
@@ -5055,7 +5056,7 @@ redwood_adreno_init(void)
          * absent too, meaning the flush was not even asked for) says the channel itself
          * is what R26 never proved.
          */
-        put_the_log_away("step 1's first line: the flush channel's own test (R27)");
+        put_the_log_away("step 1's first line: the flush channel's own test (R28b: the kernel generation line)");
         for (step = 1; step <= last_step; step++) {
                 if (skip_steps & 1u << step) {
                         continue;

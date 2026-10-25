@@ -1,0 +1,648 @@
+name: R28b · SpringBoard 一键流水线（boot-only · R13 全量小卷直取）
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_repo:
+        description: "hackios 内核树 fork（含 xnu/ + tools/r28-flash-build.sh）"
+        required: true
+        default: "Gsjsjzhznsz/hackios-xnu-kernel"
+      userland_repo:
+        description: "hackios userland 树 fork"
+        required: true
+        default: "Gsjsjzhznsz/hackios-xnu-userland"
+      release_tag:
+        description: "Release tag（直链的一部分）"
+        required: true
+        default: "r28b-springboard"
+      flashboot_url:
+        description: "启动卷 md0 直链（R13 全量字节，真机验证过）"
+        required: false
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r13-springboard/raphael-r13-flashboot.apfs"
+      root_url:
+        description: "小卷 md1（= /redwood = 系统根！）直链（R13 全量字节）"
+        required: false
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r13-springboard/r13-boot-volume-root.apfs"
+permissions:
+  contents: write
+concurrency:
+  group: r28b-springboard
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 200
+    env:
+      REL: ${{ github.workspace }}/release
+      THEOS: /home/runner/theos     # (literal: GitHub Actions' env: block expands nothing)
+      CCACHE_DIR: ${{ github.workspace }}/hackios/.ccache
+    steps:
+      # ---------------------------------------------------------------
+      - name: "①/⑥ 磁盘准备与依赖（内核构建工具链 + 打包工具）"
+        run: |
+          set -eu
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+                       /usr/local/share/boost /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential python3-dev clang lld ccache \
+                       flex bison m4 perl python3 autoconf automake libtinfo6 xz-utils uuid-dev 7zip >/dev/null
+          command -v clang && command -v ccache && command -v 7z
+          # dsymutil：Ubuntu 的 apt clang 不往 /usr/bin 放它（R11 run 39973048286 的教训）
+          DS=$(command -v dsymutil || clang --print-prog-name=dsymutil 2>/dev/null || true)
+          [ -x "$DS" ] || DS=$(ls /usr/lib/llvm-*/bin/dsymutil 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$DS" ] && [ -x "$DS" ]; then
+            sudo ln -sf "$DS" /usr/bin/dsymutil
+          else
+            printf '#!/bin/sh\nexit 0\n' | sudo tee /usr/bin/dsymutil >/dev/null && sudo chmod +x /usr/bin/dsymutil
+          fi
+          mkdir -p "$REL"
+          df -h /
+
+      # ---------------------------------------------------------------
+      - name: "②/⑥ 取树（kernel fork + userland fork）"
+        run: |
+          set -eu
+          git clone --depth 1 "https://github.com/${{ inputs.kernel_repo }}.git" hackios
+          cd hackios
+          if ! USERLAND_URL="https://github.com/${{ inputs.userland_repo }}.git" common/setup.sh; then
+            echo "::warning::userland fork 拉取失败，回退上游 oosexgang/hackios-xnu-userland"
+            rm -rf .userland.git
+            USERLAND_URL="https://github.com/oosexgang/hackios-xnu-userland.git" common/setup.sh
+          fi
+          echo "→ raphael 启动链与 R28b 打包器（含原厂签名 zap 固件与置换锚件）："
+          ls -lh prebuilt/raphael/ tools/r28b-flash-build.sh tools/r28b-kernel-id.py fw-gpu-raphael/
+          git log -1 --format='→ kernel 树 @ %h %s'
+
+      # ---------------------------------------------------------------
+      - name: "②b/⑥ 编译门禁（loader：编译 + 特征串全验，内核构建前快速失败）"
+        run: |
+          set -eu
+          cd hackios
+          bash xnuloader/build.sh
+          python3 - <<'PY'
+          d = open('xnuloader/loader.efi', 'rb').read()
+          for feat in (b'oem gic', b'oem sgi', b'oem peek', b'NXSB at +32',
+                     b'as the firmware left it', b'never showed up as pending', b'oem gicset',
+                     b'oem gicgroup', b'group repair', b'pre-arm before CPU_ON',
+                     b'at the hung verdict',
+                     b'oem irqtest', b'DELIVERS as a Group 1 NS IRQ', b'R10 branch',
+                     b'the readback reads 0',
+                     b'R10 clean screen round', b'screen cleared for the handoff',
+                     b'oem logdump', b'no logdump partition',
+                     b'cores for the kernel, in the order it takes them',
+                     b'oem keep-logdump', b"the previous run's log is kept",
+                     b'asked for a flush', b'oem cmdline-append',
+                     b'XNULOADER v6',
+                     b'R28 cmdline: the extras riding this boot',
+                     b'== XNU FLUSH', b'the 2-second note',
+                     b'stop and arm first: oem keep-logdump'):
+              assert feat in d, f'loader.efi 缺特征串 {feat!r}'
+          assert b'debug=0x8' not in d, 'loader.efi 仍带 debug=0x8'
+          print(f'✓ R28 loader v6（logdump 取回修复 + 全量 2 秒注 + flush 头 + keep 警告 + cmdline 全量入档）{len(d):,} B')
+          PY
+
+      # ---------------------------------------------------------------
+      # 缓存三连：theos / xnu-deps / ccache（键迁 r25-，ccache 最鲜腿 = r24b-；r16-ccache- 让位保 10 条上限。卷缓存回退链从 r23- 起，绝不挂 r24-/r24b-——那里面是换过血的卷）
+      - name: "②c/⑥ 缓存：theos（工具链 + iPhoneOS16.5.sdk）"
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/theos
+          key: r25-theos-v1
+          restore-keys: |
+            r23-theos-v1
+            r22-theos-v1
+            r20-theos-v1
+            r19-theos-v1
+            r18-theos-v1
+            r17-theos-v1
+            r16-theos-v1
+            r15-theos-v1
+            r14-theos-v1
+      - name: "②d/⑥ 缓存：xnu-deps（Apple 开源件 + host 工具 + SDK 链接树）"
+        uses: actions/cache@v4
+        with:
+          path: hackios/xnu-deps
+          key: r25-xnu-deps-v1
+          restore-keys: |
+            r23-xnu-deps-v1
+            r22-xnu-deps-v1
+            r20-xnu-deps-v1
+            r19-xnu-deps-v1
+            r18-xnu-deps-v1
+            r17-xnu-deps-v1
+            r16-xnu-deps-v1
+            r15-xnu-deps-v1
+            r14-xnu-deps-v1
+      # R28b identity-audit round: ccache deliberately WITHOUT restore-keys.
+      # The kernel tree is created fresh every run anyway (xnu/apply.sh pins the
+      # base tag and refuses an existing dir); with an empty ccache every .o this
+      # round compiles from THIS commit's source.  The "stale .o / cached kernel
+      # payload" charge is answered by construction; the cache is still SAVED
+      # under r28b- for the rounds after this one.
+      - name: "②e/⑥ ccache（R28b 特例：clean build——零回填，只存不用）"
+        uses: actions/cache@v4
+        with:
+          path: hackios/.ccache
+          key: r28b-ccache-${{ github.run_id }}
+
+      # ---------------------------------------------------------------
+      - name: "③/⑥ 内核源码构建（theos + xnu/apply.sh + xnu-deps + ccache + make）"
+        run: |
+          set -eu
+          if [ ! -x "$THEOS/toolchain/linux/iphone/bin/ld64" ]; then
+            # 缓存可能带来残缺树（run 40059592397：r13-theos-v1 只有 158MB、无 toolchain）——
+            # git clone 不进非空目录，先清场再取
+            rm -rf "$THEOS"
+            git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
+            mkdir -p "$THEOS/toolchain"
+            curl -sL https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-x86_64.tar.xz | tar -xJ -C "$THEOS/toolchain/"
+          fi
+          "$THEOS/toolchain/linux/iphone/bin/ld64" --version || true
+          if [ ! -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include" ]; then
+            rm -rf "$THEOS/sdks/iPhoneOS16.5.sdk" /tmp/theos-sdks
+            git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/theos-sdks
+            git -C /tmp/theos-sdks sparse-checkout set iPhoneOS16.5.sdk
+            mkdir -p "$THEOS/sdks"
+            mv /tmp/theos-sdks/iPhoneOS16.5.sdk "$THEOS/sdks/"
+            rm -rf /tmp/theos-sdks
+          fi
+          test -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include" || { echo "::error::theos/sdks 的 iPhoneOS16.5.sdk 就位失败"; exit 1; }
+          df -h /
+          cd hackios
+          xnu/apply.sh
+          bash xnu-deps/setup.sh || { echo "::error::setup.sh 失败——exporthdrs.log 尾部："; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
+          export XNU_CCACHE=1 CCACHE_COMPILERCHECK=content
+          ccache -C >/dev/null 2>&1 || true          # R28b: 清仓（belt and suspenders——本来就是空仓）
+          ccache -M 2G >/dev/null 2>&1 || true
+          echo "→ R28b clean build：ccache 零回填空仓起跑，本轮每个对象都从本轮源码编译"
+          echo "→ ccache 起步统计（应全零）："; ccache -s 2>/dev/null | head -8 || true
+          ./xnu-build.sh -j4 -k || echo "（make 退出码 $?——上游文档：链接后的检查，内核若已产出即成功）"
+          K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
+          ls -la "$K" || { echo "::error::内核没有产出——exporthdrs.log 与 make 日志尾部："; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
+          echo "→ ccache 收官统计："; ccache -s 2>/dev/null | head -8 || true
+          python3 - "$K" <<'PY'
+          import sys
+          d = open(sys.argv[1], 'rb').read()
+          for marker, what in ((b'\x9f\x4e\x00\x71', 'cmp w20,#0x13（门铃 19 分发）'),
+                               (b'\x08\x01\xa0\x52', 'movz w8,#0x8,lsl#16（门铃 19 使能）'),
+                               (b'RAPHAEL TOUCH', '触摸驱动'),
+                               (b'buttons: step 1', '按键驱动'),
+                               (b'a640_gmu.bin', 'GPU 驱动（a640 固件名）'),
+                               (b'a640_zap.mbn', 'GPU 驱动（zap mbn）'),
+                               (b'the panel dimmed to', 'fbdim 调光'),
+                               (b'going on with the configured rates', 'R12 测量降级（adreno step5）'),
+                               (b'going with the ID registers', 'R13 SMMU 修复（IDR 优先）'),
+                               (b'was not started: the firmware answers', 'PSCI SMP 起核路径'),
+                               (b"this firmware's verdict of started", 'R14 GMU 判据分支'),
+                               (b"the power-on block's pull-ups", 'R14 PON 拉电阻回读'),
+                               (b"'s status byte changed to", 'R14 按键原始字节见证'),
+                               (b"the two pages the GMU's own code asks for", 'R15 GMU scratch 两页'),
+                               (b'cb tlbiall', 'R15 上下文银行全量 TLB 清洗'),
+                               (b'a context bank nobody used before', 'R16 处女银行（GMU 路径）'),
+                               (b'trying context bank', 'R16 银行候选（GMU 路径）'),
+                               (b'tlbiallnsnh', 'R16 全局 TLB 失效'),
+                               (b'the stream the bank names for it', 'R16 故障流 ID 取证'),
+                               (b'what our own tables say for', 'R16 页表 walk 转储'),
+                               (b'arrived late', 'R16 迟到答案'),
+                               (b'make the SMMU forget every translation again', 'R16 msg30 前再清洗'),
+                               (b'survivable, cleared, the wait goes on', 'R17 可活故障容忍'),
+                               (b'while the GMU was deciding', 'R17 等待期故障轮询'),
+                               (b'has stopped answering', 'R17 假失败判据修复'),
+                               (b'with a bus error', 'R17 致命故障分类'),
+                               (b'the patience was not wasted', 'R17 答案耗时标定'),
+                               (b'while the 3D core was powered', 'R17 OOB 循环故障轮询'),
+                               (b'the bank is programmed and ON before the stream table is touched', 'R19 先开后表的参考顺序（保留）'),
+                               (b"the core's second stream (1) through the same context", 'R19 二流绑定（=1 实验分支在场）'),
+                               (b"raphael's dt gives the gfx streams the mask 0x401", 'R21 本机 DT 形态判词'),
+                               (b"the second stream (1) under entry 0's own wing", 'R21 二流默认罩住'),
+                               (b"raphael's TrustZone took the processor with it", 'R21 判词：give-up 不再默认发'),
+                               (b"the give-up call is not sent by default", 'R21 通道先行'),
+                               (b"no zap shader can be asked for", 'R21 通道暗门判词'),
+                               (b"the whole door is dark", 'R21 整门皆暗'),
+                               (b"adreno_tzunload", 'R21 give-up 实验开关'),
+                               (b"with the channel proven", 'R21 通道验证后补发'),
+                               (b'whether it "supports" the GPU\'s image', 'R21 supports 诊断'),
+                               (b"the same of the audio's, for comparison", 'R21 audio 对照'),
+                               (b"the metadata is built as", 'R22 元数据形态宣告'),
+                               (b"the whole file, every p_offset at the real bytes (Linux's)", 'R22 全文件形态'),
+                               (b"the call was preempted %d time%s before it was answered", 'R22 被抢占计数'),
+                               (b"a one-page metadata the way it is asked", 'R22 单页元数据判词'),
+                               (b"THE SIGNATURE CHAIN SAYS", 'R23 签名链判词'),
+                               (b'the hashes carry "', 'R23 哈希段明文名字'),
+                               (b"A TEST KEY (Qualcomm SecTools", 'R23 测试签名判词（防旧件回流）'),
+                               (b"one attempt, the form both working callers use", 'R23 单一规范尝试'),
+                               (b"the R22 matrix proved the code does not move", 'R23 矩阵结论入档'),
+                               (b"the control: a page of zeroes as the GPU's metadata", 'R23 零页对照宣告'),
+                               (b"control, the GPU's id over zeroes", 'R23 GPU 零页对照'),
+                               (b"control, the audio's id over the same zeroes", 'R23 audio 零页对照'),
+                               (b"THE SAME CODE: the refusal comes BEFORE the image", 'R23 同码判词（调用级）'),
+                               (b"A DIFFERENT ANSWER: TrustZone does read the buffer", 'R23 换码判词（镜像级）'),
+                               (b"the place is a fresh page of ours", 'R23 动态页落位'),
+                               (b"dt's pil_gpu_region is referenced by nothing", 'R23 孤儿区判词'),
+                               (b"adreno_zapmem", 'R23 落位覆盖开关'),
+                               (b"no memory for the zap image", 'R23 落位分配判词'),
+                               (b"Xiaomi Attestation CA", 'R25 小米量产链探针'),
+                               (b"Xiaomi Root CA", 'R25 小米根链探针'),
+                               (b"THE PHONE'S OWN PRODUCTION CHAIN", 'R25 量产链判词'),
+                               (b"no test-key marks and no Xiaomi marks", 'R25 三岔兜底判词'),
+                               (b'R28b: the kernel generation line', 'R28b 内核代数戳（驱动首行 + step 1 首次 flush）'),
+                               (b'R28b: the two-parameter baseline', 'R28b 两参基线状态行（step 19 三开关自报）'),
+                               (b'E2: the size sweep', 'R25 E2 尺寸扫描'),
+                               (b'E2 control: the hash table corrupted', 'R25 E2 损坏哈希表对照'),
+                               (b'E3: the argument word sweep', 'R25 E3 参数字扫描'),
+                               (b'E4: the id sweep', 'R25 E4 id 扫描'),
+                               (b'E5: the same call again', 'R25 E5 状态测试'),
+                               (b'E5: after the give-up', 'R25 E5 give-up 后再发'),
+                               (b'secboot and rollback fuses', 'R25 E7 qfprom 窗口全查'),
+                               (b"R28: the shape sweeps, retired behind adreno_shape_sweep=1", 'R28 形状扫描门控宣告（默认离场）'),
+                               (b"R28: retired behind adreno_qfprom=1", 'R28 熔丝扫描门控宣告（默认离场）'),
+                               (b"XNULIVE3", 'R26 内核三页结构（flush 通道）'),
+                               (b"adreno_e1_mode", 'R26 E1 形态开关'),
+                               (b"the empty probe", 'R26 空探针'),
+                               (b"step 19 entered", 'R26 step 19 入口宣告'),
+                               (b"goes to the storage first", 'R26 落盘守卫判词'),
+                               (b"did not put the log away in time", 'R26 flush 超时判词'),
+                               (b"R26 E1, adreno_e1_mode=3", 'R26 E1 三参形态（受审）'),
+                               (b"R26 E1, adreno_e1_mode=2", 'R26 E1 两参形态（对照）'),
+                               (b"step 1's first line: the flush channel's own test", 'R27 flush 通道自测（step 1 首行）'),
+                               (b"step 20 entered: the 3D core's registers are next", 'R27 step 20 入口守卫'),
+                               (b"step 21 entered: out of secure mode", 'R27 step 21 入口守卫'),
+                               (b"step 22 entered: the first frame is next", 'R27 step 22 入口守卫'),
+                               (b"the steps are over (R27)", 'R27 探针结束守卫'),
+                               (b"R28b: the two-parameter baseline", 'R28b 两参基线宣告（三开关状态行）'),
+                               (b"adreno_shape_sweep", 'R28 形状扫描退役开关'),
+                               (b"R28: the shape sweeps, retired behind adreno_shape_sweep=1", 'R28 形状扫描改判措辞'),
+                               (b"R28: retired behind adreno_qfprom=1", 'R28 熔丝扫描改判措辞')):
+              assert marker in d, f'源码构建的内核缺 {what}'
+          for gone, what in ((b'of the stream table does not keep what is written', 'R18 条目 0 拒写取证'),
+                             (b'of the stream table instead', 'R18 换条目路由'),
+                             (b'the free entries are offered one by one', 'R18 条目候选搜索'),
+                             (b'refused every entry', 'R18 全条目拒绝判词'),
+                             (b'the hypervisor drops SMR/S2CR', 'R19 看守者判词（R21 证伪并除名）'),
+                             (b'TAKEN TO MEAN THAT IT KEEPS A ZAP SHADER', 'R21 除名：拒绝即失败'),
+                             (b'attempt %u of 3', 'R22 三连矩阵（R23 除名）'),
+                             (b"R21's packed metadata, a call that may be preempted", 'R22 尝试2（R23 除名）'),
+                             (b'the whole .mbn as the metadata, a call "at once"', 'R22 尝试3（R23 除名）'),
+                             (b'the give-up call takes the refusal back', 'R22 尝试间清理（R23 除名）'),
+                             (b'attempt %u refused: the call returns', 'R22 逐试拒绝码（R23 除名）'),
+                             (b'the next attempt goes on all the same', 'R22 矩阵判读（R23 除名）'),
+                             (b'three attempts -- the whole .mbn as the metadata', 'R22 矩阵宣告（R23 除名）'),
+                             (b"no test-key marks -- the chain reads like the phone's own", 'R23 两岔兜底（R25 三岔除名）'),
+                             (b"read the secboot and rollback fuses (E7: the whole qfprom windows", 'R25b：step 2 的 E7 整扫退役（早死轮摘除）'),
+                             (b"R25 E1: Linux's shape", 'R26：E1 文本改由 adreno_e1_mode 两态承载（R25 措辞退役）'),
+                             (b"R25: the shape sweeps", 'R28：形状扫描总宣告退役（改判定罪，adreno_shape_sweep 开关门控）'),
+                             (b"R25b: E7 moved to the end of the refusal path", 'R28：熔丝扫描在案措辞退役（adreno_qfprom 开关门控）'),
+                             (b'R28: the two-parameter baseline', 'R28b：R28 旧基线措辞退役（源码确实前移的机器证明）')):
+              assert gone not in d, f'已退役标记未删净：{what}（{gone!r} 仍在二进制里）'
+          print(f'✓ 源码构建的内核带齐 R11-R28b 全部标记、退役标记已删净（{len(d):,} B）')
+          import hashlib
+          ksha = hashlib.sha256(d).hexdigest()
+          print(f'✓ 本轮源码构建内核 sha256 = {ksha}')
+          print('   已知历史值：R27/R27b = 372f0b0af38d84f7…d9c，R28 = 9e3dd447d1e92158b…7b3；')
+          print('   R28b 源码已改词（代数戳 + baseline），必须是其中任何一个都不是的新值')
+          for label, needle in (('R28b 代数戳（want 2）', b'R28b: the kernel generation line'),
+                                ('R28b baseline（want 1）', b'R28b: the two-parameter baseline'),
+                                ('R28  baseline（want 0）', b'R28: the two-parameter baseline'),
+                                ('R25  sweeps（want 0）', b'R25: the shape sweeps'),
+                                ('R25b E7 announce（want 0）', b'R25b: E7 moved to the end of the refusal path')):
+                  print(f'    grep {label}: {d.count(needle)}')
+          assert ksha not in ('372f0b0af38d84f7d343a322f21c41156e6675581e08964b0ac15378be447d9c',
+                              '9e3dd447d1e92158b9e7159cf3508ca3414e6366d066373210ed746f590667b3'), '新源码必须给出新内核 sha256'
+          PY
+          df -h /
+
+      # ---------------------------------------------------------------
+      # ④ 双卷获取（R15 起的纪律——R14 事故的封堵）：
+      #   顺序 = 缓存(.volumes) → R13 release 全量字节 → 都没有则【失败即止】。
+      #   八道内容门禁（缺一 = 构建失败，不发空壳卷）。
+      - name: "②f/⑥ 缓存：双卷（root.apfs + flashboot.apfs，验证通过才入缓存）"
+        uses: actions/cache@v4
+        with:
+          path: hackios/userland/.volumes
+          key: r25-volumes-v1
+          restore-keys: |
+            r23-volumes-v1
+            r22-volumes-v1
+            r20-volumes-v1
+            r19-volumes-v1
+            r18-volumes-v1
+            r17-volumes-v1
+            r16-volumes-v1
+            r15-volumes-v1
+            r14-volumes-v1
+
+      - name: "④/⑥ 双卷就位 + 八道内容门禁（缺一即停，绝不发空壳卷）"
+        run: |
+          set -eu
+          cd hackios
+          mkdir -p userland/.volumes
+          python3 - "${{ inputs.root_url }}" "${{ inputs.flashboot_url }}" <<'PY'
+          import hashlib, os, subprocess, sys
+
+          root, flash = 'userland/root.apfs', 'userland/flashboot.apfs'
+          vol_root, vol_flash = 'userland/.volumes/root.apfs', 'userland/.volumes/flashboot.apfs'
+
+          def nxsb(path):
+              return open(path, 'rb').read(36)[32:36] == b'NXSB'
+
+          def listed(path, needle):
+              out = subprocess.run(['7z', 'l', path], capture_output=True, text=True)
+              return needle in out.stdout
+
+          ROOT_NEEDS = ('fw/a640_gmu.bin', 'lib/libredwood.dylib',
+                        'LaunchDaemons/com.apple.SpringBoard.plist',
+                        'etc/var.skel', 'etc/inject.conf', 'etc/rc',
+                        'xpc/extensions.plist', 'bin/child', 'sbin/init')
+          FLASH_NEEDS = ('sbin/launchd',)
+
+          def gates(rootp, flashp, strict):
+              ok = nxsb(rootp) and nxsb(flashp)
+              why = []
+              for f, needs, what in ((rootp, ROOT_NEEDS, 'root.apfs (md1 = /redwood = 系统根)'),
+                                     (flashp, FLASH_NEEDS, 'flashboot.apfs (md0 = 启动卷)')):
+                  for n in needs:
+                      if not listed(f, n):
+                          ok = False
+                          why.append(f'{what} 缺 {n}')
+              return ok, why
+
+          got = False
+          # 第一优先：缓存里验证过的双卷
+          if os.path.isfile(vol_root) and os.path.isfile(vol_flash) and os.path.isfile('userland/.volumes/.verified'):
+              ok, why = gates(vol_root, vol_flash, True)
+              if ok:
+                  import shutil
+                  shutil.copyfile(vol_root, root)
+                  shutil.copyfile(vol_flash, flash)
+                  got = True
+                  print('✓ 双卷取自缓存（上轮验证过的同一批字节）')
+              else:
+                  print('::warning::缓存卷校验不过：' + '; '.join(why) + '——转 R13 资产')
+                  for f in (vol_root, vol_flash, 'userland/.volumes/.verified'):
+                      if os.path.isfile(f):
+                          os.remove(f)
+          # 第二优先：R13 release 的全量字节（R13 真机日志就是它的内容清单）
+          if not got:
+              root_url, flash_url = sys.argv[1], sys.argv[2]
+              for url, out in ((root_url, root), (flash_url, flash)):
+                  r = subprocess.run(['curl', '-fL', '--retry', '3', '--retry-delay', '5',
+                                      '--connect-timeout', '30', '-o', out, url])
+                  if r.returncode != 0:
+                      print(f'::error::下载失败 {url}')
+                      sys.exit(1)
+              ok, why = gates(root, flash, True)
+              if not ok:
+                  print('::error::R13 资产双卷未过内容门禁——按 R14 事故纪律，宁可构建失败也不发空壳卷：')
+                  for w in why:
+                      print('::error::  ' + w)
+                  sys.exit(1)
+              import shutil
+              shutil.copyfile(root, vol_root)
+              shutil.copyfile(flash, vol_flash)
+              open('userland/.volumes/.verified', 'w').write('ok')
+              got = True
+              print('✓ 双卷取自 R13 release 全量字节，八道门禁全过，已入缓存')
+          if not got:
+              print('::error::双卷无来源。R15 起不再无 iOS 直造（R14 黑屏事故：骨架 root.apfs 上了 /redwood）——'
+                    '补回 R13 release 资产或恢复 iOS 获取后重跑')
+              sys.exit(1)
+
+          for f, what in ((root, 'md1 /redwood = 系统根'), (flash, 'md0 启动卷')):
+              size = os.path.getsize(f)
+              digest = hashlib.sha256(open(f, 'rb').read()).hexdigest()[:16]
+              print(f'✓ {f} = {what}（{size:,} B, sha256 {digest}…）')
+          # 把 libredwood.dylib 解出来亮个相：内容门禁的实物证据
+          subprocess.run(['rm', '-rf', '/tmp/r25chk'])
+          if subprocess.run(['7z', 'e', root, '-o/tmp/r25chk', 'libredwood.dylib', '-r'],
+                            capture_output=True).returncode == 0:
+              hits = [os.path.join(dp, fn) for dp, _, fns in os.walk('/tmp/r25chk')
+                      for fn in fns if fn == 'libredwood.dylib']
+              if hits:
+                  print(f'✓ 卷内 libredwood.dylib 实物在案（{os.path.getsize(hits[0]):,} B）')
+          PY
+
+      # ---------------------------------------------------------------
+      - name: "④b/⑥ 换血+审计：md1 卷内 fw/a640_zap.mbn → 原厂签名（同长置换）+ 结构自证"
+        run: |
+          set -eu
+          cd hackios
+          python3 - <<'PY'
+          import hashlib, os
+
+          new = open('fw-gpu-raphael/a640_zap.mbn', 'rb').read()
+          old = open('fw-gpu-raphael/a640_zap.mbn.testkey-r13', 'rb').read()
+          assert len(old) == len(new) == 14256, f'同长置换前提破了: old={len(old)} new={len(new)}'
+          assert b'Xiaomi Attestation CA' in new and b'Xiaomi Root CA' in new, '新件不是小米量产链'
+          assert b'Generated Test' not in new, '新件混入测试签名'
+          assert b'Generated Test Attestation CA' in old, '锚件不是测试签名件'
+
+          def swap(path):
+              vol = open(path, 'rb').read()
+              n_old, n_new = vol.count(old), vol.count(new)
+              if n_new and not n_old:
+                  print(f'✓ {path}: 已是原厂签名文件（幂等跳过）')
+                  return
+              assert n_old == 1, f'{path}: 旧件命中 {n_old} 次（要 1 次），拒绝盲换'
+              at = vol.find(old)
+              open(path, 'wb').write(vol[:at] + new + vol[at + len(old):])
+              print(f'✓ {path}: fw/a640_zap.mbn 已置换 @ {at:#x}（同长 {len(new)} B，测试链 → 小米量产链）')
+
+          swap('userland/root.apfs')
+          if os.path.isfile('userland/.volumes/root.apfs'):
+              swap('userland/.volumes/root.apfs')     # 缓存源一起换：下轮 restore 即幂等
+          for p in ('userland/root.apfs', 'userland/.volumes/root.apfs'):
+              if os.path.isfile(p):
+                  chk = open(p, 'rb').read()
+                  assert chk[32:36] == b'NXSB', f'{p}: 置换后 NXSB 破了'
+                  assert chk.count(old) == 0 and chk.count(new) == 1, f'{p}: 置换后验数不过'
+                  print(f'✓ {p}: NXSB 完好、测试链清零、小米链唯一在案（new sha {hashlib.sha256(new).hexdigest()[:16]}…）')
+          PY
+          # R25：结构审计——卷自证（元数据校验和、extent 归属、与 step18/GMU 固件零重叠、
+          # 原厂件就地 sha256）。R25 黑屏取证已证置换机制无损，这道门禁让每一轮构建都机器复证。
+          python3 tools/r24b_volume_audit.py gate userland/root.apfs
+
+      # ---------------------------------------------------------------
+      - name: "⑤/⑥ 打 r28b 双启动镜像（r1 固件 + r2 shim + v6 loader 不变 + 本仓库源码内核 R28b + cpus=8 + 全量小卷 md1）"
+        run: |
+          set -eu
+          cd hackios
+          bash tools/r28b-flash-build.sh .
+          cp userland/raphael-xnu-r28b-flash.img "$REL/"
+          cp userland/raphael-xnu-r28b-gpu-flash.img "$REL/"
+          cp userland/flashboot.apfs "$REL/raphael-r28b-flashboot.apfs"
+          cp userland/root.apfs "$REL/r28b-md1-root.apfs"
+          # R28b 第三证：对打包后的双镜像离线复证（与 ③ 源码构建、⑤ 打包内打印三方对齐）
+          python3 tools/r28b-kernel-id.py \
+                  "$REL/raphael-xnu-r28b-flash.img" "$REL/raphael-xnu-r28b-gpu-flash.img" | tee r28b-kernel-id.txt
+          grep -q "VERDICT: the kernel entry is R28b" r28b-kernel-id.txt || { echo "::error::离线复证未判 R28b"; exit 1; }
+          grep -c "VERDICT: the kernel entry is R28b" r28b-kernel-id.txt | grep -qx 2 || { echo "::error::双镜像必须双双判 R28b"; exit 1; }
+          ls -lh "$REL"
+          df -h .
+
+      # ---------------------------------------------------------------
+      - name: "⑥/⑥ SHA256 + README + 发布 Release（只有 boot 资产，几十 MB）"
+        run: |
+          set -eu
+          cd "$REL"
+          : > SHA256SUMS
+          for f in raphael-xnu-r28b-flash.img raphael-xnu-r28b-gpu-flash.img \
+                   raphael-r28b-flashboot.apfs r28b-md1-root.apfs; do
+            sha256sum "$f" >> SHA256SUMS
+          done
+          REPO="${{ github.repository }}"
+          TAG="${{ inputs.release_tag }}"
+          cat > README.txt <<EOF
+          ============================================================
+           R28b · 纯血 hackios SpringBoard 交付包（raphael / K20 Pro）
+           —— 身份审计轮：R28 战报"内核还是 R27"三假设全部物证排除，
+              本轮把内核身份做成"设备上可证、构建日志可查、离线可复验"
+          ============================================================
+          ⚠️⚠️⚠️ 启动卷只 stage 一个文件：raphael-r28b-flashboot.apfs ⚠️⚠️⚠️
+            （R14 事故纪律不变：md1 备份不要 stage，flash.img 已内嵌全量小卷）
+          主镜像   : raphael-xnu-r28b-flash.img（触摸 + 按键 + 八核；不跑 GPU 步骤）
+          GPU 镜像 : raphael-xnu-r28b-gpu-flash.img（同上 + gpu=1）
+          启动卷   : raphael-r28b-flashboot.apfs（stage0 = md0；R13 全量字节）
+          小卷备份 : r28b-md1-root.apfs（md1 同字节备份，勿 stage）
+
+          【R28 战报的裁决（本地取证，三环对齐）】
+            1. R28 GPU 镜像（release 实际下载件）kernel 条目 sha256 =
+               9e3dd447d1e92158b9e7159cf3508ca3414e6366d066373210ed746f590667b3，
+               与 CI 构建日志 "kernel sha 9e3dd447d1e92158 (SOURCE-BUILT r28)"
+               一致 —— release 资产 = 门禁文件 = 源码构建件，链条无断点。
+            2. 该 kernel 条目含 "R28: the two-parameter baseline"（=1），不含
+               "R25: the shape sweeps"（=0）、"R25b: E7 moved to the end of the
+               refusal path"（=0）。内核不可能打印自己二进制里不存在的字符串
+               —— 战报 718/811 两行（R25/R25b 措辞）物理上不可能出自 R28 内核。
+            3. R27 镜像 kernel 条目 sha256 = 372f0b0a…（与 R28 不同，非复用）；
+               A 段装载器自报 v6（v6 只存在于 R28 镜像，装载器与内核同一
+               payload）。结论：B/D/E 段 = R27b 轮在 logdump 分区的残留
+               （flush 头 L 字节边界之后的旧记录尾巴）。
+               三项假设（主/GPU 构建分叉、补丁只改主路径、CI 缓存复用）
+               全部排除：CI 每轮 fresh clone + apply.sh 固定基线 + ③/⑤ 双重
+               内容门禁。
+            复验命令（对 R27/R28/R28b 任何镜像都行）：
+               python3 tools/r28b-kernel-id.py <image>
+
+          【R28b 本轮改动（实验逻辑零变化）】
+            · 内核在日志最顶上盖代数戳：驱动第一行 + step 1 首次 flush 都带
+              "R28b: the kernel generation line" —— 本内核写的每条记录开头
+              自报家门；旧轮残留自报 v5 装载器 / R25/R26/R27 措辞，一眼可分。
+            · step 19 三开关行改词 "R28b: the two-parameter baseline"；
+              R28 旧措辞进退役表（源码前移的机器证明，门禁断言）。
+            · clean build：本轮 ccache 零回填（空仓起跑），每个 .o 都从
+              本轮源码编译；构建日志打印内核 sha256 + 判词串 grep 计数，
+              并断言新 sha 不等于 R27（372f0b0a…）/ R28（9e3dd447…）。
+            · 装载器 v6 逐字节不变（其 "R28 cmdline:" 串是 v6 固定措辞；
+              内核代数看 "R28b:" 行）。
+            · 卷与 R24b..R28 逐字节相同，md1 零新置换。
+
+          【本轮判读树（GPU 镜像 + keep-logdump 流程）】
+            0. 四步开机后、oem run 之前先武装：
+                 fastboot oem keep-logdump
+            1. 复位掉线后取回临终日志：
+                 fastboot oem logdump && fastboot get_staged r28b-logdump.bin
+               ⚠️ 判词只看第一条记录：文件开头是 flush 头
+                 "== XNU FLUSH #N at T s (why); L bytes follow =="
+                 头行 + 其后 L 字节 = 最后一次写入（本轮）；L 之后的所有字节
+                 = 更早写入的残余（旧轮），只算背景，绝不入判词。
+            2. 代数 grep（残留杀手，先跑这两个再读任何内容）：
+                 grep -ac "R28b: the kernel" r28b-logdump.bin   # 本轮内核记录，应 ≥1
+                 grep -ac "XNULOADER v5"     r28b-logdump.bin   # 旧轮残留的存在证明
+               本轮新记录的 step 1 首行 =
+                 "step 1's first line: the flush channel's own test
+                  (R28b: the kernel generation line)"
+            3. 死亡窗口判读（只看第一条记录的最后几行）：
+               · 无 step 1 首行 → 内核没跑到 adreno 探针（装载器侧问题）
+               · 有 step 1..18 → 按最后完整行定步
+               · step 19 的 "R28b: the two-parameter baseline" 行三开关自报
+                 （e1_mode=2 / shape_sweep=0 / qfprom=0）→ cmdline 污染一行定案
+               · E1 armed → refused（预期 -3145797）→ 零页对照 → supports/
+                 give-up → "step 19: FAILED"（拒绝后阶梯即止，step 20/21/22
+                 不再尝试）→ "the steps are over (R27)"
+            4. t=4s 掉线的两义性（本轮新判据，flush 头自带答案）：
+               · flush 头的 at T s 止步 ~2-4s → 装载器也死了 = 真复位；
+               · 2 秒注一路写到 ~60s → 系统活着，只是 USB 掉了（等 60 秒
+                 看桌面即可分辨，不必重刷）。
+            5. 三参对照/退役开关（不变）：
+                 fastboot oem cmdline-append adreno_e1_mode=3
+                 fastboot oem cmdline-append adreno_shape_sweep=1
+                 fastboot oem cmdline-append adreno_qfprom=1
+                 fastboot oem cmdline && fastboot oem log   # 全量状态在日志里
+            6. 离线复验任何镜像：
+                 python3 tools/r28b-kernel-id.py <image>
+
+          【手机端（Termux / bootloader）】
+            fastboot boot  raphael-xnu-r28b-flash.img
+            fastboot oem  ramdisk
+            fastboot stage raphael-r28b-flashboot.apfs
+            fastboot oem  run         # 黑屏 → 桌面；八核自动上；+5s 触摸
+            # GPU 实验（第二次开机）：
+            fastboot boot  raphael-xnu-r28b-gpu-flash.img
+            fastboot oem  ramdisk
+            fastboot stage raphael-r28b-flashboot.apfs
+            fastboot oem  keep-logdump        # (oem run 之前；复位取证的关键一步)
+            fastboot oem  run
+          直链：
+            https://github.com/${REPO}/releases/download/${TAG}/raphael-xnu-r28b-flash.img
+            https://github.com/${REPO}/releases/download/${TAG}/raphael-xnu-r28b-gpu-flash.img
+            https://github.com/${REPO}/releases/download/${TAG}/raphael-r28b-flashboot.apfs
+            https://github.com/${REPO}/releases/download/${TAG}/SHA256SUMS
+          ⚠️ userdata 上的 iOS 卷是唯一存货：绝不要让 MIUI 开机
+             （Android 会重格回 f2fs，iOS 卷即毁）。
+          ⚠️ 每次开机都要重复 boot/oem ramdisk/stage/oem run 四步
+             （启动卷住 RAM 不落盘，"不写手机闪存"设计的一部分）。
+          ⚠️ 含 Apple 版权内容，仅个人研究；下载完成后请尽快删除本 Release。
+          EOF
+          echo "→ SHA256SUMS："
+          cat SHA256SUMS
+
+      - name: "⑥b/⑥ 发布 Release（直链交付，r28b-springboard）"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: "R28b · 纯血 hackios SpringBoard · 身份审计轮（代数戳 + clean build + 三重可证）"
+          body: |
+            raphael (K20 Pro) R28b 交付包：**身份审计轮**。
+
+            R28 GPU 战报指控"运行的内核是 R27"。本地取证三环对齐全部排除：
+            R28 GPU 镜像 kernel 条目 sha256 与 CI 构建日志一致（9e3dd447d1e92158b…，
+            release 资产 = 门禁文件 = 源码构建件）；R28 基线标记在案、R25/R25b
+            退役串为零（内核打不出二进制里没有的串——战报 718/811 行是 R27b
+            轮的分区残留，位于 flush 头 L 字节边界之后）；R27 kernel 条目
+            sha256 = 372f0b0a… 与 R28 不同。装载器 v6 自报证明 R28 镜像确实
+            启动（装载器与内核同一 payload）。
+
+            R28b 把身份做成三重可证：①内核日志最顶盖代数戳（"R28b: the
+            kernel generation line"，驱动首行 + step 1 首次 flush，本轮写的
+            每条记录自报家门）；②step 19 三开关行改词 "R28b: the two-parameter
+            baseline"（R28 旧词进退役表，门禁断言）；③clean build（ccache
+            零回填）+ 构建期打印 kernel sha256 与判词串 grep 计数 + 断言新
+            sha 不等于 R27/R28 + tools/r28b-kernel-id.py 离线复验任何镜像。
+
+            实验逻辑与 R28 零变化（两参基线默认 / 形状·熔丝扫描退役）；
+            装载器 v6 逐字节不变；卷零置换。
+
+            判读：先跑代数 grep（"R28b: the kernel" / "XNULOADER v5"），
+            判词只看 flush 头 + L 字节内的第一条记录；t=4s 掉线看 flush 头
+            at T s —— 止步 2-4s = 真复位，写到 60s = 系统活着只是 USB 掉线。
+            判读树见 README.txt。
+
+            ⚠️ 含 Apple 版权内容，仅供个人研究；下载完成后请尽快删除本 Release。
+          fail_on_unmatched_files: true
+          files: |
+            release/raphael-xnu-r28b-flash.img
+            release/raphael-xnu-r28b-gpu-flash.img
+            release/raphael-r28b-flashboot.apfs
+            release/r28b-md1-root.apfs
+            release/SHA256SUMS
+            release/README.txt
+
+      - name: "直链汇总（跑完看这里，复制即用）"
+        run: |
+          set -eu
+          echo "════════════ 全部下载直链 ════════════"
+          for f in "$REL"/raphael-xnu-r28b-flash.img "$REL"/raphael-xnu-r28b-gpu-flash.img \
+                   "$REL"/raphael-r28b-flashboot.apfs "$REL"/r28b-md1-root.apfs \
+                   "$REL"/SHA256SUMS "$REL"/README.txt; do
+            echo "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/$(basename "$f")"
+          done
