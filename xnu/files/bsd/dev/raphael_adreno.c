@@ -1700,6 +1700,9 @@ space_off(struct gpu_space *space, uint32_t match)
                                                          * write, and a number -- Linux's pas_init_image(pas, meta, size) */
 #define SCM_INTERRUPTED         1                       /* a call that was preempted says so, and is made again so */
 #define PAS_GPU                 13
+#define PAS_ADSP                1                       /* the audio DSP: the images table's "audio". Android's own PIL
+                                                         * hands its .mdt to TrustZone at every one of this phone's boots
+                                                         * (adsp-pil, pas id 1) -- R28g's T2 control rides on that id */
 
 /*
  * R21: which form the calls take. Linux asks first with 64-bit arguments and, if TrustZone
@@ -3302,6 +3305,169 @@ zap_unload(void)
                answer == 0;
 }
 
+/*
+ * R28g, the T2 control (the raph_t2 ledger's plan, answered here). The zap refusal
+ * survived R24's production-chain file, and T1 (the official-package round) proved the
+ * file the volume carries IS the phone's own stock one -- the package's
+ * /firmware/a640_zap.elf, sha for sha, and the package IS this phone's firmware set
+ * (hyp/tz/devcfg/storsec byte for byte) -- so what the r28d log leaves open is the one
+ * variable it never moved: another of this phone's own true firmware images over the
+ * very same channel.  This is that control: the adsp's own .mdt (the audio DSP's
+ * metadata image, the one Android's PIL hands TrustZone at every boot, pas id 1),
+ * read the same way from fw/ of the small image, described the same way, put in a page
+ * of ours the same way, and sent over the same preemptible two-parameter call the zap
+ * attempt itself uses.  Exactly two things differ: the file, and the id.
+ *
+ * The verdict is the round's whole purpose (the tree in the workflow's README):
+ *   0            the chain is sound; the zap's refusal is zap-specific -> T3, the
+ *                secapp's cmd 0x49 and why it refuses its own phone's stock zap;
+ *   -3145797     the same wall as the zap's own code: the rejection is path- or
+ *                policy-wide -> the hypervisor's wrapper and the secapp's session;
+ *   -3145738     the buffer never reached TrustZone's parser: the metadata layout or
+ *                the memory handle, not the channel (the r28d log's zero pages
+ *                answered this over both ids already);
+ *   anything else new evidence, straight into T3's collection.
+ * adreno_test_adsp=1 asks for this INSTEAD of the zap attempt: the zap's whole path
+ * (the segment find, the chain verdict, E1, the place, MEM_SETUP, the write, the
+ * authentication, and its refusal diagnostics) is skipped by design, and the step
+ * returns false as any refused step 19 does -- the run and the system go on exactly
+ * as they do every round the zap is refused.
+ */
+static bool
+adsp_pas_test(uint32_t asked)
+{
+        const uint8_t *adsp;
+        uint64_t adsp_size = 0, adsp_phys = 0, answer = ~0ull;
+        vm_offset_t page = 0;
+        uint16_t phentsize = 0;
+        uint32_t segments, phoff, header_bytes = 0, hash_at = 0, hash_bytes = 0;
+        int32_t got;
+
+        announce("R28g: the T2 control -- the adsp's own .mdt (the audio DSP's metadata image, "
+            "pas id 1, the images table's \"audio\") over the very same channel: everything the "
+            "zap attempt has, except the file and the id");
+        adsp = image_file("fw", "adsp.mbn", &adsp_size);
+        if (adsp == NULL) {
+                printf("adreno: %u: no fw/adsp.mbn in the small image: the T2 control cannot run "
+                    "(the round's volume step puts it there); the zap attempt was skipped by design, "
+                    "so the step fails here\n", step);
+                return false;
+        }
+        /* a 32-bit ELF, as the zap's own describe reads it: the table at 28, the entry size
+         * at 42 (a 16-bit field), the count at 44; the hash segment found by its type mark
+         * at 24 of p_flags */
+        memcpy(&phoff, adsp + 28, sizeof(phoff));
+        memcpy(&phentsize, adsp + 42, sizeof(phentsize));
+        memcpy(&segments, adsp + 44, sizeof(segments));
+        if (memcmp(adsp, "\177ELF\1", 5) != 0 || segments < 2 || segments > 32 || phoff != 52 ||
+            phentsize != 32 || adsp_size > PAGE_SIZE) {
+                printf("adreno: %u: that is not such a header (%02x %02x %02x %02x, %u segments, "
+                    "phentsize %u, %llu bytes)\n", step, adsp[0], adsp[1], adsp[2], adsp[3], segments,
+                    phentsize, adsp_size);
+                return false;
+        }
+        memcpy(&header_bytes, adsp + phoff + 16, sizeof(header_bytes));       /* phdr[0].p_filesz: the header pair */
+        for (uint32_t i = 1; i < segments; i++) {
+                uint32_t at = phoff + 32 * i, flags, off, len;
+
+                memcpy(&flags, adsp + at + 24, sizeof(flags));
+                memcpy(&off, adsp + at + 4, sizeof(off));
+                memcpy(&len, adsp + at + 16, sizeof(len));
+                if ((flags & 7u) == 2u || (flags & (7u << 24)) == (2u << 24)) {
+                        hash_at = off;
+                        hash_bytes = len;
+                        break;
+                }
+        }
+        printf("adreno: %u: an ELF of %u segments: the header pair %#x bytes, the hashes %#x at %#x, "
+            "the whole file %llu bytes; the metadata is the whole .mdt, as Linux hands a split "
+            "image's to TrustZone (the .b0x files carry the code; the .mdt is the metadata)\n",
+            step, segments, header_bytes, hash_bytes, hash_at, adsp_size);
+        if (header_bytes == 0 || hash_bytes == 0 || (uint64_t)hash_at + hash_bytes > adsp_size) {
+                printf("adreno: %u: that file does not make a one-page metadata the way it is asked\n", step);
+                return false;
+        }
+        {
+                /* the chain, read the way zap_header reads the zap's: this .mdt keeps its
+                 * certificates between the phdr table and the hashes (not inside them, as
+                 * the zap's does), so the scan runs over the whole file, bounded */
+                bool test_signed = zap_chain_has(adsp, adsp_size, "Generated Test") ||
+                                   zap_chain_has(adsp, adsp_size, "General Use Test Key");
+                bool xiaomi_chain = zap_chain_has(adsp, adsp_size, "Xiaomi Attestation CA") ||
+                                    zap_chain_has(adsp, adsp_size, "Xiaomi Root CA");
+                uint32_t at, run_at = 0, run = 0;
+                unsigned names = 0;
+
+                for (at = 0; at <= adsp_size; at++) {
+                        uint8_t c = at < adsp_size ? adsp[at] : 32;
+
+                        if (c >= 32 && c < 127) {
+                                if (run == 0) {
+                                        run_at = at;
+                                }
+                                run++;
+                                continue;
+                        }
+                        if (run >= 8 && names < 8) {
+                                char word[48];
+
+                                for (uint32_t i = 0; i < run && i < sizeof(word) - 1; i++) {
+                                        word[i] = (char)adsp[run_at + i];
+                                }
+                                word[run < sizeof(word) - 1 ? run : sizeof(word) - 1] = 0;
+                                printf("adreno: %u:   the file carries \"%s\" (at %#x)\n", step, word, run_at);
+                                names++;
+                        }
+                        run = 0;
+                }
+                printf("adreno: %u: THE ADSP'S CHAIN SAYS: %s\n", step, xiaomi_chain ?
+                    "THE PHONE'S OWN PRODUCTION CHAIN (\"Xiaomi Attestation CA\"/\"Xiaomi Root CA\") -- "
+                    "the image Android's own PIL starts through TrustZone at every boot; it has "
+                    "no test-key marks" :
+                    test_signed ? "A TEST KEY -- not this phone's own file; the volume step put "
+                    "the wrong one in" :
+                    "no test-key marks and no Xiaomi marks -- judge by the names printed above");
+        }
+        if (kmem_alloc(kernel_map, &page, PAGE_SIZE, KMA_KOBJECT | KMA_ZERO | KMA_DATA,
+            VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+                printf("adreno: %u: no memory for the adsp's metadata page\n", step);
+                return false;
+        }
+        memcpy((void *)page, adsp, adsp_size);        /* the whole .mdt, every p_offset at the real bytes */
+        to_memory(page, PAGE_SIZE);
+        adsp_phys = kvtophys(page);
+        printf("adreno: %u: T2 armed: smc %#llx, arguments word %#llx, x2 1, x3 %#llx (the metadata "
+            "page), x4 0 (the size stays home, the zap attempt's own shape)\n", step,
+            (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_INIT_IMAGE, (uint64_t)SCM_VALUE_AND_BUFFER, adsp_phys);
+        put_the_log_away("T2's parameters above -- the call that follows may reset the phone");
+        got = scm("to take the adsp's signature (R28g: the T2 control, the whole .mdt over a call "
+            "that may be preempted, the zap attempt's own form)", (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_INIT_IMAGE,
+            SCM_VALUE_AND_BUFFER, PAS_ADSP, adsp_phys, 0, &answer);
+        put_the_log_away("the T2 verdict is on the record above");
+        if (got == 0 && answer == 0) {
+                printf("adreno: %u: T2 VERDICT: ACCEPTED (0) -- the XNU→Hyp→TZ chain is sound; the zap's "
+                    "refusal is zap-specific: go T3 (the secapp's cmd 0x49, and why it refuses its "
+                    "own phone's stock zap)\n", step);
+        } else if (got == -3145738) {
+                printf("adreno: %u: T2 VERDICT: the metadata-parse code (-3145738) -- the buffer never "
+                    "reached TrustZone's parser: the metadata layout or the memory handle, not the "
+                    "channel (the r28d log's zero pages answered this over both ids already)\n", step);
+        } else {
+                printf("adreno: %u: T2 VERDICT: refused with %d -- the same wall as the zap's own "
+                    "code (-3145797), or new evidence: the rejection is path- or policy-wide, not "
+                    "zap-specific; the next look is the hypervisor's wrapper and the secapp's session "
+                    "(hw_id/serial/root_of_trust, what the Android side hands it that this side does "
+                    "not)\n", step, got);
+        }
+        /* the give-back, the same one the refusal path's diagnostics send: r28d's returned 0 */
+        answer = ~0ull;
+        scm("to give the adsp back (R28g: the give-up call, the same one the diagnostics send)",
+            scm_how | SCM_SIP | SCM_PAS_SHUTDOWN, SCM_ONE_VALUE, PAS_ADSP, 0, 0, &answer);
+        printf("adreno: %u: the step stops here by design (adreno_test_adsp=%u): the zap attempt was "
+            "skipped; the run goes on as any refused step 19 does\n", step, asked);
+        return false;
+}
+
 static bool
 step_zap_load(void)
 {
@@ -3324,6 +3490,9 @@ step_zap_load(void)
                                          * with -5, the one survivor is E1 two-param's own code --
                                          * zero information, real reset risk); they ride only
                                          * behind adreno_shape_sweep=1 */
+        uint32_t test_adsp = 0;         /* R28g: the T2 control -- 1 (or 2 for the same with the
+                                         * record asked for) runs the adsp's own .mdt over the
+                                         * very channel the zap attempt uses, INSTEAD of it */
         bool zap_ours = false;
 
         if (!cx_ready() || !core_is_on) {
@@ -3364,20 +3533,30 @@ step_zap_load(void)
         PE_parse_boot_argn("adreno_qfprom", &qfprom_on, sizeof(qfprom_on));
         PE_parse_boot_argn("adreno_e1_mode", &e1_mode, sizeof(e1_mode));
         PE_parse_boot_argn("adreno_shape_sweep", &shape_sweep, sizeof(shape_sweep));
+        PE_parse_boot_argn("adreno_test_adsp", &test_adsp, sizeof(test_adsp));
         if (e1_mode != 2 && e1_mode != 3) {
                 e1_mode = 2;    /* R28: the fallback is the two-parameter control, not the three */
         }
-        printf("adreno: %u: R28d: the two-parameter baseline -- adreno_e1_mode=%u (%s), the shape sweeps behind "
-            "adreno_shape_sweep=%u, the fuse sweep behind adreno_qfprom=%u\n", step, e1_mode, e1_mode == 3 ?
+        printf("adreno: %u: R28g: the two-parameter baseline -- adreno_e1_mode=%u (%s), the T2 control "
+            "adreno_test_adsp=%u (%s), the shape sweeps behind adreno_shape_sweep=%u, the fuse sweep "
+            "behind adreno_qfprom=%u\n", step, e1_mode, e1_mode == 3 ?
             "Linux's shape: a number, the buffer, a number -- the size goes with it (asked for by name; with the size "
             "the call died at the SMC itself, R27b's verdict)" :
             "R21-R24b's shape: a number, the buffer -- the size stays home (the default, the shape that answers)",
+            test_adsp, test_adsp ?
+            "the adsp's own .mdt over the same channel, INSTEAD of the zap attempt" :
+            "off; the zap attempt, as every round",
             shape_sweep, qfprom_on);
         if (tzunload) {
                 announce("ask TrustZone to give up a zap shader that a kernel before this one may have left (adreno_tzunload: "
                     "the call that wedged R20, asked now with the channel proven)");
                 printf("adreno: %u: %s\n", step, zap_unload() ? "TrustZone has given up what it had (it says so with none, too)" :
                     "TRUSTZONE DOES NOT GIVE IT UP: the next answers tell whether it keeps one");
+        }
+        if (test_adsp) {
+                /* R28g: the T2 control runs INSTEAD of the zap attempt; the zap's whole path
+                 * below is skipped by design, and the step ends as any refused step 19 does */
+                return adsp_pas_test(test_adsp);
         }
         {
                 /* the one PT_LOAD segment, inside the same .mbn as the header (p_offset/p_filesz) */
@@ -5045,7 +5224,7 @@ redwood_adreno_init(void)
         }
 
         printf("adreno: steps up to %u, without those in mask %#x; step %u is the new one and waits %u ms %s "
-            "(R28d: the kernel generation line -- one kernel, both images)\n", last_step,
+            "(R28g: the kernel generation line -- one kernel, both images)\n", last_step,
             skip_steps, newest_step, pause_ms, fine ? "before every access" : "after each announcement");
         /*
          * R27: the flush channel's own test, before any step runs.  The loader writes the
@@ -5056,7 +5235,7 @@ redwood_adreno_init(void)
          * absent too, meaning the flush was not even asked for) says the channel itself
          * is what R26 never proved.
          */
-        put_the_log_away("step 1's first line: the flush channel's own test (R28d: the kernel generation line)");
+        put_the_log_away("step 1's first line: the flush channel's own test (R28g: the kernel generation line)");
         for (step = 1; step <= last_step; step++) {
                 if (skip_steps & 1u << step) {
                         continue;

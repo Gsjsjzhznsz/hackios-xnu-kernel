@@ -557,3 +557,60 @@ Stage Summary:
 - 内核改动（scripts/r24_patch_c.py 字节锚定×5 全命中，配平 0/0）：三岔判词（A TEST KEY 防旧件回流 / THE PHONE'S OWN PRODUCTION CHAIN 预期判词 / 无标记兜底）+ Xiaomi Attestation CA / Xiaomi Root CA 探针 + 取证名 6→8 个；R23 全部机制保留（单一规范尝试、零页对照、动态页落位 adreno_zapmem=、签名链取证）
 - 流水线：tools/r24-flash-build.sh + .github/workflows/r24-springboard.yml（新增 ④b 同长置换步：root.apfs 与 .volumes 缓存源同换、幂等、置换后三重断言；打包门禁硬校验"卷内必须有小米链、必须无测试链"；门禁 +4/−1）
 - 红线遵守：不 stage md1（boot-only 不变）；只用 .elf 不用 .mdt；零页对照全保留
+
+## R28g · T2 对照轮：adsp 的 .mdt 走 zap 的同一条调用链（2026-10-25）
+
+- （补记：R25-R28d 的 round 记录未随轮入仓——本仓 git log 各轮 commit
+  message 即其存档（r25/r25b/r26/r27/r28/r28b/r28c/r28d，连同各轮
+  workflow 与 flash-build 内的判读树全文）；R8 规矩自本轮恢复。）
+- 立案（T1 判决之后）：官方包 = 本机固件集（hyp/tz/devcfg/storsec
+  逐字节），随卷 zap = 包内 /firmware/a640_zap.elf（sha 全等）——
+  「版本错配」死亡，TZ 拒的是自家原厂 stock zap。r28d 日志唯一从未
+  动过的变量：换一个本机原厂真固件、走同一条调用链，隔离「文件」
+  与「路径」。判读树（用户裁决）：0 → 链路无罪，进 T3（secapp
+  0x49）；-3145797 → 与 zap 同墙（全局性：查 hyp 包装壳与 secapp
+  会话）；-3145738 → 数据没到 TZ（hyp 本地解析挂，查包装形态）；
+  其它 → 新证据进 T3。
+- 内核（xnu/files/bsd/dev/raphael_adreno.c，+165/−5）：
+  · 新开关 adreno_test_adsp（默认 0；PE_parse_boot_argn 仿
+    adreno_e1_mode）。=1 时 step 19 走 adsp_pas_test() 而不是 zap
+    尝试——zap 全路径（找段、链判词、E1、落位、MEM_SETUP、写段、
+    认证）按设计跳过；开关 0 时行为与 r28d 逐字节相同（zap 路径
+    零改动）。
+  · adsp_pas_test()：与 zap 尝试完全同形——image_file("fw",
+    "adsp.mbn") 读档（in-place）→ ELF32 描述（15 段/phoff 0x34/
+    hash 段 0x1c78@0x1000，e_phentsize 按 16 位读）→ 证书链扫描
+    （整文件有界；本 .mdt 的证书在 phdr 表与 hash 段之间，不在
+    hash 段内）→ 自家新页 + to_memory → 0x42000201 可抢占两参数
+    （VALUE_AND_BUFFER，size 留家）→ "T2 VERDICT:" 三岔判决行 →
+    give-up 交回 → "the step stops here by design"。R26 纪律全程
+    （put_the_log_away 包住 E1 与判决行）。
+  · 代数戳换词 R28d → R28g（驱动首行 + step 1 + step 19 基线行，
+    基线行加 adreno_test_adsp 自报）；R28d 旧措辞进退役表。
+- 小卷换血（tools/r28g-volume-build.py，本条即该轮产出）：fw/
+  adsp.mbn = fw-gpu-raphael/adsp.mbn = NON-HLOS FAT16 image/
+  ADSP.MDT（7,820 B，Xiaomi Attestation CA/Xiaomi Root CA，无测试
+  链标记）——不是补丁而是重建：上游 apfs.py 读 R28d 卷（80 项，
+  解压 decmpfs）→ 物化目录树 + manifest → mkapfs.py -z --plain fw
+  重打（R13 卷的同款配方）→ 自证四条（80 项逐字节原样 / 新件恰为
+  源文件 / 四件 fw 全部单 extent 原位 / 小米链在与测试链绝）。
+  实测：1024 块容器不变，844 free，adsp.mbn 落 block 127（zap
+  extent 紧后），r24b 审计 gate PASS + 7z 第三读者。
+- 流水线：tools/r28g-flash-build.sh（外科手术换三条目：kernel +
+  ramdisk + GPU 镜像 cmdline 加 adreno_test_adsp=1；主镜像 cmdline
+  不动；装载器 v7 断言原字节；打包后离线复证三条目 + 截断律）+
+  tools/r28g-kernel-id.py（KNOWN 表加 R28g 卷 870650e3…；代数
+  grep 双 VERDICT）+ .github/workflows/r28g-springboard.yml
+  （②增克隆上游 userland 借 tools/apfs；③门禁 R11-R28g 全表 +
+  R28d 两条措辞退役；⑤打包复证；缓存键迁 r28g-ccache-）。
+- 静态校验：源码标记串正反核对（R28g 代数 2/基线 1/T2 宣告 2/
+  判决 3/开关 3；R28d 旧措辞 0）；括号平衡；无 tab/CR；
+  yaml 解析过；bash -n 过；本地全流程演练（合成门禁形内核）双镜
+  像出、三方验证全过。
+- 判读树全文：Release README.txt（workflow ⑥ 生成）；日志预期
+  行样例：fw/adsp.mbn: 7820 bytes in the image of /dev/md1 →
+  an ELF of 15 segments → THE ADSP'S CHAIN SAYS: THE PHONE'S
+  OWN PRODUCTION CHAIN → T2 armed → T2 VERDICT:。
+
+### R28g 发布记录（补）
+- CI 构建成功后补登：内核 sha、四资产公网 sha256、直链。
