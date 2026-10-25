@@ -211,10 +211,7 @@ jobs:
           # --- R28i 诊断 v2：wrapper 自录 argv + 真实命令重放矩阵（一轮定位删串元凶）---
           echo "→ 诊断 A：内核 T2 VERDICT 计数 = $(strings -a "$K" | grep -c 'T2 VERDICT:')（应为 3）"
           REALRAW=$(grep -m1 "raphael_adreno.c" "$PWD/xnu-clang-args.log" || true)
-          REAL="${REALRAW#*$TAB}"
-          CWD="${REALRAW%%$TAB*}"
           TAB=$(printf '\t')
-          REALRAW=$(grep -m1 "raphael_adreno.c" "$PWD/xnu-clang-args.log" || true)
           CWD="${REALRAW%%$TAB*}"
           REAL="${REALRAW#*$TAB}"
           if [ -z "$REAL" ]; then
