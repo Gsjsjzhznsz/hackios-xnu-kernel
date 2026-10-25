@@ -30,7 +30,7 @@ Known kernel-entry sha256s (the rounds so far):
     R28c        same bytes as R28b (the kernel was unchanged; that round moved the loader)
     R28d        99b9ea75de307be1fe2fb368a67493d850c762f71580bb6d1a4e4b010c698603 (run 40174469602, clean build)
     R28g        9cbcac8a4d66b1a64ec3e7b723055be367027ec190d9ef89b7c8bb0e106855a3 (run 40203429335, clean build; the lsd SIGBUS round)
-    R28i        <registered after this round's clean build -- the workflow's step-three printout>
+    R28i        3a0d746dbc03136bd23bce1b82f6280b8bfd443b2e34ad8f93cfb3b6669fee53 (run 40234522508, clean build; the three header gates fixed, the T2 path alive)
 
 Known ramdisk-entry sha256s:
     R13..R28d   372c7fcb7730726a8fb806eec7251e0e75a4188f64db6fbaedcf5b7663672dd4  (the R13 bytes; R28i rides them VERBATIM)
@@ -48,6 +48,7 @@ KNOWN = {
     '36a1e9534da454854a0110724447ffa06d9fcae8995e98cf1487d419cfed3ed6': 'R28b (identity-audit round; R28c carries these same bytes by design)',
     '99b9ea75de307be1fe2fb368a67493d850c762f71580bb6d1a4e4b010c698603': 'R28d (CPU-monitor waiver round; clean build, ccache 0/1036)',
     '9cbcac8a4d66b1a64ec3e7b723055be367027ec190d9ef89b7c8bb0e106855a3': 'R28g (the T2 control round; the lsd SIGBUS round, run 40203429335)',
+    '3a0d746dbc03136bd23bce1b82f6280b8bfd443b2e34ad8f93cfb3b6669fee53': 'R28i (the T2 control, second edition: .mdt embedded + ON by default + the compiler pinned to theos clang v19 eabca92; run 40234522508)',
 }
 KNOWN_RAMDISK = {
     '372c7fcb7730726a8fb806eec7251e0e75a4188f64db6fbaedcf5b7663672dd4': 'R13..R28d (the R13 bytes; R28i rides them VERBATIM -- no rebuild this round)',
