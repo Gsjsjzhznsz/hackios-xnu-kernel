@@ -210,7 +210,15 @@ put_char(char c)
         }
 }
 
-/* printf subset: %s %x %d (64-bit values), %% */
+/* printf subset: %s %x %d %u (64-bit values), %% ; a NULL %s prints "(null)"
+ *
+ * R28c: %u and the NULL guard.  The R28b death was here: the subset did not know
+ * %u (it printed the 'u' and consumed no argument), so every later argument moved
+ * one slot -- the flush report's read-back %s received the write's status word
+ * instead (EFI_SUCCESS, 0), and its first character load read address 0
+ * (elr offset 2af8, far 0, esr 96000007: a watcher dead, a cold reset, and the
+ * kernel's ack never coming).  Both holes are closed: %u is a number like %d,
+ * and a NULL string says so instead of faulting. */
 static void
 print(const char *fmt, ...)
 {
@@ -224,10 +232,13 @@ print(const char *fmt, ...)
                 fmt++;
                 if (*fmt == 's') {
                         const char *s = __builtin_va_arg(ap, const char *);
+                        if (s == NULL) {
+                                s = "(null)";
+                        }
                         while (*s) {
                                 put_char(*s++);
                         }
-                } else if (*fmt == 'x' || *fmt == 'd') {
+                } else if (*fmt == 'x' || *fmt == 'd' || *fmt == 'u') {
                         uint64_t v = __builtin_va_arg(ap, uint64_t);
                         unsigned base = (*fmt == 'x') ? 16 : 10;
                         char tmp[24];
@@ -1222,6 +1233,10 @@ flush_logdump_whole(const struct kernel_live *live, uint64_t slide, const char *
         }
         print("log: %s; %d B written to logdump whole (#%u, %x), read back %s (%x)\n",
             why, (uint32_t)wlen, logdump_flush_count, ws, EFI_ERROR(ws) ? "not tried" : same ? "the same" : "DIFFERENT", rs);
+        /* R28c: the line after the old death -- reaching it says the report (and the
+         * read-back before it) completed, and the ack this function returns to is
+         * about to let the kernel walk into its call. */
+        print("log: flush done, returning (#%u)\n", logdump_flush_count);
 }
 
 /*
@@ -3107,7 +3122,18 @@ exception_handler(int64_t type, uint64_t *ctx)
             ctx[EXC_CTX_ESR], ctx[EXC_CTX_FAR], ctx[EXC_CTX_LR], ctx[EXC_CTX_SP], ctx[EXC_CTX_SPSR]);
         print("loader image base %x (elr offset %x)\n", (uint64_t)(uintptr_t)&__ImageBase,
             ctx[EXC_CTX_ELR] - (uint64_t)(uintptr_t)&__ImageBase);
-        flush_log();
+        /* R28c: with a flush record already on the partition -- the console up to
+         * this fault, and the kernel's log under the flush head -- writing the
+         * console alone over it eats the evidence: that is what erased R28b's
+         * record (the crash-flush HAD landed, kernel log and all, and the handler's
+         * own flush_log buried it under 16 KB of console).  Keep what is there;
+         * the banner stays on the screen either way. */
+        if (logdump_flush_count > 0) {
+                print("log: flush #%u's record stays on logdump (this fault does not overwrite it)\n",
+                    logdump_flush_count);
+        } else {
+                flush_log();
+        }
         ST->rt->reset_system(0 /* EfiResetCold */, 0, 0, NULL);
         for (;;) {
         }
@@ -4916,8 +4942,15 @@ efi_main(efi_handle image, efi_system_table *st)
          * and the keep warning at oem run.
          * R28: the cmdline state, said in full and on the record -- the fastboot reply's
          * 59-byte cap is documented at the three cmdline verbs, every boot states its own
-         * extras before the jump, and oem cmdline echoes to the log whole. */
-        print("== XNULOADER v6 ==\n");
+         * extras before the jump, and oem cmdline echoes to the log whole.
+         * R28c: the flush path's death fixed -- print() knows %u (the conversion it
+         * choked on since v5, killing every run at its first flush with a whole
+         * record written: the R27 and R28 "t=4 s reset" was this fault, not the
+         * kernel's), a NULL %s says "(null)", the report is followed by its
+         * "flush done, returning" line, and a crash no longer overwrites the
+         * record with the console alone. */
+        print("== XNULOADER v7 ==\n");
+        print("R28c loader: the flush report is fixed (the R28b death was a conversion print did not know)\n");
         print("CurrentEL=%x MIDR=%x MMFR0=%x CNTFRQ=%d image=%x\n", READ_SYSREG(CurrentEL) >> 2, READ_SYSREG(MIDR_EL1),
             READ_SYSREG(ID_AA64MMFR0_EL1), READ_SYSREG(CNTFRQ_EL0), (uint64_t)(uintptr_t)&__ImageBase);
 
