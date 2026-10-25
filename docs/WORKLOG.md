@@ -613,4 +613,19 @@ Stage Summary:
   OWN PRODUCTION CHAIN → T2 armed → T2 VERDICT:。
 
 ### R28g 发布记录（补）
-- CI 构建成功后补登：内核 sha、四资产公网 sha256、直链。
+- CI run 40203429335（前置两轮排障：run 40201979174 loader 门禁 grep 对齐
+  笔误；run 40202199652 底板资产/上游 userland 的克隆落位；run
+  40202807172 kernel-id 的卷判决由 sha 匹配改为结构判——zlib 压缩形态随
+  构建机的库变，跨机字节不同而内容逐项相等，flash-build 的自证在构建
+  机上跑过即为准）。
+- 内核 sha256：9cbcac8a4d66b1a64ec3e7b723055be367027ec190d9ef89b7c8bb0e106855a3
+  （15,062,568 B，clean build；代数 grep：代数戳 2/基线 1/T2 宣告 2/
+  判决 3/开关 3；R28d 旧措辞 0）——已入 r28g-kernel-id.py KNOWN 表。
+- 四资产公网 sha256（api_size 全等，Task 20 纪律）：
+  f17f46acac0401acc9bcd1b34c059ee4be52ad0518c89e7e6604b855a77322c1  raphael-xnu-r28g-flash.img（7,979,119 B）
+  49d25cf17ad2b71b2c2a302d676c25b4a680fbe0e5b8c33de666f8aaa57b85b0  raphael-xnu-r28g-gpu-flash.img（7,979,119 B）
+  14485e7c5ce125ef516168445c2500ac04ca5e40a908c2aef516b2d92c24ba0c  raphael-r28g-flashboot.apfs（= R13 全量字节，逐字节原样）
+  9308eae198d20a5d257c6dc317e1e0b3c09c3e520bcce1f2b364a63118842bbf  r28g-md1-root.apfs（本机沙箱同输入重建为 870650e3…，zlib 形态差异，内容逐项相等）
+- 直链：https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r28g-springboard/
+  （raphael-xnu-r28g-flash.img / raphael-xnu-r28g-gpu-flash.img /
+   raphael-r28g-flashboot.apfs / r28g-md1-root.apfs / SHA256SUMS / README.txt）
