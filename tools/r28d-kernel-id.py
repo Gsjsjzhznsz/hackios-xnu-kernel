@@ -20,7 +20,7 @@ Known kernel-entry sha256s (the rounds so far):
     R28         9e3dd447d1e92158b9e7159cf3508ca3414e6366d066373210ed746f590667b3
     R28b        36a1e9534da454854a0110724447ffa06d9fcae8995e98cf1487d419cfed3ed6
     R28c        same bytes as R28b (the kernel was unchanged; that round moved the loader)
-    R28d        registered post-build (this tool's KNOWN table gets it with the round's follow-up commit)
+    R28d        99b9ea75de307be1fe2fb368a67493d850c762f71580bb6d1a4e4b010c698603 (run 40174469602, clean build)
 A kernel cannot print a string its binary does not carry: markers below ARE the
 runtime lines, counted in the bytes that would print them.
 """
@@ -31,6 +31,7 @@ KNOWN = {
     '372f0b0af38d84f7d343a322f21c41156e6675581e08964b0ac15378be447d9c': 'R27/R27b (v5-loader round)',
     '9e3dd447d1e92158b9e7159cf3508ca3414e6366d066373210ed746f590667b3': 'R28 (two-parameter baseline round)',
     '36a1e9534da454854a0110724447ffa06d9fcae8995e98cf1487d419cfed3ed6': 'R28b (identity-audit round; R28c carries these same bytes by design)',
+    '99b9ea75de307be1fe2fb368a67493d850c762f71580bb6d1a4e4b010c698603': 'R28d (CPU-monitor waiver round; clean build, ccache 0/1036)',
 }
 
 # (family, marker) -- the runtime lines, in the bytes that print them
