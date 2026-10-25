@@ -61,7 +61,7 @@ for m, want in ((b'R28i: the kernel generation line', 2),
                 (b'T2 VERDICT:', 3),
                 (b"THE ADSP'S CHAIN SAYS", 1),
                 (b'T2 armed', 1),
-                (b'adreno_test_adsp', 3),
+                (b'adreno_test_adsp', 4),
                 (b"the kernel's own embedded copy", 2),
                 (b'the volume is not read', 1),
                 (b'the step stops here by design', 1)):
