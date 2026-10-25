@@ -25,6 +25,11 @@ for a in "$@"; do
     *) args+=("$a");;
   esac
 done
+# XNU_WRAPPER_LOG: one line per invocation, the full argv -- the CI's R28i diagnostics
+# read the raphael_adreno line out of it to replay the exact real command with variants.
+if [ -n "${XNU_WRAPPER_LOG:-}" ]; then
+  printf '%s\n' "${args[*]}" >> "$XNU_WRAPPER_LOG" 2>/dev/null || true
+fi
 # XNU_CCACHE=1 (with ccache on the PATH): compile through ccache. The wrapper always adds the
 # same flags for the same tree, so a rebuild of an unchanged kernel is nearly all cache hits;
 # ccache runs the compiler itself when it is not compiling, so the link passes through too.

@@ -199,7 +199,8 @@ jobs:
           "$XNU_HOST_CLANG" --version | tee -a "$REL/toolchain-versions.txt"
           grep -q "eabca92" "$REL/toolchain-versions.txt" || { echo "::error::内核编译器不是钉死的 theos clang（eabca92）"; exit 1; }
           bash xnu-deps/setup.sh || { echo "::error::setup.sh 失败——exporthdrs.log 尾部："; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
-          export XNU_CCACHE=1 CCACHE_COMPILERCHECK=content
+          export XNU_CCACHE=1 CCACHE_COMPILERCHECK=content XNU_WRAPPER_LOG="$PWD/xnu-clang-args.log"
+          : > "$XNU_WRAPPER_LOG"
           ccache -C >/dev/null 2>&1 || true
           ccache -M 2G >/dev/null 2>&1 || true
           echo "→ R28i clean build：ccache 零回填空仓起跑，本轮每个对象都从本轮源码编译"
@@ -207,28 +208,81 @@ jobs:
           ./xnu-build.sh -j4 -k || echo "（make 退出码 $?——上游文档：链接后的检查，内核若已产出即成功）"
           K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
           ls -la "$K" || { echo "::error::内核没有产出——exporthdrs.log 与 make 日志尾部："; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
-          # --- R28i 诊断（run 40217090196 仍缺判决行）：把"串消失"劈成编译层/链接层 ---
-          SRC=xnu-src/xnu-8796.121.2
-          AO=$(find $SRC/BUILD/obj -name "raphael_adreno.o" | head -1)
-          echo "→ 诊断 A：raphael_adreno.o = $AO"
-          if [ -n "$AO" ]; then
-            echo "→ 诊断 A1：.o 里 T2 VERDICT 计数 = $(strings -a "$AO" | grep -c 'T2 VERDICT:')（应为 3）"
-            strings -a "$AO" | grep "T2 VERDICT" | head -3 | cut -c1-90
-            echo "→ 诊断 A2：.o 的 clang 版本戳（.comment）"; readelf -p .comment "$AO" 2>/dev/null | head -8 || strings -a "$AO" | grep -m2 "clang version"
-            echo "→ 诊断 A3：强制重编译该文件并抓真实命令行"
-            touch "$SRC/bsd/dev/raphael_adreno.c"
-            ./xnu-build.sh -j4 -k >/tmp/rebuild.log 2>&1 || true
-            grep -m1 "raphael_adreno" /tmp/rebuild.log | cut -c1-400 || true
-            grep -B2 -m1 "raphael_adreno" /tmp/rebuild.log | head -4 | cut -c1-400 || true
-            echo "→ 诊断 A4：重编译后 .o 的 T2 VERDICT 计数 = $(strings -a "$AO" | grep -c 'T2 VERDICT:')"
-          else
-            echo "::warning::诊断：BUILD 里没有 raphael_adreno.o"; find $SRC/BUILD -name "*.o" | head -3
+          # --- R28i 诊断 v2：wrapper 自录 argv + 真实命令重放矩阵（一轮定位删串元凶）---
+          echo "→ 诊断 A：内核 T2 VERDICT 计数 = $(strings -a "$K" | grep -c 'T2 VERDICT:')（应为 3）"
+          REAL=$(grep -m1 "raphael_adreno.c" "$PWD/xnu-clang-args.log" || true)
+          if [ -z "$REAL" ]; then
+            echo "::error::诊断：wrapper 日志里没有 raphael_adreno 行"
+            wc -l "$PWD/xnu-clang-args.log" || true
+            head -3 "$PWD/xnu-clang-args.log" | cut -c1-300 || true
+            exit 1
           fi
-          echo "→ 诊断 B：内核二进制 T2 VERDICT 计数 = $(strings -a "$K" | grep -c 'T2 VERDICT:')（应为 3）"
-          echo "→ 诊断 C：wrapper 实际驱动的编译器：" | tee -a "$REL/toolchain-versions.txt"
-          xnu-deps/host/bin/xnu-clang --version 2>&1 | head -2 | tee -a "$REL/toolchain-versions.txt" || true
-          echo "→ 诊断 D：XNU_HOST_CLANG 是否进入了 make 的世界（wrapper 里再看一眼）：" | tee -a "$REL/toolchain-versions.txt"
-          { XNU_HOST_CLANG="${XNU_HOST_CLANG:-unset}" sh -c 'echo "XNU_HOST_CLANG=$XNU_HOST_CLANG"'; } | tee -a "$REL/toolchain-versions.txt" || true
+          echo "→ 诊断 B：raphael_adreno 的真实 argv（截断 1400 字符）："
+          echo "$REAL" | cut -c1-1400
+          SRC=xnu-src/xnu-8796.121.2
+          TCC="$THEOS/toolchain/linux/iphone/bin/clang"
+          python3 - "$REAL" "$SRC" "$TCC" <<'PY'
+          import shlex, subprocess, sys, os
+          real, src, tcc = sys.argv[1], sys.argv[2], sys.argv[3]
+          argv = shlex.split(real)
+          drop_flags = ('-o', '-MF', '-MT', '-MQ')
+          clean, skip = [], False
+          for a in argv:
+              if skip:
+                  skip = False; continue
+              if a in drop_flags:
+                  skip = True; continue
+              if a.startswith(('-MF=', '-MT=', '-MQ=')) or a == '-c':
+                  continue
+              clean.append(a)
+          os.chdir(src)
+          def run(tag, m):
+              out = f'/tmp/var_{tag}.o'
+              cmd = [tcc] + m + ['-c', '-o', out]
+              r = subprocess.run(cmd, capture_output=True, text=True)
+              n = -1
+              try:
+                  s = subprocess.run(['strings', '-a', out], capture_output=True, text=True).stdout
+                  n = s.count('T2 VERDICT:')
+              except Exception:
+                  pass
+              warn = sum(1 for l in r.stderr.splitlines() if 'warning' in l.lower())
+              print(f'  {tag:12s} T2VERDICT={n}  rc={r.returncode}  warnings={warn}')
+              if r.returncode != 0 and r.stderr:
+                  print('    ERR:', r.stderr.splitlines()[0][:160])
+              return n
+          print('→ 诊断 C：真实命令重放矩阵（变体 → T2 VERDICT 计数）：')
+          run('as-is', list(clean))
+          def apply(m, old_f, new_f):
+              if old_f:
+                  i = m.index(old_f) if old_f in m else -1
+                  if i >= 0:
+                      if new_f:
+                          m[i] = new_f
+                      elif old_f == '-include':
+                          del m[i:i+2]
+                      else:
+                          del m[i]
+                  return m
+              m.append(new_f)
+              return m
+          for tag, old_f, new_f in [
+              ('O1',      '-O2', '-O1'),
+              ('Os',      '-O2', '-Os'),
+              ('Oz',      '-O2', '-Oz'),
+              ('O0',      '-O2', '-O0'),
+              ('no-w',    '-w', ''),
+              ('no-incl', '-include', ''),
+              ('no-mker', '-mkernel', ''),
+              ('no-merge','-fmerge-all-constants', ''),
+              ('no-builtin','-fno-builtin', ''),
+              ('no-avz',  '-ftrivial-auto-var-init=zero', ''),
+              ('no-inline','', '-fno-inline-functions'),
+          ]:
+              m = apply(list(clean), old_f, new_f)
+              run(tag, m)
+          print('→ 诊断 D：变体表完（3=保留，0=被删）。as-is=0 且某变体=3 → 该变体即解药/触发器。')
+          PY
           echo "→ ccache 收官统计："; ccache -s 2>/dev/null | head -8 || true
           # ---- R28i 门禁：本轮自己的标记（含内嵌 .mdt 的字节级证明）、保留的先轮标记、退役措辞反查、
           # 新 sha 断言（不允许等于任何一代历史内核）
