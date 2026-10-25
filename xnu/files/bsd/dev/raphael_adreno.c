@@ -1702,7 +1702,7 @@ space_off(struct gpu_space *space, uint32_t match)
 #define PAS_GPU                 13
 #define PAS_ADSP                1                       /* the audio DSP: the images table's "audio". Android's own PIL
                                                          * hands its .mdt to TrustZone at every one of this phone's boots
-                                                         * (adsp-pil, pas id 1) -- R28g's T2 control rides on that id */
+                                                         * (adsp-pil, pas id 1) -- R28i's T2 control rides on that id */
 
 /*
  * R21: which form the calls take. Linux asks first with 64-bit arguments and, if TrustZone
@@ -3306,17 +3306,24 @@ zap_unload(void)
 }
 
 /*
- * R28g, the T2 control (the raph_t2 ledger's plan, answered here). The zap refusal
- * survived R24's production-chain file, and T1 (the official-package round) proved the
- * file the volume carries IS the phone's own stock one -- the package's
+ * R28i, the T2 control, second edition (the raph_t2 ledger's plan, answered here). The
+ * zap refusal survived R24's production-chain file, and T1 (the official-package round)
+ * proved the file the volume carries IS the phone's own stock one -- the package's
  * /firmware/a640_zap.elf, sha for sha, and the package IS this phone's firmware set
  * (hyp/tz/devcfg/storsec byte for byte) -- so what the r28d log leaves open is the one
  * variable it never moved: another of this phone's own true firmware images over the
  * very same channel.  This is that control: the adsp's own .mdt (the audio DSP's
  * metadata image, the one Android's PIL hands TrustZone at every boot, pas id 1),
- * read the same way from fw/ of the small image, described the same way, put in a page
- * of ours the same way, and sent over the same preemptible two-parameter call the zap
- * attempt itself uses.  Exactly two things differ: the file, and the id.
+ * described the same way, put in a page of ours the same way, and sent over the same
+ * preemptible two-parameter call the zap attempt itself uses.  Three things differ
+ * from the zap attempt: the file, the id, and the place the file is read from -- R28g
+ * read it from a rebuilt md1 volume and the phone died in its first second (R28h-B
+ * proved this very kernel alive on the untouched R28d volume, so the rebuild was the
+ * death); R28i carries the .mdt INSIDE the kernel (raphael_adsp_fw.h, the
+ * redwood_focaltech_fw.h discipline) and touches no volume at all.  And the switch is
+ * ON by default now: adreno_test_adsp=1 is the shape a boot has when nobody types any
+ * arguments (the flasher does not), because R28h-B rode an old cmdline without the
+ * token and the round was lost to it.
  *
  * The verdict is the round's whole purpose (the tree in the workflow's README):
  *   0            the chain is sound; the zap's refusal is zap-specific -> T3, the
@@ -3327,12 +3334,15 @@ zap_unload(void)
  *                the memory handle, not the channel (the r28d log's zero pages
  *                answered this over both ids already);
  *   anything else new evidence, straight into T3's collection.
- * adreno_test_adsp=1 asks for this INSTEAD of the zap attempt: the zap's whole path
- * (the segment find, the chain verdict, E1, the place, MEM_SETUP, the write, the
- * authentication, and its refusal diagnostics) is skipped by design, and the step
- * returns false as any refused step 19 does -- the run and the system go on exactly
- * as they do every round the zap is refused.
+ * The control runs INSTEAD of the zap attempt (the zap's whole path -- the segment
+ * find, the chain verdict, E1, the place, MEM_SETUP, the write, the authentication,
+ * and its refusal diagnostics -- is skipped by design), and the step returns false as
+ * any refused step 19 does: the run and the system go on exactly as they do every
+ * round the zap is refused.  adreno_test_adsp=0 still turns it off, by name, for the
+ * one boot that wants the zap attempt back.
  */
+#include "raphael_adsp_fw.h"
+
 static bool
 adsp_pas_test(uint32_t asked)
 {
@@ -3343,16 +3353,17 @@ adsp_pas_test(uint32_t asked)
         uint32_t segments, phoff, header_bytes = 0, hash_at = 0, hash_bytes = 0;
         int32_t got;
 
-        announce("R28g: the T2 control -- the adsp's own .mdt (the audio DSP's metadata image, "
-            "pas id 1, the images table's \"audio\") over the very same channel: everything the "
-            "zap attempt has, except the file and the id");
-        adsp = image_file("fw", "adsp.mbn", &adsp_size);
-        if (adsp == NULL) {
-                printf("adreno: %u: no fw/adsp.mbn in the small image: the T2 control cannot run "
-                    "(the round's volume step puts it there); the zap attempt was skipped by design, "
-                    "so the step fails here\n", step);
-                return false;
-        }
+        announce("R28i: the T2 control -- the adsp's own .mdt (the audio DSP's metadata image, "
+            "pas id 1, the images table's \"audio\") over the very same channel, from the kernel's "
+            "own embedded copy: everything the zap attempt has, except the file, the id, and the "
+            "place it is read from -- R28i: the volume rides the R28d bytes untouched (the R28g "
+            "rebuild died in the phone's first second; R28h-B proved this kernel alive on the "
+            "untouched volume), so nothing asks the volume this round");
+        adsp = adsp_mbn_fw;
+        adsp_size = ADSP_MBN_FW_LENGTH;
+        printf("adreno: %u: fw/adsp.mbn: %llu bytes, the kernel's own embedded copy (sha256 "
+            "f5881fc7... -- the very file the R28g volume carried; R28i rides it inside the "
+            "kernel, the volume is not read)\n", step, adsp_size);
         /* a 32-bit ELF, as the zap's own describe reads it: the table at 28, the entry size
          * at 42 (a 16-bit field), the count at 44; the hash segment found by its type mark
          * at 24 of p_flags */
@@ -3440,7 +3451,7 @@ adsp_pas_test(uint32_t asked)
             "page), x4 0 (the size stays home, the zap attempt's own shape)\n", step,
             (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_INIT_IMAGE, (uint64_t)SCM_VALUE_AND_BUFFER, adsp_phys);
         put_the_log_away("T2's parameters above -- the call that follows may reset the phone");
-        got = scm("to take the adsp's signature (R28g: the T2 control, the whole .mdt over a call "
+        got = scm("to take the adsp's signature (R28i: the T2 control, the whole .mdt over a call "
             "that may be preempted, the zap attempt's own form)", (scm_how & ~SCM_FAST) | SCM_SIP | SCM_PAS_INIT_IMAGE,
             SCM_VALUE_AND_BUFFER, PAS_ADSP, adsp_phys, 0, &answer);
         put_the_log_away("the T2 verdict is on the record above");
@@ -3461,7 +3472,7 @@ adsp_pas_test(uint32_t asked)
         }
         /* the give-back, the same one the refusal path's diagnostics send: r28d's returned 0 */
         answer = ~0ull;
-        scm("to give the adsp back (R28g: the give-up call, the same one the diagnostics send)",
+        scm("to give the adsp back (R28i: the give-up call, the same one the diagnostics send)",
             scm_how | SCM_SIP | SCM_PAS_SHUTDOWN, SCM_ONE_VALUE, PAS_ADSP, 0, 0, &answer);
         printf("adreno: %u: the step stops here by design (adreno_test_adsp=%u): the zap attempt was "
             "skipped; the run goes on as any refused step 19 does\n", step, asked);
@@ -3490,9 +3501,12 @@ step_zap_load(void)
                                          * with -5, the one survivor is E1 two-param's own code --
                                          * zero information, real reset risk); they ride only
                                          * behind adreno_shape_sweep=1 */
-        uint32_t test_adsp = 0;         /* R28g: the T2 control -- 1 (or 2 for the same with the
-                                         * record asked for) runs the adsp's own .mdt over the
-                                         * very channel the zap attempt uses, INSTEAD of it */
+        uint32_t test_adsp = 1;         /* R28i: the T2 control, ON BY DEFAULT -- the flasher
+                                         * types no arguments, so the default IS the round
+                                         * (R28h-B rode an old cmdline without the token and
+                                         * lost the round to it).  adreno_test_adsp=0 turns
+                                         * it off by name, for the one boot that wants the
+                                         * zap attempt back */
         bool zap_ours = false;
 
         if (!cx_ready() || !core_is_on) {
@@ -3537,15 +3551,15 @@ step_zap_load(void)
         if (e1_mode != 2 && e1_mode != 3) {
                 e1_mode = 2;    /* R28: the fallback is the two-parameter control, not the three */
         }
-        printf("adreno: %u: R28g: the two-parameter baseline -- adreno_e1_mode=%u (%s), the T2 control "
+        printf("adreno: %u: R28i: the two-parameter baseline -- adreno_e1_mode=%u (%s), the T2 control "
             "adreno_test_adsp=%u (%s), the shape sweeps behind adreno_shape_sweep=%u, the fuse sweep "
             "behind adreno_qfprom=%u\n", step, e1_mode, e1_mode == 3 ?
             "Linux's shape: a number, the buffer, a number -- the size goes with it (asked for by name; with the size "
             "the call died at the SMC itself, R27b's verdict)" :
             "R21-R24b's shape: a number, the buffer -- the size stays home (the default, the shape that answers)",
             test_adsp, test_adsp ?
-            "the adsp's own .mdt over the same channel, INSTEAD of the zap attempt" :
-            "off; the zap attempt, as every round",
+            "ON: the adsp's own .mdt, from the kernel's embedded copy, INSTEAD of the zap attempt (R28i: the default -- no argument asked for)" :
+            "off by name (adreno_test_adsp=0); the zap attempt, as every round before R28g",
             shape_sweep, qfprom_on);
         if (tzunload) {
                 announce("ask TrustZone to give up a zap shader that a kernel before this one may have left (adreno_tzunload: "
@@ -3554,7 +3568,7 @@ step_zap_load(void)
                     "TRUSTZONE DOES NOT GIVE IT UP: the next answers tell whether it keeps one");
         }
         if (test_adsp) {
-                /* R28g: the T2 control runs INSTEAD of the zap attempt; the zap's whole path
+                /* R28i: the T2 control runs INSTEAD of the zap attempt; the zap's whole path
                  * below is skipped by design, and the step ends as any refused step 19 does */
                 return adsp_pas_test(test_adsp);
         }
@@ -5224,7 +5238,7 @@ redwood_adreno_init(void)
         }
 
         printf("adreno: steps up to %u, without those in mask %#x; step %u is the new one and waits %u ms %s "
-            "(R28g: the kernel generation line -- one kernel, both images)\n", last_step,
+            "(R28i: the kernel generation line -- one kernel, both images)\n", last_step,
             skip_steps, newest_step, pause_ms, fine ? "before every access" : "after each announcement");
         /*
          * R27: the flush channel's own test, before any step runs.  The loader writes the
@@ -5235,7 +5249,7 @@ redwood_adreno_init(void)
          * absent too, meaning the flush was not even asked for) says the channel itself
          * is what R26 never proved.
          */
-        put_the_log_away("step 1's first line: the flush channel's own test (R28g: the kernel generation line)");
+        put_the_log_away("step 1's first line: the flush channel's own test (R28i: the kernel generation line)");
         for (step = 1; step <= last_step; step++) {
                 if (skip_steps & 1u << step) {
                         continue;

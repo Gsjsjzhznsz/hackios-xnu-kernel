@@ -629,3 +629,80 @@ Stage Summary:
 - 直链：https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r28g-springboard/
   （raphael-xnu-r28g-flash.img / raphael-xnu-r28g-gpu-flash.img /
    raphael-r28g-flashboot.apfs / r28g-md1-root.apfs / SHA256SUMS / README.txt）
+
+## R28h · 二分判决：死因=重建卷；R28g 世代内核另有 lsd SIGBUS 回归（2026-10-26）
+
+- R28G 黑屏死机（零日志、未到 xnuloader、未到 step 19）后按用户指令出二分
+  对照：A = 去 T2 补丁 + adsp.mbn 卷；B = T2 补丁内核 + R28d 原卷（不重建）。
+- **B 镜像真机判决（r28h-b-logdump，465,856 B）**：
+  ① 内核存活——装载器 v7 全程 flush 配对，跑到 122 s，心跳 13，用户态
+  全起（launchd/backboardd/notifyd/runningboardd/powerd/analyticsd…），
+  backboardd 渲染白苹果（surface 1125x2436）——**R28G 第一秒死机的元凶
+  = R28g 重建的 md1 卷**（B 镜像与 R28G 唯一差异就是卷），内核无罪；
+  ② T2 未触发——B 镜像 cmdline 沿 R28d 原样、未带 adreno_test_adsp=1，
+  日志自报 "adreno_test_adsp=0 (off; the zap attempt, as every round)"，
+  zap 照旧 refused -3145797（-0x300045）——整轮落空，教训入 R28i（默认开）；
+  ③ **新问题：系统性用户态 SIGBUS**——lsd[29→121] 无限循环 SIGBUS（"exited
+  due to SIGBUS | sent by exc handler"），analyticsd[31/35/40]、
+  mobilegestalt.xpc[28/37] 同崩——LaunchServices 注册完不成，SpringBoard
+  卡白苹果。R28d 内核（同 cmdline、同卷、同用户态）从未如此（r28d 日志
+  lsd[29] 正常 running）——**R28g 世代二进制引入的回归**，且非 T2 运行时
+  （T2 没跑）：嫌疑头名 = 构建环境漂移——r25-theos-v1 / r25-xnu-deps-v1
+  缓存键带跨代 restore-keys 链（r23→r14），两次 run 可能拿到不同代的
+  theos/xnu-deps；次嫌疑 = runner 镜像滚动的 apt clang；再次 = T2 代码的
+  静态布局踩雷（R28i 判读树预注册了分离实验）。
+- L1ghtmann/llvm-project releases 核查：latest = v19.0.0-L2（2024-04-21
+  发布，至今未动）——工具链 tarball 本身未漂移；漂移面收窄到缓存链跨代
+  与 runner 镜像两层。
+
+## R28i · T2 对照二版：内嵌 adsp + 默认开启 + 工具链钉死（2026-10-26）
+
+- 立案（用户三项指令）：① 清理/固定 CI 工具链，复现 R28d 级稳定的内核；
+  ② T2 开关默认强制开启（刷机不带参数）；③ 用 R28d 同样干净的底座打包，
+  一刷既测 T2 又不卡白苹果。
+- **工具链钉死（workflow ③ + ②c/d）**：
+  · L1ghtmann 工具链 tarball 从 releases/latest 改钉具名 tag
+    v19.0.0-L2（该 tag 即 R28d/R28g 实际拉到的字节，纯收紧零变化）；
+  · theos / xnu-deps 缓存键全新（r28i-theos-v19L2-v1 / r28i-xnu-deps-v1）
+    且**删除 restore-keys 链**——首跑必 miss、从钉死源确定性重建，跨代
+    混用从结构上不再可能（等效"清理缓存"，且重建可复现）；
+  · 新增 toolchain-versions.txt（随 release 交付）：runner 镜像 / apt
+    clang / lld / dsymutil / theos ld64 全版本号 + tarball 具名 tag——
+    未来任何一轮"同源码不同行为"先对这张表；
+  · ccache 沿 R28b/R28d/R28g 零回填 clean build 纪律。
+- **T2 默认开启（raphael_adreno.c step_zap_load）**：test_adsp 默认
+  0→1（"the flasher types no arguments, so the default IS the round"），
+  PE_parse_boot_argn 保留——不传=开，adreno_test_adsp=0 具名关闭（逃生门）。
+  cmdline 本轮零改动（R28d 原字节，无 token）。
+- **adsp 的 .mdt 内嵌进内核**（xnu/files/bsd/dev/raphael_adsp_fw.h，新）：
+  fw-gpu-raphael/adsp.mbn（7,820 B，sha256 f5881fc760e8…，与 R28g 卷里
+  那份逐字节相同）按 redwood_focaltech_fw.h 先例转 C 数组（scripts/
+  r28i_mkfwheader.py 生成 + 字节级往返校验）；adsp_pas_test() 弃
+  image_file("fw","adsp.mbn") 改读内嵌数组（"the volume is not read"）——
+  R28G 死因（重建卷）从结构上移除，T2 数据源零卷变量；R28g 的
+  "no fw/adsp.mbn in the small image" 缺件判词随之退役（此路径已死）。
+- **最小手术（tools/r28i-flash-build.sh，新）**：底板四件 = R28d release
+  官方字节（workflow ② 对官方 SHA256SUMS 硬校验：95278e76…/ef441b1c…/
+  14485e7c…/372c7fcb…）；手术只换 kernel 条目——ramdisk 断言逐字节 ==
+  R28d 原卷（372c7fcb…）、cmdline 断言逐字节 R28d 且无 T2 token、loader
+  断言 v7（ec15106d…）、DTB/头字段/截断律原样；one kernel, both images
+  （双镜像 kernel/ramdisk 一致性二重断言）。
+- **门禁**：R28i 标记正查（代数戳 2/基线 1/T2 宣告 2/内嵌副本 2/判决 3/
+  开关 3/fw 名 1）+ R28g 三条措辞与 R28g 缺件判词反查 0 + 内嵌 .mdt
+  字节级证明（k.find(fw)>=0 且唯一）+ minimac 豁免行保留 + 新 sha 断言
+  （R27/R28/R28b/R28d/R28g 全不允许）+ R11-R27 历史保留标记全表。
+- **判读树（预注册分诊，release README.txt 全文）**：
+  第一刷主镜像（无 gpu=1，T2/GPU 步骤不跑）= lsd 控制组——进桌面 →
+  环境已复原，刷第二张；仍 SIGBUS → 环境仍有暗变量或 T2 静态布局踩雷
+  → 下一轮 R28i-minus（R28d 源码原样重编）分离两变量。
+  第二刷 GPU 镜像（gpu=1）= T2 对照——证据链四行（内嵌副本 7,820 B →
+  ELF 15 段 → THE ADSP'S CHAIN SAYS → T2 armed）→ "T2 VERDICT:" 三岔
+  （0→T3；-3145797→全局墙查 hyp/secapp；-3145738→查包装；其它→新证据）。
+  主镜像不崩 + GPU 镜像崩 → GPU 步骤/T2 运行时问题（新证据）。
+- 静态校验：源码标记串正反核对（R28i 代数 2/基线 1/T2 宣告 2/内嵌副本 2
+  （announce 跨行拼接后）/判决 3/开关 3；R28g 旧措辞 0）；kernel-id 与
+  flash-build bash -n / ast.parse 过；workflow yaml 解析过 + 缓存结构
+  断言（3 键全新、无 restore 链）+ curl 行断言（tarball 具名 tag、无
+  floating latest）；头文件字节级往返校验过。
+- 待办：推送触发 CI（本沙箱无 GitHub 凭据——r28g 是当时会话有 token 推
+  的；本轮材料备齐待推），构建成功后注册内核 sha 入 KNOWN 表 + 发布记录。
