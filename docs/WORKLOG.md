@@ -1054,3 +1054,34 @@ r28l flashboot → oem run；**等 ~2-3 分钟过风暴首发窗再抓 logdump**
 00:01:46 ≈ 内核 ~67 s；抓早了 = 复测快照 60 s 的覆辙）。判读第一步 = 字节级切分自有区
 （scripts/forensics_r28_boot_split.py 随轮复用）。T3（secapp cmd 0x49 离线逆向）并行
 不占设备，继续。
+
+## T3 · 静态取证第一批：cmd 0x49 的直接输入全解剖——链排除、头同构、两次翻案、缺格定位（2026-10-26）
+
+**对象与工具**：fw-gpu-raphael 三件——a640_zap.mbn（原厂 14256B / 627ecc6a）、a640_zap.mbn.testkey-r13（14256B / a17975ca）、adsp.mbn（7820B / f5881fc7）。方法：DER 逐张走查（openssl 实解）+ SHA256 反查 + 双文件 diff 落图 + 全零间隙扫描（沙箱侧 scripts/t3_secapp_anatomy.py、t3_anatomy2.py）。**Q5 两条 0x40 设备侧 dump 与本地文件逐字节核对 ✓✓**（zap@0x1000、adsp@0x1000 前缀）——卷内文件 = 本地文件 = R28k 真机读出的字节，三方同一。
+
+**F1 证书链全解析（DER 实解，非字符串级）**：
+- zap 原厂链 = [叶：C=US/ST=California/**CN=SecTools Test User**/O=SecTools/L=San Diego，serial=01，2021-10-25→2041-10-20，签发者=**Xiaomi Attestation CA**] + [Xiaomi Attestation CA，serial=05，2017→2037 ← Xiaomi Root CA] + [Xiaomi Root CA，serial=01，自签，2017→2037]——**图片签名本身就是高通 SecTools 测试密钥对做的；小米只是在其上重发了证书链**（R24"原厂件"的准确含义）。
+- zap 测试链 = [SecTools Test User ← Generated Test Attestation CA ← Generated Test Root CA（SecTools/CDMA Technologies/"General Use Test Key (for testing only)"）]——同款叶 subject。
+- **adsp 链 = [SecTools Test User，serial=01，2021-10-17→2041 ← Xiaomi Attestation CA] + 同款 Attestation CA（serial=05）+ 同款 Root CA（serial=01）**——与 zap 原厂链**完全同构**（叶子比 zap 早一周签发，同一批重签活动）。T2 的 ACCEPTED(0) 证明这条"测试叶+小米链"结构 TZ 收。
+- 证书槽 = v6 头 word[9]=0x1800（6144B）声明的固定槽 [0x1238..0x2a38)：原厂链 3100B + 0xff 填充、测试链 3327B 恰满至 0x1f37；两文件 [0x1f37..0x2a38)（2817B）逐字节全等（纯 0xff 填充）。签名块 ≈[0x1120..0x1238) 256B（RSA-2048，两链各异）。
+
+**F2 v6 头同构表（adsp@0x214 ↔ zap@0x1000，逐字对照）**：
+  word:  adsp / zap —— [0]=0xc/0；[1]=6/6；[2,3]=0/0；[4]=0x1bd0/0x1990；[5]=0x2d0/0x90；[6]=0x8e020800/0xffffffff；[7]=0x100/0x100（RSA-2048 签名尺寸）；[8]=0x8e020800/0xffffffff；[9]=0x1800/0x1800（证书槽尺寸）；[10]=0/0；[11]=0x78/0x78；[14]=4/0x14；**[15]=0x0a50e1/0x0a50e1（两镜像全同 ⇒ 非 OEM 身份字段，平台/工具版本类）**。扩展区（0x1040+/0x254+）：0x72、0x102、0x6003 双方一致。zap 原厂 vs zap 测试的头差异仅 3 处：word[15]（0x0a50e1/0）、word[16]（0x72/0）、word[19]（0x102/0x100）。
+
+**F3 翻案一：.mdt 的 p_offset=0x1000 是假的。** adsp phdr[1] 声明哈希段 0x1c78@0x1000，但文件实长 0x1E8C ⇒ 0x1000 之后只有 0xE8C；而 **[0x214..0x1E8C) 恰 = 0x1C78 = 声明值**——.mdt 的哈希段实体 = 紧跟 phdr 表（0x214）到文件尾，0x1000 处是证书中部（Q5 的 adsp dump 实为 Root CA 证书内嵌的 RSA SubjectPublicKeyInfo，非"签名表头"）。T2 整文件形态 ACCEPTED ⇒ TZ 验证的元数据在 0x214——**TZ 不可能按 p_offset=0x1000 读 adsp**（那里按任何头解析必炸）。
+
+**F4 翻案二：zap 整文件形态递给 TZ 的 [0x94..0x1000) = 3948B 全零。** zap phdr 表尾 = 0x94；v6 元数据（头+签名+证书槽）实体在 [0x1000..0x2a38)（这次 p_offset 是真的）。⇒ 若 TZ 对 .mbn 沿用"header pair 之后取元数据"的约定，整文件形态读到的"元数据" = 全零——**原厂链从未被 TZ 真正看过一眼**。
+
+**F5 排除表（至此）**：调用形态/地址/内存归属/arginfo——R21-R28 矩阵排除（三参族 SMC 即复位，两参=唯一应答形态）；通道——T2 排除；**链根（Xiaomi Root CA）**——adsp 同根 ACCEPTED ⇒ 排除；**叶子=SecTools 测试密钥模式**——adsp 同构叶 ACCEPTED ⇒ 排除；**v6 元数据头格式**——adsp 同构头 ACCEPTED ⇒ 排除；is_supported 平台禁令——双 0（adsp 也是 0 且能过）；缓冲可读性——零页 0x0A + adsp 全证 ⇒ 排除。**2×2 矩阵 [签名链 × 元数据位置] 的"原厂链 × 打包形态"格从未测过**：R21 打包 = 测试链（0x45 死于链，判得对）；R24+ 整文件 = 原厂链（元数据躺在 0x1000，前面 0x94..0x1000 全零）。
+
+**F6 统一理论（当前唯一无矛盾解）：TZ 从 buffer 的 header pair 之后取元数据，不按 p_offset。** 则：R21 打包（测试链）→ TZ@0x94 见真 v6 头 → 解析 ✓ → 测试链拒 → 0x45 ✓（当年"读到打包块中段"的解读错，但观测恰好不可区分）；R22-R28k 整文件（原厂链）→ TZ@0x94 见全零 → 元数据无效 → 0x45 ✓（格式层，永远轮不到验链）；T2 adsp 整文件 → TZ@0x214 见真头 → 小米链 → ACCEPTED ✓；零页（无 ELF）→ 更早退出 → 0x0A ✓。**四组观测全部无矛盾。** 0x45 的语义嫌疑从"身份层"改判"格式/元数据层为主嫌疑"（与 0x0A 的分界 = ELF/哈希段能否定位）。
+
+**R28m 预注册（先于刷机立字）——最小实验 = 补测缺格**：
+- M1：buffer = [ehdr+phdrs 0x94][哈希段 0x1a38 自 0x1000]（stock msm-4.14 打包形态，原厂链），phdr p_offset 原样 → 判据：ACCEPTED(0) ⇒ 位置即真凶，墙倒，接 MEM_SETUP/AUTH_AND_RESET 走 step 19 全路径；
+- M2：同 M1 但 phdr[1].p_offset 补写 0x94（自洽打包）→ M1 拒而 M2 收 ⇒ TZ 按 p_offset 读（F6 修正版）；
+- M1/M2 均 0x45 ⇒ 位置假设死，内容/身份层坐实 ⇒ secapp 反汇编成为唯一路径，tz.mbn 到手升硬前置；
+- 0x0A/其它码 ⇒ 新证据回桌。
+- 附带探针（同 boot 各一发 INIT_IMAGE，无副作用）：E4-cross：zap 文件 × pas id 1、adsp 文件 × pas id 13——id 绑定 vs 文件绑定的最后分诊。
+- 红线：两参形态唯一（三参族 = SMC 即复位，R28 判决）；每个可复位调用前 put_the_log_away；判词行逐字预注册；R28l 相位二分轮不受挤占——M1/M2 属 GPU 镜像 step 19 路径，若 R28l 先执行则 R28m 顺延为独立轮。
+
+**遗留 / 硬前置**：secapp 二进制（tz 分区 / R28g 官方包同款 hyp-tz-devcfg）不在两仓库。若 M1/M2 皆 0x45，需要用户提供 tz.mbn（官方包固件集或 dd /dev/block/by-name/tz）——静态侧能榨的已全部榨干，本条目即 T3 静态批的闭卷。
