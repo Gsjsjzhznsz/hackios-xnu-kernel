@@ -706,3 +706,71 @@ Stage Summary:
   floating latest）；头文件字节级往返校验过。
 - 待办：推送触发 CI（本沙箱无 GitHub 凭据——r28g 是当时会话有 token 推
   的；本轮材料备齐待推），构建成功后注册内核 sha 入 KNOWN 表 + 发布记录。
+
+## R28j · 真机判决：J1 —— 同 boot 闭环成立，T3 转正（2026-10-26）
+
+**输入**：用户回传 `r28j-logdump.txt`（GPU 镜像 boot：cmdline `rd=md0 … touchscreen=1 buttons=1
+cpus=8 ufs=2 bootcpu=7 root_apfs=ufs_userdata gpu=1`、`R28 cmdline: the extras riding this
+boot: (none)` —— R28j 默认参数零 token 实证；单块 `== XNU FLUSH #37 at 60 s ==`，214,609 B，
+loader flush #1..#37 全程配对（每次 read back the same (0)），内核全程存活无复位）。
+
+**J1 判决（判读树原文命中）**：
+
+1. **T2 先行且通过**：`T2 armed: smc 0x42000201, arguments word 0x82, x2 1 (the pas id),
+   x3 0xfef9c000 (the metadata page), x4 0`；T2 页检查过（`x3 0xfef9c000 is page-aligned,
+   the metadata 7820 bytes (one page, the whole .mdt in it)`）；内嵌副本自证
+   （`fw/adsp.mbn: 7820 bytes, the kernel's own embedded copy (sha256 f5881fc7...)`）；链读出
+   `THE ADSP'S CHAIN SAYS: THE PHONE'S OWN PRODUCTION CHAIN ("Xiaomi Attestation CA"/"Xiaomi
+   Root CA")`；调用被抢占 1 次后应答 → **`T2 VERDICT: ACCEPTED (0) -- the XNU→Hyp→TZ chain is
+   sound; the zap's refusal is zap-specific: go T3`**（判决行逐字在场）；adsp give-up
+   （`smc 0xc2000206, arguments 0x1` → returns 0, answer 0）干净交还。
+2. **zap 紧随同 boot**：空探针 `smc 0xc2000601` → answer 0x1（到达时系统活着）；链读出
+   `THE SIGNATURE CHAIN SAYS: THE PHONE'S OWN PRODUCTION CHAIN -- this is the file this
+   phone's vendor ships: TrustZone should take it`；E1 页检查过（`x3 0xff020000 is
+   page-aligned, the metadata one page (the whole 14256-byte file in it)`）；`E1 armed:
+   smc 0x42000201, arguments word 0x82, x2 13, x3 0xff020000, x4 0` →
+   **`TrustZone returns -3145797, answer 0` → `refused: the call returns -3145797`** ——
+   与 R28d 之墙同码；zap give-up（0xd → 0/0）干净，结尾收尾 give-up 再 0/0。
+3. **J1 成立**：T2 0 + zap -3145797，同 boot 背靠背、各带 give-up、两半之间只有文件/id/
+   读取来源三处不同（卷 ride R28d 原字节）→ 序贯对照闭环 → **T3 转正**。
+
+**对照组新证据（T3 台账，本轮新增）**：
+
+1. **零页双查**：`smc 0x42000201, arguments 0xd, 0xff034000, 0`（GPU id × 零页）→
+   **-3145738**；`arguments 0x1, 0xff034000, 0`（audio id × 同零页）→ **-3145738** ——
+   与真 zap 的 -3145797 **不同码** ⇒ secapp 确实读取并解析了缓冲区。拒绝码分层钉死：
+   **-3145738 = 元数据解析层拒绝**（垃圾输入，与 pas id 无关），**-3145797 = 签名/身份层
+   拒绝**（真镜像、原厂签名仍被拒）。zap 之墙与通道/形态/页/调用史全部无关（R21-R24b
+   形态、页对齐、同通道、同 boot 内 adsp 全过）。
+2. **is_supported 双查**：`smc 0xc2000207, arguments 0xd` 与 `arguments 0x1` → 均
+   returns 0, answer 0 —— 平台层对 GPU pas id 无显式禁令，拒绝只针对镜像本身。
+3. **Q5 设备侧作答（两条 0x40 哈希段头 dump 在案）**：adsp `@0x1000:
+   30820122 300d0609 2a864886f70d01010105 0003 82010f00 3082010a 0282010100 bb375441…`
+   （DER RSA 公钥签名表头）；zap `@0x1000: 00000000 06000000 00000000 00000000
+   90190000 90000000 ffffffff 00010000 ffffffff 00180000 00000000 78000000 00000000
+   00000000 14000000 e1500a00`（v6 元数据头表：版本 6、段尺寸/哈希尺寸/幂字段）——
+   两镜像哈希段结构根本不同，T3 离线解析 secapp `cmd 0x49` 的直接输入。
+
+**系统侧**：step 19 FAILED → `the steps after it are not attempted` → `THE GPU IS NOT
+STARTED: step 19 (the zap shader) failed; the system draws with its software renderer`；
+GMU 收 slumber（message 33, 3 words）+ `cm3_sysreset` 写 1 + SMMU（smr/s2cr）清理——
+优雅降级全程无复位；用户态照常起（backboardd `startup complete. 8.03521s elapsed`、
+SpringBoard pid/7 created、RAPHÆL TOUCH/buttons 正常上岗）。
+
+**⚠️ 次要观察（与 J1 无关但必须记录）：lsd SIGBUS 回归在本轮 GPU 镜像 boot 再度在场。**
+launchd 戳非单调（00:05:29 → 00:01:14 回拨，用户态时钟把戏，仅记档不影响判决）后进入
+崩溃循环：`lsd[39] exited due to SIGBUS | sent by exc handler … service has crashed 4
+times in a row`（后续 lsd[41]/[42]、analyticsd[35]/[40]，tail 处 analyticsd[121] 仍在
+重生循环）。跨 boot 对照表：R28d 内核（gpu=1，zap 每轮拒绝）lsd 干净；R28h-B（R28g 代
+内核，T2 在树未武装）SIGBUS；R28i 主镜像（无 gpu=1，adreno 全跳过）干净（README：R28i
+真机点亮 SpringBoard）；本轮 R28j GPU 镜像（T2 武装 + zap）SIGBUS。⇒ 回归与"新世代
+内核 + adreno 轮实际执行"共现；与 T2 的 smc 调用本身无必然（R28h-B 反例）。**待确认：
+本轮是否刷过 R28j 主镜像（lsd 控制组）及其结果**——主镜像干净 ⇒ 嫌疑收窄到 r28j 世代
+adreno 代码路径/静态布局（R28i-minus 分离实验转正）；主镜像也 SIGBUS ⇒ 环境/构建面
+重查（尽管 R28i 已钉死工具链）。
+
+**Stage Summary**：
+- R28j 判决 = **J1：同 boot 闭环成立，T3 转正**；zap 之墙定性收敛为"secapp 对 stock zap
+  镜像的身份拒绝"（-3145797），解析层（-3145738）与身份层分离由零页双查钉死
+- T3 台账齐备：两条 0x40 哈希段头 dump（Q5）、双码分层、is_supported 双 0、链读出两份
+- 遗留：lsd SIGBUS 回归本轮再现，等待 R28j 主镜像对照判决；R28i-minus 升为待办
