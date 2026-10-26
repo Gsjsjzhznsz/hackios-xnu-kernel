@@ -1085,3 +1085,21 @@ r28l flashboot → oem run；**等 ~2-3 分钟过风暴首发窗再抓 logdump**
 - 红线：两参形态唯一（三参族 = SMC 即复位，R28 判决）；每个可复位调用前 put_the_log_away；判词行逐字预注册；R28l 相位二分轮不受挤占——M1/M2 属 GPU 镜像 step 19 路径，若 R28l 先执行则 R28m 顺延为独立轮。
 
 **遗留 / 硬前置**：secapp 二进制（tz 分区 / R28g 官方包同款 hyp-tz-devcfg）不在两仓库。若 M1/M2 皆 0x45，需要用户提供 tz.mbn（官方包固件集或 dd /dev/block/by-name/tz）——静态侧能榨的已全部榨干，本条目即 T3 静态批的闭卷。
+
+## T3 · 静态取证第二批：tz.img 落体解剖——0x300045 不在此镜像中，墙判上游（2026-10-26）
+
+**输入**：tz.img 4,194,304 B（sha256 8022b6a66f41…，ELF64 AArch64，e_entry 0x14680000，23 phdr，无 section header = QSEE 签名镜像）。内核侧 scm() 核实为裸透传（(int32_t)x0 直印）⇒ -3145797 为安全侧原样返回。
+
+**G1 镜像自证**：seg1（0x1000..0x6140）= v7 元数据段（头 19/6/100/1800，"QSEE"/"Beijing1"/"Xiaomi" 证书链，哈希表+0xff 填充）——与 ACCEPTED 的 adsp 同一小米生产链，同源设备固件判定通过。[0x548..0x1000) = 2744B 全零。
+
+**G2 架构全解**：SMC 分发表 @0x1c1323f8（{0x02000201, arginfo 0x82 ←与内核判词互证, 0xa, handler 0x1c04f4a4}；205→0x1c04f488；202→0x1c04f4f8；206→shutdown；第二注册点 @0x1c290118）。INIT 薄壳 0x1c04f4a4 = `bl 0x1c04df1c; cneg w0,w0,gt`（负号化点）。真身 0x1c04df1c：pas_id≤0x1D、per-PAS 对象表 @0x1c165618（**镜像态 30 槽全空 ⇒ 运行时动态建**）、per-PAS 锁 @0x1c132100、默认错 0x30001B；主步进 0x1c04d75c（回调对 {0x1c04e344 范围检查, 0x1c04e3e0 状态映射}）→ 解析 0x1c0d6xxx → 注册 0x1c04d3b8 → 哈希段选择（bits[24:26]==0b010）→ blr 回调 → 二段 0x1c04f0c4。元数据引擎 0x1c0d6xxx：0x1c0d67b8 = NS 缓冲读取器构造（16B 头 + ELF 魔数，读败/-0x61 → 4）。**错误码拼装 = 减法算术族**：0x30005B − delta（0x51→0x30000A 零页 ✓、0x50→0xB、0x4F→0xC、0x4E→0xD、0x4D→0xE）。PBSB 对象系统（魔数 0x50425342，可插拔虚表 +0x410/+0x418，哨兵 0x2ECB770=默认）；cmd 0x49 调用点 0x1c0b30b0/28/50 全在 secboot 配置/KV 层（/secboot/oem_secapp、/secboot/deferred_oem 的 oem_id/model_id/sw_id_list）。seg3（0x14680000 独立 VA 域，含入口）= NS 访问桥（0x8110xxxx 族）。大解析器（0x1c0a9xxx-0x1c0aba40）内层码族 0x20-0x2b/0x44/0x45/0x4a；两 0x45 产地（表门控 0x1c0ab688——表空；区域验证器 0x1c0ab868 内部入口——精确包含→0x45）均无直接 BL 调用者。
+
+**G3 决定性普查：0x300042-0x300049 整段缺席，0x300045 零合成点。** 方法：函数边界对齐（ret 后非零起点 ×6175）+ 失配重同步线性扫（382,506+ 指令）+ 常量追踪器（mov/movz/movn 别名、movk、reg-imm/reg-reg 算术、BL 清易失）。0x300000-0x300FFF 全谱落地（0x300000×1 … 0x300100×3）；字面量池/orr #0x300000/add-sub #0x300(0),lsl#12/64 位 MOVK 另行排除。交叉验证：0x30000A 唯一合成点 0x1c04d824 = 0x30005B−0x51，与零页判词 -3145738 逐位互证。工具教训：普查窗口两连错（0x30FFFFF/0x03000000，正确族 0x300000-0x300FFF）曾全滤正确结果——**纪律：自动工具结论须过一个已知锚点正向复算方可采信。**
+
+**判决**：
+- **J-T3-2a：墙不在 tz.img。** 零页对照证通道可达 TZ INIT（0x30000A 仅此镜像可产）；真 zap 返回 -0x300045 而本镜像产不出；同 fnid 同形态唯一变量 = 缓冲内容 ⇒ 拦截在上游（QHEE/hyp 或 EL3 = R28g 的"hyp 包装壳"），且该层读内容判形（零页放行、真 zap 被截）。保留项：0x0A 亦可能上游同族判出（不影响结论）。
+- **J-T3-2b：0x45 = "此图不可收"类判词。** R23 考古：stock 上 spss 同码被拒、a640_zap 同字节文件 stock 过——同字节 stock 过/XNU 拒 ⇒ 变量在通道或调用者身份，非文件。
+- **J-T3-2c："secapp cmd 0x49" 命名就 zap 墙退役**：0x49 在 tz.img 真实存在但服务于 secboot 配置/KV 层，INIT 直呼链无 0x49；责任层改判"上游拦截层（hyp 侧）"。
+- **F6 升级**：header-pair-end 读者获得候选执行者（上游拦截层）。R28m 有效且升级：**M2（自洽打包）= 最强单发**（同时满足两种读者）；M1 拆分层归属。
+
+**N 预注册**：N1 硬前置 = 确证 tz.img 出处（dd /dev/block/by-name/tz 的 sha256 比对 8022b6a66f41…）；N2 = R28m M2 优先：ACCEPTED ⇒ F6 双层成立墙倒；仍 0x45 ⇒ 转向 **hyp.mbn 取证**（普查器直接复用），hyp.mbn 升新硬前置。N3：artifacts 于 download/t3-batch2-artifacts/（census4b 全图等）；脚本侧 tz_parse/tz_disasm1-11/tz_census1-4 留档。
