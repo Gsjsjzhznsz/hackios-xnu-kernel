@@ -1103,3 +1103,23 @@ r28l flashboot → oem run；**等 ~2-3 分钟过风暴首发窗再抓 logdump**
 - **F6 升级**：header-pair-end 读者获得候选执行者（上游拦截层）。R28m 有效且升级：**M2（自洽打包）= 最强单发**（同时满足两种读者）；M1 拆分层归属。
 
 **N 预注册**：N1 硬前置 = 确证 tz.img 出处（dd /dev/block/by-name/tz 的 sha256 比对 8022b6a66f41…）；N2 = R28m M2 优先：ACCEPTED ⇒ F6 双层成立墙倒；仍 0x45 ⇒ 转向 **hyp.mbn 取证**（普查器直接复用），hyp.mbn 升新硬前置。N3：artifacts 于 download/t3-batch2-artifacts/（census4b 全图等）；脚本侧 tz_parse/tz_disasm1-11/tz_census1-4 留档。
+
+## T3 · 静态取证第三批：hyp.img 落体解剖——0x300045 真凶落网（2026-10-27）
+
+**输入**：hyp.img 8,388,608 B（sha256 6b7ed7a40c16ffaa…，ELF64 AArch64，e_entry 0x85710000，4 phdr；seg3 = 唯一代码段 file[0x3000..0x77388)→VA 0x85710000 filesz 0x74388；seg1 @VA 0x85962000 = Xiaomi 证书链段——SecTools Test User + Attestation CA + Root CA，与 batch1 zap 元数据同源同构）。工具链全复用 batch2（hyp_parse/hyp_census/hyp_disasm1-5，capstone 5.0.7），普查窗口 0x300000-0x300FFF + 边界哨兵 0x2FF000-0x302FFF（无族外泄漏）。
+
+**H1 普查判决 + 锚点正向复算**：0x3000xx 全族在 hyp 复活（0x300001-0x30001B、0x300033、0x300040、0x300042、0x300044、0x300045×6、0x300046-49×3/3/3/2、0x30005B；0x30000A @0x85725a24）。0x300045 六处普查命中经逐条反汇编核对 = **一真五伪**：真合成点 **0x85727050**（`mov w19,#0x45; movk w19,#0x30,lsl#16`，在 `pil_init_image_to_tz` 内）；0x85726c8c/c94、0x85726f40/f64、0x85727084 为线性扫描合并伪迹（真值 0x300043/0/w4 透传/0）。batch2"锚点正向复算"纪律第四次生效。
+
+**H2 SMC 分发表全解（R28d 地址 0x85760B00 证实）**：表 @VA 0x85760B00，步长 24B，项 = {pad, fnid, arginfo, flags, handler VA(64b), pad}，37 项，表基指针存于 0x85761C10。PAS 家族：0x02000201 INIT(arginfo **0x82** ←与 batch2 tz 侧 INIT arginfo 逐位互证；handler 0x8572755c)、0x02000202 MEM_MAP、0x02000205 AUTH_RESET、0x02000206 SHUTDOWN、0x02000207 IS_SUPPORTED、0x02000208、0x0200010a；thunk 统一形态 `bl 服务体; cneg w0,w0,gt`（正码负号化返回——0x300045→-3145797 的符号翻转点）。内核 fnid 0x42000201 = 表内 0x02000201 + SMC64 位 0x40000000，conduit `orr w8,w21,w25,lsl#30` 现场重构同码。
+
+**H3 INIT 全路径（pil_init_image_api_ns 0x85726498）**：门1 pas_id≤0x1d（0xd ✓）、门2 mdata 非空（0xff014000 ✓）→ 0x30001B；subsys 对象表 [0x858ACC00+pas*8]（RAM）；x21≠0 → reader 构造 0x85726cd8（impl={0x857269DC,0x85726A8C}=PILSourceNS）→ **PIL_parseMetadata 0x857258c4**（七步：16B 头读 / **memcmp(buf,"\x7fELF",4)** 常量@0x8575EF40 / ldrb[头+4]=EI_CLASS∈{1,2}→ELF32(0x34+0x20)或ELF64(0x40+0x38)解析器+e_version==1 / phdr 整读+PILSource_ctor(0x857254bc)快照并改写 subsys 流虚表 / 二次解析+0x85741324 TOCTOU 双读一致 / phdr 扫描 [&0x07000000]==0x0200000 哈希段标记 / getData 产出(ptr,len) 溢出守卫）错误码 = 0x30005B−δ 族（−0x51=0x30000A 零页码、−0x50=0xB、−0x4F=0xC、−0x4E=0xD、−0x4D=0xE）→ 0x85726fb4 `ldrb [x21,#0xBE]` 非零假成功 → pil_init_image_to_tz 0x85726ff0：arginfo 构造 0x85716b60(2,0,2)→0x82、拼 0x02000201、conduit 0x857182a4、**返回≠0 一律改写 w19=0x300045**（真错码只进 "pil_init_image_to_tz [%lx]" 日志环）。
+
+**H4 传输层**：目的地查找 0x85717fcc——直通 EL3 清单 @0x8574A5B8（NULL 结尾 31 项实读：0x02000601/0x02000102/0x0400xxxx 架构族/0x02000305/0x02000501-2/0x02000902/0x02001502-3/0x02000c1f…）**无 0x020002xx** ⇒ PAS_INIT_IMAGE 走 Stargate 异步消息路径（"hyp originated msg tracker"，队列/中断会话系统 0x8571801c，"Interrupt session exceeds maximum support"）；直通路径才有裸 `smc #0`（0x857119c8 内 @0x85711a78/@0x85711acc 两发）。
+
+**H5 零页互证 + 码源改判**：零页探针（GPU id + audio id 双查）得**裸 0x30000A** 而非包装码 0x300045 ⇒ 零页死于 hyp 验证器步骤 2/3（ELF 魔数/EI_CLASS）、原样透传 ⇒ **反证 GPU(0xd)/audio 的 subsys 对象运行时已注册**；真 zap 通过全部七步（否则见 0x30000A-E 族）⇒ **R24+ 整文件形态在 EL2 层完全合法，拒因在 Stargate 下游（EL3/TZ 侧），hyp 只改写码**。J1 时代"TZ 拒绝 -3145797"的码源层作废（真 TZ 码被吞，内核不可见）；"TZ 侧拒绝"因果保留。F6 整合：hyp 要求整文件 ELF 并自定位哈希段，TZ 收 hyp 产出的哈希段引用——batch2 "header-pair-end 读者" 获得机制解释。
+
+**J-T3-3a（成立）**：0x300045 码源 = hyp pil_init_image_to_tz（0x85727050），tz.img 排除结论无损；**J-T3-3b（成立）**：真 zap 过 hyp 全部结构检查 ⇒ 拒因在 EL3/TZ；**J-T3-3c（新）**：EL3 真错码唯一白盒通道 = QHEE 日志环提取（N3，logger 0x857150d4，非刷机前置）。
+
+**M2 布局契约（从 hyp 检查直接导出，R28m M2 按此打包）**：①缓冲区必须 \x7fELF 开头（整文件 ELF 是 EL2 硬门槛，裸哈希段/裸元数据方案步骤 2 即死 0x30000A）；②EI_CLASS/e_version/e_ehsize/e_phentsize 规范值；③必须存在 p_flags 高三位=0x2 的哈希段 phdr；④检查窗口内缓冲区逐字节稳定（TOCTOU 双读一致，0x30000C 红线）；⑤哈希段内容（v6 0x34+0x20，原厂链）hyp 不验、交 TZ——**认证变量全部集中在哈希段内容，ELF 外壳只需结构正确**；⑥hyp 把 M2 自由度压缩到"哈希段内容"单维度，与 batch1 缺格矩阵正交对齐：打包形态由 hyp 锁死为整文件 ELF，原厂链的正确载体 = ELF 内哈希段。
+
+**N 预注册**：R28m M2 前提收窄按上述契约执行；M2 仍 0x300045 ⇒ TZ 对哈希段内容的认证拒绝实锤（证书链/签名结构层），secapp 反汇编（tz.mbn dd 或官方包）仍是终极路径；N3（并行支线）：QHEE 日志环提取可读出被吞的 TZ 真错码。artifacts：download/t3-batch3-artifacts/（census、分发表 37 项、直通清单 31 项、PIL_parseMetadata/api_ns/conduit 全文反汇编）；脚本：hyp_parse/hyp_census/hyp_disasm1-5/hyp_artifacts（普查器换 SRC 即可打下一镜像）。
