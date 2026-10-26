@@ -758,6 +758,8 @@ GMU 收 slumber（message 33, 3 words）+ `cm3_sysreset` 写 1 + SMMU（smr/s2cr
 SpringBoard pid/7 created、RAPHÆL TOUCH/buttons 正常上岗）。
 
 **⚠️ 次要观察（与 J1 无关但必须记录）：lsd SIGBUS 回归在本轮 GPU 镜像 boot 再度在场。**
+**（2026-10-26 改判：本节的“回拨”与“SIGBUS”均非本轮 boot 自有内容，见下一条取证；
+真正属于本轮 GPU boot 的是 +4 min 时钟跳变，风暴归前代 boot 残迹。）**
 launchd 戳非单调（00:05:29 → 00:01:14 回拨，用户态时钟把戏，仅记档不影响判决）后进入
 崩溃循环：`lsd[39] exited due to SIGBUS | sent by exc handler … service has crashed 4
 times in a row`（后续 lsd[41]/[42]、analyticsd[35]/[40]，tail 处 analyticsd[121] 仍在
@@ -782,3 +784,62 @@ R28i-minus（R28d 源码原样重编）保持候补、未转正。
 - 遗留：lsd SIGBUS 归因悬空——主镜像控制组本轮未执行（未刷未 boot，操作者确认），
   "干净/也崩"二分不可判；adreno 世代共现与时钟回拨触发器两假设并列，待主镜像
   控制组 boot 分诊；R28i-minus 保持候补
+
+## R28j 主镜像控制组判决 + logdump 残迹取证：风暴与"回拨"改判，时钟 +4 min 跳变归 GPU boot 自有（2026-10-26）
+
+**输入**：操作者补刷 R28j 主镜像并回传 `r28j-main-logdump.txt`（cmdline 无 gpu=1、
+extras none、头行 "FLUSH #30 at 60 s; 175476 bytes follow"；文件实收 466,703 B）。
+
+**残迹取证（字节级，可复现）**：
+1. main[1924..4313] ≡ gpu[2166..4554]，diff 仅 4 行（全部为拼接缝的行首截断）。
+2. main 自有写边界 = byte 175,476（行 1922，末戳 00:01:24.932499，写尾腰斩
+   `buttons: reading GPIO6 of the PM8150: t`）；gpu 自有写边界 = byte 214,609
+   （行 2481，末戳 00:05:29.827985，写尾同样腰斩）。
+3. 两文件实收 ~467 KB = 同一固定读长 ⇒ 回读没有按头行声明的字节数读，把分区里
+   前代 boot 的内容原样拖进了文件。**工具缺陷：回读必须严格按头行字节数截断。**
+4. 指针计数轨迹（"N s: the kernel has logged"）：main 26 s→36 s 仅 +465 B（纯
+   coalesce 噪声 = 日志安静），log 份量 142,137 B；gpu 30 s 起 180,797 B 冻结。
+   两边的 log 段 = 指针有界，段内内容全为各自 boot 自有。
+
+**改判**：
+1. **lsd/analyticsd SIGBUS 风暴（lsd[39] 4 连崩 → analyticsd[121]）不属于 R28j 任何
+   一个 boot** —— 它在 gpu 自有写边界（byte 214,609）之下的分区残迹里，是 R28j GPU
+   boot 之前某个 boot 的自有记录（疑 R28h-B 一系或更早 GPU 轮；身份待旧档重审计）。
+2. **"时钟回拨 00:05:29 → 00:01:14"没有任何单个 boot 发生过** —— 00:05:29.827985 是
+   R28j GPU boot 自有记录的终点；00:01:14.496777 起是前代 boot 的中段内容；交界处
+   `d|...` 腰斩行 = GPU 写尾切掉前代行首。"用户态时钟把戏"一段作废。
+3. **GPU boot 自己的真实异常（指针计数在案）：墙上时钟在 T2/zap 序贯对照 + give-up
+   收尾后数秒内 +4 min 跳变**（自有 log：1x 正常戳 → 00:04:59.205118 直进，跳变点
+   log 字节 ~141.6 KB ≈ mark 10-16 s，紧随 step 19 拒绝收尾；异常窗 00:04:59→
+   00:05:29.827985 全在指针计数内）。跳变源未定位（仓库内 settimeofday/clock_settime
+   零命中）→ 台账 Q-new：跳变 setter 是谁。
+4. **主镜像控制组判决：0→38 s 全程 1x 干净**（无跳变、无风暴、lsd[29] 存活；26 s 起
+   日志安静）。GPU boot 跳变在 ~10-16 s ⇒ 控制组覆盖跳变窗口 ⇒ **跳变与 adreno/T2/zap
+   相位强相关**（"GPU 相关性"以自有记录级证据回归；R28i-minus 分离实验退役）。
+5. 机制假设（工作假设）：跳变 +4 min → ~10-15 s 后一次回真同步（前代 boot 的
+   00:01:14.496777 = 其回真点，mark+anchor 恰合真值）→ lsd/analyticsd 在回真瞬间
+   SIGBUS（前代风暴起于回真 +0.03 s）。R28j GPU boot 捕获止于回真之前，故自有记录
+   无风暴。⇒ **谁设 +4 min、谁回真，是同一条链上的两个口**。
+6. 跨 boot 对照表（R28d 干净 / R28h-B SIGBUS / R28i 干净）：每份 logdump = 自有新鲜区
+   + 分区残迹，只有落在自有区且在指针计数内的观察才归该 boot —— 全表待按此重审计。
+7. **J1 判决不受影响**：T2/zap 全部证据（内嵌自证、链读出、VERDICT、give-up、零页
+   双查、is_supported、Q5 双 dump）都在 gpu 自有新鲜区内。
+
+**R28k 预注册（本轮唯一代码变量：被 TZ 拒绝的 step 19 不再终止 run）**：
+- 依据：R27 注释在案 —— 早前 two-parameter run 曾在被拒后继续（26 s 死亡，R27 因此给
+  20/21/22 加前置 flush 守卫），此后默认拒即停。R28k 恢复"记录后继续"，仅限
+  TrustZone 见过镜像并拒绝（refused: 标签）的情形；内核代次标签升 R28k。
+- K1：步 20/21 完成、core_runs ⇒ GPU 无 zap 常驻（keep=1 默认已开）→ RedwoodGPUStart
+  —— 下一站 IOGPU/Metal；zap 之墙继续 T3 离线逆向。
+- K2：20/21/22 死亡/复位 ⇒ zap 硬前提，T3 升关键路径（R27 守卫保底记录）。
+- K3：+4 min 跳变在 R28k 自有记录复现 ⇒ 跳变绑 adreno 相位本身（非拒即停路径），
+  时钟问题独立立项。
+- K4：跳变不现 ⇒ 跳变与拒即停/收尾序列相关，下一轮单查 give-up/清理路径。
+- 附带：未来 logdump 尾部仍会出现前代残迹 —— 判读只看自有区（写边界 + 指针计数）。
+
+**Stage Summary**：
+- 风暴与"回拨"改判为残迹假象；GPU boot 自有异常 = +4 min 时钟跳变（T2/zap 后数秒），
+  与主镜像同段位 1x 干净形成对照 ⇒ adreno 相位进函数链
+- 工具缺陷在案：logdump 回读按固定 ~467 KB 而非头行字节数 —— 下轮起修正
+- R28k 已推（step 19 拒绝后继续）；待 CI 构建 + 真机 K1-K4 分诊
+- Q-new：+4 min 跳变 setter / 回真同步者，两口同链

@@ -3059,6 +3059,7 @@ static uint32_t core_match = CORE_MATCH, second_match = SECOND_MATCH;
 static bool second_space_is_on, second_stream_is_on;
 static struct gpu_block core_ring, core_sqe, core_scratch, core_target;
 static bool core_space_is_on, core_runs, zap_is_loaded;
+static bool zap_refused_seen;           /* R28k: TrustZone saw the image and said no */
 #define RING_WORDS              (CORE_RING_SIZE / 4)
 static uint32_t ring_at;                /* where the next word goes: the ring goes round */
 static uint32_t ring_sent;              /* up to where the core has been told to read */
@@ -3780,6 +3781,7 @@ step_zap_load(void)
         zap_is_loaded = true;
         return true;
 refused:
+        zap_refused_seen = true;        /* R28k: the run may go on past a refused step 19 */
         /*
          * R26: the refusal itself is the one line the whole experiment is for -- it goes
          * to the storage before the controls run on.
@@ -5337,7 +5339,7 @@ redwood_adreno_init(void)
         }
 
         printf("adreno: steps up to %u, without those in mask %#x; step %u is the new one and waits %u ms %s "
-            "(R28j: the kernel generation line -- one kernel, both images)\n", last_step,
+            "(R28k: the kernel generation line -- one kernel, both images)\n", last_step,
             skip_steps, newest_step, pause_ms, fine ? "before every access" : "after each announcement");
         /*
          * R27: the flush channel's own test, before any step runs.  The loader writes the
@@ -5348,7 +5350,7 @@ redwood_adreno_init(void)
          * absent too, meaning the flush was not even asked for) says the channel itself
          * is what R26 never proved.
          */
-        put_the_log_away("step 1's first line: the flush channel's own test (R28j: the kernel generation line)");
+        put_the_log_away("step 1's first line: the flush channel's own test (R28k: the kernel generation line)");
         for (step = 1; step <= last_step; step++) {
                 if (skip_steps & 1u << step) {
                         continue;
@@ -5368,8 +5370,19 @@ redwood_adreno_init(void)
                         put_the_log_away("step 22 entered: the first frame is next (R27)");
                 }
                 if (!steps[step - 1]()) {
-                        printf("adreno: step %u: FAILED; the steps after it are not attempted\n", step);
                         failed = step;
+                        if (step == 19 && zap_refused_seen) {
+                                /* R28k: TrustZone has seen the image and said no -- the refusal, the
+                                 * give-up and the controls are on the record above, flushed.  One
+                                 * variable this round: the refusal no longer stops the run.  The 3D
+                                 * core's own steps (20, 21) do not need the zap (upstream's msm runs
+                                 * without one and says so); how far a zapless core comes, and whether
+                                 * the +4 min clock jump rides on the adreno phase itself, this boot
+                                 * answers. */
+                                printf("adreno: step 19: REFUSED -- the record is complete above; R28k: the run goes on to the 3D core without the zap\n");
+                                continue;
+                        }
+                        printf("adreno: step %u: FAILED; the steps after it are not attempted\n", step);
                         break;
                 }
                 printf("adreno: step %u: done\n", step);
