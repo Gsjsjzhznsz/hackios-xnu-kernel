@@ -998,3 +998,59 @@ extras none、头行 "FLUSH #30 at 60 s; 175476 bytes follow"；文件实收 466
 - 工具规则升级：logdump 自有区/残迹切分为判读前置步；upload 目录全盘点入纪律
 - 设备侧动作（R28l 预注册）：R28k GPU 镜像 + adreno test-mask 二分（只读相位 vs 写相位），
   判读树随轮预注册
+
+## R28l · 预注册：相位二分轮——GPU 镜像 cmdline 裁到只读相位（adreno=9，steps 1-9），写相位候审；判读树 L1-L3 与探针自检先于刷机立字（2026-10-26）
+
+**操作者确认入账**：①"r28k-gpu-logdump.txt 确实是复测日志，且因 lsd 崩溃打满环形缓冲区导致
+历史残留拼接（也是'卡白苹果'现象之所见）"——复测同爆发的操作者侧确认，R28k GPU 风暴的
+确定性（首刷 + 复测两次 boot 同现象）闭环；②"r28j-main 当时跑出来确实没崩"——主镜像干净
+由操作者直接确认，分诊判决的证据等级从"口头观察"升为"操作者确认"，加固完成。
+
+**R28l 的唯一实验变量**：GPU 镜像 cmdline 追加相位 token 组——
+`adreno=9 adreno_skip=7168 adreno_pause=0 adreno_watch=0`（= R28k 自动分支的硬编码形态
+last_step=21→9、mask 0x1c00、pause 0、watch 0；**十进制 7168** 规避 boot-arg 解析器的
+进制歧义——宣告行 "without those in mask %#x" 是 mask 落地的真机自证探针）。只读相位
+steps 1-9 本轮跑（时钟树/熔丝/寄存器读；step 4/5 只写时钟寄存器，不碰内存映射面）；
+写相位（SMMU context bank 13、GMU FW 与启动、zap/T2、3D core）候审。内核侧只动三处
+字符串：宣告行代数戳 R28k→R28l、step 1 flush 自测行 R28k→R28l、新增相位二分宣告行
+×1；R28k 的 run-goes-on 措辞原样保留（step 19 路径本轮不达，字符串在场）；T2 全部
+措辞原样（T2/zap 路径候审）。gpu_block_stop() 全条件化（core_runs/core_is_on/
+gmu_talks/gmu_runs/zap_is_loaded 标志驱动）——step 9 截断时全部自跳过，收尾安全；
+keep 解析在循环后且 done=9<21，RedwoodGPUStart 天然不可达。loader 的 cmdline 零拷贝
+指针无长度上限（134 B 无忧，NUL 由 pad 保证）。工程验证清单：PE_parse_boot_argn 的
+`adreno=`/`adreno_skip=`/`adreno_only=`/`adreno_pause=`/`adreno_watch=` 通路全在
+（5256-5337 行，文档背书组合语义）；gpu=1 消费点唯一（redwood 版被 soc-base 挡）。
+
+**交付物**：tools/r28l-flash-build.sh（外科：双镜像换 kernel 条目；GPU 镜像 cmdline
+加相位 token 组；daily cmdline verbatim；逐条断言）、tools/r28l-kernel-id.py（KNOWN
+收编 R28k sha 916d7719…= run 40318421748 clean build；MARKERS 加 R28l 两行；verdict
+主判据 R28l 化 + cmdline 相位 token 检查；对 R28k 真镜像实测回判 R28k ✓）、
+.github/workflows/r28l-springboard.yml（605 行：门禁大表 R28l 化、gone 表收编 R28k
+代数戳、sha 断言收编 R28k、cmdline 复证 grep 双查、README/release 全文 = L1-L3 判读树）。
+
+**判读树（预注册，先于刷机立字；先自检探针再判分晓）**：
+- 探针自检（任一不满足 ⇒ 本票作废，修复后重跑）：
+  - P0：宣告行 `adreno: R28l: the phase bisection` 在场；
+  - P1：`steps up to 9, without those in mask 0x1c00`——十进制 mask 落地探针；
+    若打 `mask 0x0` ⇒ skip 解析失败 ⇒ 作废（预期不会：strtoul 十进制无歧义）；
+  - P2：logdump 按头行 "L bytes follow" 截断、只判自有区（写边界 + 指针计数；
+    三次残迹教训的常设纪律）。
+- **L1（主分支）**：GPU 镜像（只读相位）全程干净（lsd 零 SIGBUS、无风暴、系统照常
+  起，日志跑到用户态 00:03:00+ 过风暴首发窗）⇒ 触发面 = 写相位（steps 13+：SMMU
+  context bank、GMU FW/启动、zap/T2、3D core）⇒ R28m 再二分（13-17 vs 19-21，
+  或 13 单步：SMMU context bank + GMU FW 装载是第一个大内存/映射操作面）。
+- **L2**：GPU 镜像（只读相位）仍风暴 ⇒ 触发面 = 只读相位（steps 1-9：时钟树写/
+  RPMh/qfprom 读/SMMU ID 读）⇒ 嫌疑面大改写（时钟写/Logdma/UFS 写放大入场；
+  注意 adreno 相位日志本身大量刷 storage——写放大线此时转正）。
+- **L3（时间形状，与 L1/L2 独立记账）**：若 R28l 的风暴首发（若有）仍与 backboardd
+  mapdb 拉取失败毫秒级同步且时刻同款（用户态 00:01:46 前后）⇒ 触发点与相位深度
+  无关（时间相关面——启动序贯的固定时刻）；若时刻不同 ⇒ 深度相关，L1/L2 内继续收。
+- 附带（时钟线）：+4 min 跳变在 R28l 自有记录仍不现 ⇒ K4 链续期（写相位没跑跳变
+  也不现 ⇒ 跳变绑更深相位 13+）；若复现 ⇒ L2 方向佐证。
+- 控制组：主镜像 cmdline verbatim（R28k 已证干净），本轮可不刷；刷则第三验证入账。
+
+**设备侧操作（GPU 镜像主体）**：fastboot boot r28l GPU 镜像 → oem ramdisk → stage
+r28l flashboot → oem run；**等 ~2-3 分钟过风暴首发窗再抓 logdump**（R28k 首发在用户态
+00:01:46 ≈ 内核 ~67 s；抓早了 = 复测快照 60 s 的覆辙）。判读第一步 = 字节级切分自有区
+（scripts/forensics_r28_boot_split.py 随轮复用）。T3（secapp cmd 0x49 离线逆向）并行
+不占设备，继续。

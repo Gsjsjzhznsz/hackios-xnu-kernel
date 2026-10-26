@@ -5339,8 +5339,27 @@ redwood_adreno_init(void)
         }
 
         printf("adreno: steps up to %u, without those in mask %#x; step %u is the new one and waits %u ms %s "
-            "(R28k: the kernel generation line -- one kernel, both images)\n", last_step,
+            "(R28l: the kernel generation line -- one kernel, both images)\n", last_step,
             skip_steps, newest_step, pause_ms, fine ? "before every access" : "after each announcement");
+        /*
+         * R28l: the phase bisection.  The R28k main image (the adreno phase skipped
+         * whole) ran the userland clean -- no lsd SIGBUS, no white apple -- while the
+         * R28k GPU image storms the lsd (first death lsd[29] 00:01:46, ms-synced with
+         * backboardd's mapdb fetch failure, 78 in a row).  One kernel, one volume, one
+         * lsd binary: the trigger face is INSIDE the adreno phase (the WORKLOG's
+         * pre-registered left branch hit; the volume face is out).  This round the GPU
+         * image stops at step 9 by its own cmdline (adreno=9 adreno_skip=7168 -- the
+         * same mask the automatic branch hardcodes): the read-only steps 1-9 run (the
+         * clocks, the fuses, the register reads; steps 4/5 write the clock tree only),
+         * and the write phase (the SMMU context bank 13, the GMU firmware and start,
+         * the zap/T2, the 3D core) waits for the next round.  A clean run here puts
+         * the trigger inside steps 13+; a storm here moves it into the read-only face.
+         * gpu_block_stop() is flag-driven: with nothing started every teardown branch
+         * skips itself, so a truncated run ends exactly as cleanly as it began.
+         */
+        printf("adreno: R28l: the phase bisection -- the lsd SIGBUS trigger face is inside the adreno phase "
+            "(the R28k main image ran clean, the GPU image storms); the read-only steps 1-9 run this boot, "
+            "the write phase (the SMMU context 13, the GMU firmware and start, the zap, the 3D core) waits\n");
         /*
          * R27: the flush channel's own test, before any step runs.  The loader writes the
          * whole log (its side and this ring) to the logdump partition and answers with the
@@ -5350,7 +5369,7 @@ redwood_adreno_init(void)
          * absent too, meaning the flush was not even asked for) says the channel itself
          * is what R26 never proved.
          */
-        put_the_log_away("step 1's first line: the flush channel's own test (R28k: the kernel generation line)");
+        put_the_log_away("step 1's first line: the flush channel's own test (R28l: the kernel generation line)");
         for (step = 1; step <= last_step; step++) {
                 if (skip_steps & 1u << step) {
                         continue;
