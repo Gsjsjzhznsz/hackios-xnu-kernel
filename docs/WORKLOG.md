@@ -843,3 +843,93 @@ extras none、头行 "FLUSH #30 at 60 s; 175476 bytes follow"；文件实收 466
 - 工具缺陷在案：logdump 回读按固定 ~467 KB 而非头行字节数 —— 下轮起修正
 - R28k 已推（step 19 拒绝后继续）；待 CI 构建 + 真机 K1-K4 分诊
 - Q-new：+4 min 跳变 setter / 回真同步者，两口同链
+
+## R28k · 真机判决：K4 命中（跳变不现）；K1/K2 之间落新叶——zap 是"出安全模式"的硬前提而非 core 存活的前提；lsd 风暴转正为本轮自有、白苹果直接阻断点（2026-10-26）
+
+**输入**：操作者回传 `r28k-gpu-logdump.txt`（R28k GPU 镜像 boot：头行 "XNU FLUSH #36 at 153 s;
+449185 bytes follow"，trunc1 副本 449,130 B 相符 ⇒ 本轮回读按头行字节数取全，kernel log 为
+自有新鲜区、无前代残迹混入；`R28 cmdline: the extras riding this boot: (none)`，gpu=1 在 cmdline）。
+
+**主线证据（step 19→21，R28k 变量"拒绝后继续"全程在场）**：
+1. T2 对照照常：`T2 VERDICT: ACCEPTED (0)`（内嵌 adsp .mdt 同 boot 前置）。
+2. E1 zap 照常被拒：`smc 0x42000201, arguments 0xd, 0xff00c000, 0` → -3145797（`refused:` 标签
+   在案，R28k 放行条件命中）；give-up ×2 各 returns 0（拒后 + 控制后）；零页双查 -3145738 ×2、
+   is_supported ×2 answer 0 —— 与 R28j 台账逐项一致（T3 证据链复现）。
+3. **step 19 REFUSED → R28k 放行**：`step 19: REFUSED -- the record is complete above; R28k: the
+   run goes on to the 3D core without the zap`（拒即停自本轮起废止）。
+4. **step 20 通过（R28 系首次到达的硬件相位）**：CP 启动 `alive after it; status 0x1`；init 消费
+   `ring read up to 9, status 0x1` → **`20: THE 3D CORE TAKES COMMANDS`** —— 无 zap 常驻，
+   3D core 上电、CP 起来、ring 命令照吃。
+5. **step 21 失败（卡点精确定位）**：`command the 3D core out of secure mode (it asks the zap
+   shader), then to write a word into a page of ours`：出安全模式命令被 CP **消费**
+   （`ring read up to 11, status 0x1`，消费 ≠ 生效）；随后主存写入测试 ——
+   `ring read up to 15 of 15, status 0x800005, interrupts 0, command processor: fault 0,
+   interrupts 0x1, protection 0`；`the GMU sees it busy: 0x70800005` —— ring 全被吃掉、字没落进
+   主存、CP 中断挂 1 位。驱动 doctrine（raphael_adreno.c 42-43 行 "the zap shader … without
+   which the 3D core stays locked in secure mode"；step 21 = CP_SET_SECURE_MODE 0x66，3031 行）
+   本轮硬件层验证：**CP 吃命令但出不了安全模式，主存写被安全态吞掉**。
+6. 优雅失败全程：`step 21: FAILED; the steps after it are not attempted` → `THE GPU IS NOT
+   STARTED: step 21 (the 3D core's first commands) failed; the system draws with its software
+   renderer` → GMU slumber（message 33）+ cm3_sysreset + SMMU 清理 + gbif halt/let-go（core
+   跑过才有此 cycle）→ `over; the system goes on starting` —— 内核存活到 FLUSH #36（153 s），
+   无死亡无复位（**K2 不触发**）。
+
+**K3/K4 判决：K4 命中——+4 min 跳变未复现**：
+- 全量时间戳扫描（2,829 枚用户态戳）：first 00:00:39.778 → last 00:03:04.79，各连续段单调，
+  无任何 +4 min 量级跳变；最大正向间隙 27.7 s（00:01:18→00:01:46 风暴前静默窗）；用户态相对
+  内核 mark 的基线偏移全程恒定（~+31 s：末戳 184.8 s ↔ FLUSH #36 mark 153 s 精确闭合）。
+- 按 K4 预注册：跳变与拒即停/收尾序列相关。R28k 数据进一步收窄：R28k 同样有 give-up ×2 与全
+  teardown（slumber/sysreset/SMMU/gbif）却无跳变 ⇒ 跳变绑的不是"拒绝+give-up+清理"泛型，而是
+  **"core 从未启动即收尾"那条特定路径**（R28j 拒后即停、core 未启动 → 跳变；R28k 跑完 20/21、
+  core 启动过 → 无跳变）。Q-new 继续挂账，降级支线。
+- 唯一非单调点 = 日志环接缝伪影：风暴把内核日志环打满一圈，接缝处腰斩行（`nchd|` 行头）+
+  5.3 s 窗口重排（00:03:04.79 之后再入 00:02:26.38..00:02:31.65 段）。工具规则入账：
+  **风暴期 logdump 尾部可出现环绕接缝，判读须扫全文件找接缝，不得默认行序=时序**。
+
+**lsd 风暴：本轮自有实锤（非残迹）+ 机制级新证据**：
+- 风暴在本轮写边界与指针计数内：首发 **lsd[29] SIGBUS @ 00:01:46.623310**（lsd[29] 为本 boot
+  原生 pid，00:00:46.8 出生后正常服务 1 分钟），随后重生即崩，死亡行 84 条（计数器峰值
+  `service has crashed 78 times in a row` @ 00:02:31.5，lsd[120]），持续到日志终点 00:03:04.79
+  （= flush 瞬间）。
+- **首发死亡与 backboardd 的 LaunchServices 数据库拉取毫秒级同步**：00:01:46.623052
+  `backboardd[9:357] error on blocking retry to fetch database … 4097` → 00:01:46.624079
+  `LaunchServices: Database mapping failed, retries = 0` → 00:01:46.624177
+  `disconnect event interruption received for service com.apple.lsd.mapdb` ↔ lsd[29] 死亡
+  00:01:46.623310。⇒ SIGBUS 落在 lsd 服务 mapdb 映射请求、touch 映射页的瞬间；嫌疑收敛为
+  "lsd 数据库映射页不可 fault-in"（卷上文件截断/损坏 vs 内核 fault 路径拒绝，两假设并列，
+  待主镜像分诊）。
+- 本轮风暴 **analyticsd 零死亡**（捕获窗内；R28j 时代残迹风暴为 lsd+analyticsd 双死）——签名
+  差异入账，捕获窗截断效应注意（analyticsd[121] 00:02:31.6 才重生）。
+- 与 R28j 改判链闭环：R28j 自有记录（跳变、无风暴）+ R28k 自有记录（无跳变、有风暴）⇒
+  **"跳变→回真→SIGBUS"因果链作废**：lsd SIGBUS 不需要时钟跳变，独立事件；adreno 世代共现
+  假设保留但触发面二分待主镜像分诊。
+
+**白苹果阻断点判决**：
+- SpringBoard[7] 全程存活零崩溃（00:00:39.86 spawn、00:00:53.5 连 backboardd SystemShell、
+  ps 在案 pid 7 CPU 2.68 s、无任何 exit/signal 记录）——**不是"无法存活"，是"起不完"**：
+  lsd 死循环令 LaunchServices 不可用，shell 交接无法完成，backboardd PUIProgressWindow
+  （白苹果）驻留。
+- 软件渲染不是阻断点：`CoreAnimation: Failed to initialize Metal or OpenGLES contexts!` +
+  `Software renderer! Simulating crash!`（00:00:53.47）与 R28i 进桌面时同款（R28i 先例：
+  no GPU draws 仍点亮 SpringBoard）⇒ 软渲染可容忍，lsd 不可容忍。
+
+**三问判决（对应操作者三问）**：
+1. K1 达成度：**部分达成（K1/K2 之间新叶）**——"GPU 无 zap 常驻"硬件层被证明可容忍到
+   "core 活 + CP 吃命令"（step 20 通过），但 K1 全文条件（20/21 完成、core_runs →
+   RedwoodGPUStart）不成立：step 21 出安全模式失败。**zap 是"出安全模式/主存写可见"的硬前提，
+   不是 core 存活的硬前提**。K2 不触发。zap 之墙继续 T3。
+2. 白苹果直接阻断点：**是 lsd 死循环**（精确化：SpringBoard 存活但起不完；软渲染非阻断）。
+3. 下一步最小实验：**刷 boot R28k 主镜像（同内核、无 gpu=1、adreno 全跳过）**——单变量分诊
+   lsd 触发面：干净+进桌面 ⇒ adreno 相位触发面（内核侧）；仍 SIGBUS ⇒ 卷面触发（lsd mapdb
+   历史损坏）→ 卷侧修复/重建。同 boot 收获：进桌面第二次验证 + 时钟 1x 基线。
+   step 21 的 zap 依赖短期不可解（-3145797 身份层拒绝，T3 在途）且非进桌面必经点 ⇒
+   **lsd 优先，T3 并行**。主镜像若复现 lsd SIGBUS，先捞 mapdb 文件验截断再动手。
+
+**Stage Summary**：
+- R28k 判决 = **K4 命中（跳变不现）+ K1/K2 间新叶（zap=出安全模式硬前提、非 core 存活前提）**；
+  step 20 无 zap 通过为 R28 系首次到达的硬件相位（THE 3D CORE TAKES COMMANDS）
+- lsd 风暴转正为本轮自有；首发死亡与 backboardd mapdb 映射请求毫秒级同步 ⇒ SIGBUS 点位锁定
+  在 lsd 服务映射页瞬间；"跳变→回真→SIGBUS"链作废
+- 白苹果 = lsd 死循环阻断 shell 交接（SpringBoard 存活未起完）；软渲染非阻断（R28i 先例）
+- 下一轮：R28k 主镜像控制组（同内核单变量）——lsd 触发面二分 + 进桌面 + 时钟基线，一石三鸟
+- 工具规则新增：风暴期 logdump 尾部可有日志环接缝（腰斩行 + 窗口重排），判读先扫接缝
