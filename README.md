@@ -1,239 +1,111 @@
-# HackiOS — XNU kernel
+# HackiOS · 小米 Redmi K20 Pro（raphael）XNU 内核移植
 
-**HackiOS** boots Apple's open-source **XNU kernel** (`xnu-8796.121.2`, the kernel of iOS 16.5) on Android phone
-hardware and runs the **unmodified iOS 16.5 user space** on top of it: launchd → backboardd → SpringBoard →
-apps. Our own EFI loader, our own replacements for Apple's closed drivers, a UEFI port, and a Linux Wi-Fi driver
-on a compatibility layer make that possible.
+**iOS 16 用户态 + XNU（Darwin 22.5）内核，运行于小米 Redmi K20 Pro（代号 `raphael`，骁龙 855 / SM8150）。**
 
-It runs in two places:
+> 本仓库是 [oosexgang/hackios-xnu-kernel](https://github.com/oosexgang/hackios-xnu-kernel) 的 **raphael 机型适配线**（fork）：
+> 把 HackiOS 从 POCO X5 Pro（redwood）带到 Redmi K20 Pro 的机型分支。
+> 中文为默认语言，English section follows below.
+>
+> 姊妹仓库：[Gsjsjzhznsz/ios-raphael](https://github.com/Gsjsjzhznsz/ios-raphael)（t 系早期移植线，已并入本仓库的 R 系）。
 
-- **POCO X5 Pro 5G (redwood, Snapdragon 778G)** — nothing is flashed: the UEFI is started with `fastboot boot`,
-  the whole system lives in RAM, and after a reboot the phone is back in Android;
-- **QEMU** (`virt`, aarch64) — the same thing on any Linux computer, no phone needed.
+## 项目简介
 
-This repository is half of the project:
+HackiOS 让 Apple 开源的 XNU 内核在 Android 手机硬件上启动，并在其上运行**未修改的 iOS 16.5 用户态**（launchd → backboardd → SpringBoard → 应用）。本仓库把这条路线带到了 Redmi K20 Pro：
 
-| Repository | What |
+- **启动链**：手机自己的 XBL/ABL（UEFI）→ 我们的 `xnuloader`（看护装载器，v7）→ XNU 内核（内嵌 raphael 驱动树：触摸/按键/显示/电池/USB）
+- **会话式研究台，不是 ROM**：系统卷住在 RAM、不写手机闪存（logdump 取证分区除外），重启即回 Android
+- **每轮一个变量**：R 系轮次（R28d → R28i → R28j…）用外科手术式打包——底板镜像只换内核条目，装载器/卷/cmdline 逐字节原样，机器可证明
+
+## 当前状态（2026-10 · R28 系列）
+
+| 已工作 | 未工作 / 卡点 |
 |---|---|
-| **hackios-xnu-kernel** (this one) | XNU patches, the EFI loader, the UEFI port, Wi-Fi, QEMU scripts, `xl`, prebuilt kernel/loader/UEFI, `common/` scripts |
-| [hackios-xnu-userland](https://github.com/oosexgang/hackios-xnu-userland) | our init, injected libraries, launchd jobs, the APFS image builder, the scripts that take iOS out of Apple's IPSW, Metal/Mesa work |
+| 锁屏 → 桌面 → 应用（R28i 真机点亮 SpringBoard） | **GPU zap shader**：TZ secboot 拒绝（`-3145797`，签名/身份阶段；T2 已证 XNU→Hyp→TZ 链路无罪 → T3 逆向中） |
+| 触摸（Goodix GT9886，含冷启动重试梯）、电源/音量键 | Metal / GPU 硬件加速（等 zap 之墙） |
+| 八核（`cpus=8`，Kryo 485） | 蜂窝、蓝牙 |
+| 显示 + 亮度通道（IOMFB sel 50 → DSI DCS 0x51） | 完整充电路径（电池链与充电监视在，端到端未验证） |
+| 电池服务（AppleSmartBattery）+ 5s 充电输入监视 | App Store / Apple ID（无 Secure Enclave） |
+| USB ECM 网络（`ue0` 192.168.7.2） | |
+| logdump 分区取证 + R26 flush 通道（可能复位的调用前整日志落盘） | |
 
-> **No Apple files are in either repository.** `ios165/fetch.sh` downloads the iOS 16.5 IPSW from Apple's own CDN
-> to *your* machine and extracts what is needed there. HackiOS is an independent research project by OOSEX GANG and
-> is not affiliated with, authorised or endorsed by Apple Inc. iOS, iPhone and Apple are trademarks of Apple Inc.
+**当前轮 R28j（同 boot 序贯对照）**：`adsp 尝试 → give-up → zap 尝试 → give-up`——R28i 的 T2 判决 `ACCEPTED (0)` 证明链路无罪，但 zap 的 `-3145797` 出自另一次 boot；R28j 在同一次 boot 里背靠背完成两次尝试，把对照闭环。判读树 J1–J5 与 logdump 读取纪律见 [r28j-springboard Release](https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases) 的 `README.txt`。
 
-<p>
-<img src="docs/lockscreen.jpg" width="190" alt="Lock screen">
-<img src="docs/homescreen.jpg" width="190" alt="Home screen">
-<img src="docs/control-center.jpg" width="190" alt="Control Center">
-<img src="docs/settings.jpg" width="190" alt="Settings">
-</p>
+**下一步（T3）**：离线逆向 secapp `cmd 0x49` 的拒绝分支——为什么 TZ 拒绝本机原厂签名的 stock zap（信任根已证同为 Xiaomi Root CA 链）。
 
-Photographed on the phone, the Adreno GPU drawing (`gpu=1`). More in [Screenshots](#screenshots).
+## 快速开始（手机端，四步）
 
-## What works
+需要：解锁 bootloader 的 Redmi K20 Pro、`fastboot`、Release 里的两个文件（镜像 + 启动卷）。**不写手机闪存。**
 
-| Works | Does not work (yet) |
+```sh
+fastboot boot  raphael-xnu-r28j-flash.img      # 或当前 Release 的最新日常镜像
+fastboot oem  ramdisk
+fastboot stage raphael-r28j-flashboot.apfs     # iOS 系统卷 → RAM（一次 loader 会话一次）
+fastboot oem  run                              # 等 SpringBoard（约 1-2 分钟）
+```
+
+- 想跑 GPU/序贯轮：把第一行的镜像换成 `-gpu-flash.img`（`gpu=1` 自动执行 adreno 步骤）
+- ⚠️ 启动卷**只 stage 这一个文件**：md1 备份不要 stage（镜像已内嵌全量小卷——R14 事故纪律）
+- ⚠️ userdata 上的 iOS 卷是唯一存货：绝不要让 MIUI 开机（Android 会重格回 f2fs，iOS 卷即毁）
+- 每次开机都要重复四步（会话住 RAM 是"不写闪存"设计的一部分）
+
+## 构建（CI 一键）
+
+Actions → `R28j · SpringBoard 一键流水线` → Run workflow（默认参数即可）。流水线做的事：
+
+1. 工具链钉死（L1ghtmann v19.0.0-L2 具名 tag + 每轮全新缓存键、无 restore 链——R28i 对 lsd SIGBUS 构建漂移的定罪回应）
+2. 从本树源码构建内核（clean build，ccache 零回填），跑 R28j marker 门禁（判决串/证据串逐条计数 + 内嵌 adsp `.mdt` 逐字节证明）
+3. 对 R28d 底板镜像做外科手术：**只换内核条目**，装载器 v7 / ramdisk / cmdline / DTB 逐字节原样（SHA 硬校验）
+4. 发布 Release（双镜像 + 启动卷 + SHA256SUMS + README 判读树 + 工具链审计表）
+
+本地构建：`xnu/apply.sh` → `xnu-deps/setup.sh` → `xnu-build.sh -k`（详见 `xnu/README.md`）；打包 `tools/r28j-flash-build.sh`；离线血统判定 `tools/r28j-kernel-id.py <image>`。
+
+## 仓库结构
+
+| 路径 | 内容 |
 |---|---|
-| Lock screen, swipe to unlock, home screen with all icons (two pages), stock iOS 16 wallpapers | Cellular, Bluetooth |
-| System gestures: swipe up (home, app switcher), edge swipe (back), Control Center | Charging under our kernel (the phone only discharges) |
-| Apps: Settings, Clock, Calendar, Photos, Notes, Safari and more; widgets (Weather, Calendar) on the phone | Metal for apps (in progress: 293 of 456 system shaders already run on the Adreno, see `docs/air.md` in hackios-xnu-userland) |
-| Phone touchscreen (Goodix GT9916), multitouch, wake on touch; real power and volume keys | App Store content and Apple ID sign-in (no Secure Enclave; FairPlay daemon exits) |
-| Up to 8 CPU cores (`cpus=8`), big core at 2.4 GHz, ~20 s to the lock screen | Video and Live Photo recording |
-| Adreno 642L GPU through Mesa/freedreno (`gpu=1`, OpenGL ES for CoreAnimation) | |
-| Wi-Fi (WCN6750, ath11k): join from Settings, Safari over Wi-Fi, 55–90 Mbit/s | |
-| Sound (speakers, main microphone), camera in Camera.app (front/rear, preview, focus, HEIC photos) | |
-| Data that iOS writes survives a reboot (`var_store=1 ufs_write=1`); iOS root volume on the phone's flash | |
-| Sileo + Procursus (dpkg, apt), tweaks, SSH | |
+| `xnu/files/bsd/dev/raphael_adreno.c` | raphael GPU/TrustZone 探测树（step 1–22，本项目的核心实验场） |
+| `xnu/files/bsd/dev/raphael_adsp_fw.h` | 内嵌的 adsp `.mdt`（T2 对照的体积来源，零卷变量） |
+| `xnuloader/` | 看护装载器（USB `xl` 命令族、logdump 落盘、`oem run/ramdisk/logdump`） |
+| `.github/workflows/r2X-*.yml` | 各轮一键流水线（R6–R28j 全保留，轮次即历史） |
+| `tools/r2X-*.py/.sh` | 各轮的血统判定与外科手术打包工具 |
+| `docs/WORKLOG.md` | 项目工作日志（全轮次证据链） |
+| `docs/FLASH-R*.md` | 各轮刷机与判读指南 |
+| `common/`、`qemu/`、`prebuilt/` | 上游继承的通用构建/模拟/预编译件 |
 
-It is a research bench, not a ROM: a session lasts a given number of seconds, then the kernel returns to the
-loader and hands over its log.
+## 上游与致谢
 
-## Quick start: QEMU, no kernel build
+- **[oosexgang/hackios-xnu-kernel](https://github.com/oosexgang/hackios-xnu-kernel)** —— HackiOS 主线（本仓库的上游）
+- **[oosexgang/hackios-xnu-userland](https://github.com/oosexgang/hackios-xnu-userland)** —— 用户态（init、注入库、APFS 镜像构建）
+- **[dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet)** —— t 系（ios-raphael 线）的上游
+- **[apple-oss-distributions/xnu](https://github.com/apple-oss-distributions/xnu)** —— Apple 的 XNU 源码
 
-`prebuilt/` holds the kernel, loader and our programs built from these repositories, so all you need is the system
-image, which is made on your machine from Apple's IPSW.
+## 法律
 
-Needs: Linux x86-64, ~12 GB free disk, 4 GB free RAM. Packages (Arch):
+**两个仓库都不含任何 Apple 文件。** `ios165/fetch.sh`（用户态仓库）从 Apple 自己的 CDN 下载 iOS 16.5 IPSW 到*你的*机器并在那里解包。HackiOS 是独立研究项目，与 Apple Inc. 无隶属、未获授权、无背书。iOS、iPhone、Apple 是 Apple Inc. 的商标。本项目仅限在**自有设备**上做授权调试研究。
 
-```sh
-sudo pacman -S --needed git python 7zip lz4 gcc qemu-system-aarch64 qemu-ui-gtk edk2-aarch64
-```
+---
 
-(Debian/Ubuntu: `git python3 7zip liblz4-dev gcc qemu-system-arm qemu-efi-aarch64`; 7-Zip must be 23 or newer — it
-reads APFS.)
+# HackiOS · XNU on the Xiaomi Redmi K20 Pro (raphael)
 
-```sh
-git clone https://github.com/oosexgang/hackios-xnu-kernel.git hackios
-cd hackios
-common/setup.sh               # brings hackios-xnu-userland into the same tree, checks the host
-ios165/fetch.sh               # downloads 7.4 GB from Apple's CDN and extracts what is needed (5-15 min)
-common/build.sh qemu-virt     # builds the APFS images (and the kernel, if the toolchain is there)
-common/run.sh qemu-virt       # a 20-minute session in a QEMU window
-```
+**The iOS 16 userland + the XNU kernel (Darwin 22.5) running on the Xiaomi Redmi K20 Pro (`raphael`, Snapdragon 855 / SM8150).**
 
-The lock screen appears after 2–3 minutes.
+This repository is the **raphael device line** of [oosexgang/hackios-xnu-kernel](https://github.com/oosexgang/hackios-xnu-kernel).
 
-- **Mouse with the left button held = finger.** Unlock / leave an app: swipe up from the very bottom edge; back:
-  swipe from the left edge.
-- Keys: `H` home, `L` lock/power, `↑`/`↓` volume, `F11` (hold) five fingers.
-- From a script: `qemu/touch.py swipe 0.5 0.985 0.5 0.3 250`, `qemu/touch.py tap 0.615 0.71`,
-  `qemu/touch.py key home`; screenshot: `qemu/screendump.sh shot.png`.
-- Right after SpringBoard appears the system is still registering apps: give it 30–40 s.
-- Debian/Ubuntu UEFI firmware: `QEMU_EFI=/usr/share/AAVMF/AAVMF_CODE.fd QEMU_VARS=/usr/share/AAVMF/AAVMF_VARS.fd`.
+- **Boot chain**: the phone's own XBL/ABL (UEFI) → our `xnuloader` (watching loader, v7) → XNU with the raphael driver tree (touch / buttons / display / battery / USB) built in.
+- **A research bench, not a ROM**: the system volume lives in RAM, nothing is written to the phone's flash (except the `logdump` forensics partition), and a reboot returns you to Android.
+- **One variable per round**: R-series rounds (R28d → R28i → R28j…) are packed surgically — only the kernel entry of the device-validated base image is replaced; loader, volume and cmdline stay byte-identical, provably.
 
-## On the phone (POCO X5 Pro 5G)
+**Status (2026-10)**: SpringBoard, touch (Goodix GT9886), buttons, 8 cores, display + brightness, battery service, USB ECM networking, and the R26 flush-to-storage forensics channel all work. The current wall is the **GPU zap shader**: TrustZone refuses it with `-3145797` (signature/identity stage) even though the T2 control proved the XNU→Hyp→TZ chain innocent (`ACCEPTED (0)`). **R28j** runs the adsp control and the zap attempt back to back in one boot; **T3** (offline reversing of the secapp's `cmd 0x49` refusal branch) is next.
 
-You need a **POCO X5 Pro 5G (redwood)** with an unlocked bootloader, `adb` and `fastboot`, and the images from the
-section above. Nothing is written to the phone's storage.
-
-**The phone's own firmware** is not in the repository and cannot be: it is the vendor's and is taken from the very
-phone it will run on, from its Android:
+**Quick start** (unlocked bootloader + `fastboot`, nothing is flashed):
 
 ```sh
-adb pull /vendor/firmware/a660_{gmu.bin,sqe.fw,zap.mdt,zap.b00,zap.b01,zap.b02} fw-gpu/      # GPU (gpu=1)
-adb pull /vendor/firmware_mnt/image/wpss.{mdt,b02,b03,b04,b05,b06,b07} fw-wifi/              # Wi-Fi (wifi=1)
-adb pull /vendor/firmware_mnt/image/adsp.{mdt,b02,...,b36} fw-audio/                         # sound (adsp=1)
-adb pull /vendor/firmware/aw8697_haptic.bin fw-haptic/                                       # haptics
+fastboot boot  raphael-xnu-r28j-flash.img
+fastboot oem  ramdisk
+fastboot stage raphael-r28j-flashboot.apfs
+fastboot oem  run
 ```
 
-(Put the `fw-*` directories next to the workspace. Wi-Fi also needs `fw-wifi/mac` — the radio's address on one
-line — and `fw-wifi/network` — network name and password. `userland/build.sh` prints which firmware went in.)
+See the [releases](https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases) for the current round's images, the J1–J5 verdict tree, and the logdump reading discipline. The workflow (`R28j · SpringBoard 一键流水线`) builds the round from source with a pinned toolchain, gates every generation marker, and publishes the surgically packed images.
 
-```sh
-common/build.sh redwood GL=1          # images + out/redwood-boot.img
-common/run.sh redwood 900             # loader into RAM, system image into RAM, a 15-minute session
-```
-
-or step by step with `xl`:
-
-```sh
-./xl enter            # Android -> fastboot -> our loader in RAM (fastboot boot); it brings up its own USB link
-./xl ramdisk          # upload the system image into the phone's RAM (2.5 GB, ~80 s), once per loader session
-XL_SECS=900 XL_CMDLINE="touchscreen=1 cpufreq=1 bootcpu=7 cpus=8 gpu=1 wifi=1 adsp=1" ./xl run
-./xl screenshot shot.png
-./xl reboot           # back to Android
-```
-
-`./xl` with no arguments lists every command (logs, screen and sound recording, camera frames, stop, state...).
-
-## Prebuilt boot image
-
-Every release has `hackios-redwood-boot.img` attached: the redwood UEFI with our loader inside, ready for
-`fastboot boot`. It contains no Apple files; the system image is still made on your machine (above).
-
-## Building from source
-
-`common/build.sh <device>` runs every step that this machine can run and uses `prebuilt/` for the rest.
-
-- **Kernel** — needs [theos](https://theos.dev/docs/installation-linux) in `~/theos` (cctools and
-  `iPhoneOS16.5.sdk`) and `clang lld python perl`. Details: [xnu/README.md](xnu/README.md).
-  ```sh
-  xnu/apply.sh && xnu-deps/setup.sh && ./xnu-build.sh -j8 -k
-  ```
-- **Loader** — `xnuloader/build.sh` (clang + lld-link, an EFI application without EDK2).
-- **Images** — `REST=1 userland/build.sh` (variables documented at the top of that file).
-- **UEFI** — [uefi/README.md](uefi/README.md) (Project Silicium port); not needed to run, `prebuilt/uefi` has it.
-- After rebuilding: `tools/update-prebuilt.sh` refreshes `prebuilt/`.
-
-## Porting to another device
-
-```sh
-common/new-device.sh <codename> path/to/device.dtb   # profile + loader platform from the phone's device tree
-```
-
-Then follow [docs/PORTING.md](docs/PORTING.md): the UEFI port, the loader's platform description, the kernel's
-drivers, the firmware. Device profiles live in `common/devices/` (`redwood.conf`, `qemu-virt.conf`, `_template.conf`).
-
-A first port is in progress: **raphael (Xiaomi Mi 9T Pro / K20 Pro, SM8150)** - device profile, loader
-platform, `raphaelPkg` UEFI (from cepheus), its real device tree, and the v2 boot-header law its ABL
-requires: [docs/PORTING-RAPHAEL.md](docs/PORTING-RAPHAEL.md).
-
-## How it works
-
-```
-fastboot boot ──► UEFI (Mu-Silicium) ──► xnuloader (EFI application)
-                                           │  stays resident: USB link (fastboot protocol),
-                                           │  watchdog, receives the kernel's log
-                                           ▼
-            XNU (BCM2837 config as the base + our platform)
-              ├─ GICv3, timer, video console, return to the loader
-              ├─ APFS (images in RAM, iOS volume on flash), ramfs (/private/var, /tmp)
-              ├─ minicrypto instead of corecrypto, AMFI and Sandbox stand-ins (MAC policies)
-              ├─ driver replacements: IOSurface, IOMobileFramebuffer, AppleKeyStore, network stack
-              ├─ input: /dev/redwood-touch ◄─ Goodix GT9916 (phone) / virtio-input (QEMU)
-              ├─ GPU: Adreno 642L, Wi-Fi: WCN6750 (ath11k via LinuxKPI), sound: ADSP / virtio-sound
-              ▼
-   iOS 16.5 launchd → logd, notifyd, cfprefsd, runningboardd, backboardd, SpringBoard, apps
-              ├─ our libraries are injected into backboardd, SpringBoard and mediaserverd
-              │  (virtual HID services, a few ObjC method swaps — in memory only)
-              └─ mediaserverd gets our CoreAudio output device (RedwoodAudio.driver)
-```
-
-The iOS programs, frameworks and dyld shared cache are not changed by a single byte: what they miss is done by the
-kernel (driver replacements) or by a library the kernel injects with `DYLD_INSERT_LIBRARIES` (`kern.exec_inject`).
-
-## Layout
-
-| Path | What |
-|---|---|
-| `common/` | `setup.sh` (workspace), `build.sh` / `run.sh` (per device), `new-device.sh`, `devices/*.conf`, `ugit` |
-| `xl` | drives the phone over USB: loader, kernel runs, logs, screenshots, screen and sound recording |
-| `xnuloader/` | the loader: `loader.c` (UEFI application), `mkpayload.py` (kernel + images + arguments container) |
-| `xnu/` | our XNU changes: patch, new files, `apply.sh` / `export.sh` |
-| `xnu-deps/` | everything for building XNU on Linux: `setup.sh`, tool wrappers, stubs |
-| `xnu-build.sh`, `xnu-env.sh` | kernel build |
-| `uefi/`, `mkxnuimg.py` | the UEFI port and packing the boot image for `fastboot boot` |
-| `wifi/lx/` | the layer on which Linux's Wi-Fi driver builds for our kernel |
-| `qemu/` | QEMU runs, touch input, screenshots, stack symbolication |
-| `tools/` | recording (`recording.py`, `sound.py`), UFS/flash tools, `mk-ath11k.sh`, `new-workspace.sh`, host tests |
-| `prebuilt/` | built kernel, loader and UEFI pieces (`NOTICES.md` for the third-party code in the kernel) |
-| `docs/` | screenshots, [checks.md](docs/checks.md), [PORTING.md](docs/PORTING.md) |
-
-## Debugging
-
-- Session log: QEMU's stdout or `logs/HHMMSS-run.log` from the phone.
-- `RC_JOBS=rc.jobs.tour REST=1 userland/build.sh` — an image that unlocks and opens every app of the first page.
-- `userabort:` in the log is the stack of a process that called `abort()`; `usertrap:` (with `systrace=1`) — crashes.
-- Live stacks (QEMU): `qemu/touch.py stacks NAME`, then `qemu/symstack.py LOG NAME`
-  (needs [`ipsw`](https://github.com/blacktop/ipsw)).
-- How a check can lie to you: [docs/checks.md](docs/checks.md).
-
-## Screenshots
-
-From the phone's screen, one session (`GL=1 REST=1`, `gpu=1`):
-
-<p>
-<img src="docs/homescreen-2.jpg" width="160" alt="Home screen, page 2">
-<img src="docs/search.jpg" width="160" alt="Search">
-<img src="docs/settings-general.jpg" width="160" alt="Settings > General">
-<img src="docs/calendar.jpg" width="160" alt="Calendar">
-<img src="docs/clock.jpg" width="160" alt="Clock">
-</p>
-<p>
-<img src="docs/wallet.jpg" width="160" alt="Wallet">
-<img src="docs/messages.jpg" width="160" alt="Messages">
-<img src="docs/music.jpg" width="160" alt="Music">
-<img src="docs/maps.jpg" width="160" alt="Maps">
-<img src="docs/appstore-tabs.png" width="160" alt="App Store">
-</p>
-
-## Licenses
-
-- No iOS files are in the repositories: `ios165/fetch.sh` downloads them from Apple's CDN to your machine.
-- `xnu/` is a derivative work of XNU and is distributed under APSL 2.0, like XNU itself; `prebuilt/mach.*` is the
-  kernel built from it. It also contains ath11k (BSD-3-Clause-Clear) and FreeBSD LinuxKPI code (BSD-2-Clause):
-  see [prebuilt/NOTICES.md](prebuilt/NOTICES.md).
-- `xnu/files/bsd/miscfs/apfs/libzbitmap/` and `xnu-deps/build/lzbitmap/` — libzbitmap (Corellium LLC, MIT here);
-  `xnu/files/bsd/miscfs/apfs/libdeflate/` — libdeflate 1.24 (Eric Biggers, MIT, `COPYING` there).
-- ath11k, Linux and FreeBSD sources are not in the repository: `tools/mk-ath11k.sh` fetches pinned releases.
-  `wifi/lx/patches/*.patch` are our changes to FreeBSD headers; the rest of `wifi/lx/` is ours.
-- `uefi/files/Binaries/redwood` and `prebuilt/uefi/SILICIUM_UEFI.fd` contain UEFI drivers from the phone's
-  Xiaomi firmware, distributed the way Project Silicium distributes them for other devices;
-  `prebuilt/uefi/mkbootimg.py` — AOSP, Apache-2.0.
-- This repository is licensed under the [Apple Public Source License 2.0](LICENSE): our changes to XNU are a derivative of XNU and must be, and our other code here (loader, scripts) is released under the same license. Third-party code keeps its own license, as listed above.
-
-## Team
-
-OOSEX GANG — [@oodze](https://t.me/oodze) (founder), [@netusd](https://t.me/netusd), [@wannqn](https://t.me/wannqn),
-[@hxfuxyyXD](https://t.me/hxfuxyyXD). News: [t.me/oosexgangdevs](https://t.me/oosexgangdevs).
+**Legal**: no Apple files are in either repository; the IPSW is fetched from Apple's own CDN onto your machine. HackiOS is an independent research project, not affiliated with or endorsed by Apple Inc. Authorized debugging on your own devices only.
