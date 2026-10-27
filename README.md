@@ -16,48 +16,49 @@ HackiOS 让 Apple 开源的 XNU 内核在 Android 手机硬件上启动，并在
 - **会话式研究台，不是 ROM**：系统卷住在 RAM、不写手机闪存（logdump 取证分区除外），重启即回 Android
 - **每轮一个变量**：R 系轮次（R28d → R28i → R28j…）用外科手术式打包——底板镜像只换内核条目，装载器/卷/cmdline 逐字节原样，机器可证明
 
-## 当前状态（2026-10 · R28 系列）
+## 当前状态（2026-10 · R32 实机判决 + R33 GPU 常驻轮）
 
 | 已工作 | 未工作 / 卡点 |
 |---|---|
-| 锁屏 → 桌面 → 应用（R28i 真机点亮 SpringBoard） | **GPU zap shader**：TZ secboot 拒绝（`-3145797`，签名/身份阶段；T2 已证 XNU→Hyp→TZ 链路无罪 → T3 逆向中） |
-| 触摸（Goodix GT9886，含冷启动重试梯）、电源/音量键 | Metal / GPU 硬件加速（等 zap 之墙） |
+| 锁屏 → 桌面 → 应用（R28i 真机点亮 SpringBoard） | **GL 用户态**：SpringBoard 仍软件渲染——Mesa/FD640 的 GL dylib 不在 R13 谱系卷里（下一轮的用户态工程） |
+| 触摸（Goodix GT9886，含冷启动重试梯）、电源/音量键 | Metal（编译器在，无 Metal 驱动） |
 | 八核（`cpus=8`，Kryo 485） | 蜂窝、蓝牙 |
+| **GPU 全管线真机打通（R32 设备判决，logdump 入账）**：step 12 TZ 认签 → step 19 zap 认证+起动 → step 21 3D 核按命令写内存 → step 22 GPU 画的画面上屏 | WiFi（raphael = WCN399x/ath10k-SNOC + ICNSS/MPSS，参照 HeliumStudio raphael-bringup 的独立大移植，未启动） |
 | 显示 + 亮度通道（IOMFB sel 50 → DSI DCS 0x51） | 完整充电路径（电池链与充电监视在，端到端未验证） |
 | 电池服务（AppleSmartBattery）+ 5s 充电输入监视 | App Store / Apple ID（无 Secure Enclave） |
 | USB ECM 网络（`ue0` 192.168.7.2） | |
 | logdump 分区取证 + R26 flush 通道（可能复位的调用前整日志落盘） | |
 
-**当前轮 R28j（同 boot 序贯对照）**：`adsp 尝试 → give-up → zap 尝试 → give-up`——R28i 的 T2 判决 `ACCEPTED (0)` 证明链路无罪，但 zap 的 `-3145797` 出自另一次 boot；R28j 在同一次 boot 里背靠背完成两次尝试，把对照闭环。判读树 J1–J5 与 logdump 读取纪律见 [r28j-springboard Release](https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases) 的 `README.txt`。
+**当前轮 R33（GPU 常驻首发）**：R32 的设备判决证明 GPU 全管线工作，但探针跑完把一切都拆了——keep 决策只读 `adreno_keep`，而驱动头注释一直承诺 `gpu=1` 留 GPU 给系统（文档与代码的契约断裂）。R33 让承诺成为代码：keep 决策读 `gpu=1`（`adreno_keep=0` 显式否决权保留探针-即-拆行为），GPU 镜像 cmdline 追加 `adreno_keep=1`（唯一新增 token）——step 22 之后不再拆除，`"THE GPU STAYS ON for the system to draw with: the service RedwoodGPU"`。判读树 H 与 logdump 读取纪律见 [r33-springboard Release](https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases) 的 `README.txt`。
 
-**下一步（T3）**：离线逆向 secapp `cmd 0x49` 的拒绝分支——为什么 TZ 拒绝本机原厂签名的 stock zap（信任根已证同为 Xiaomi Root CA 链）。
+**参照系（用户指令）**：[HeliumStudio-Dev/hackios-xnu-kernel](https://github.com/HeliumStudio-Dev/hackios-xnu-kernel)（`raphael-bringup` 分支，同机型同 XNU 基座）——其日常 GPU 形就是裸 `gpu=1`（A640 常驻 + freedreno/FD640 GLES，真机三角绘制+回读无错、桌面/Safari 用户确认可用），WiFi 为 5 GHz WPA3 SAE 真机联网（其独立大移植：ath10k/WCN399x + ICNSS/MPSS/SNOC）。本项目 R33 对齐其 GPU 常驻形；GL 用户态与 WiFi 列为下一阶段工程。
 
 ## 快速开始（手机端，四步）
 
 需要：解锁 bootloader 的 Redmi K20 Pro、`fastboot`、Release 里的两个文件（镜像 + 启动卷）。**不写手机闪存。**
 
 ```sh
-fastboot boot  raphael-xnu-r28j-flash.img      # 或当前 Release 的最新日常镜像
+fastboot boot  raphael-xnu-r33-flash.img      # 或当前 Release 的最新日常镜像
 fastboot oem  ramdisk
-fastboot stage raphael-r28j-flashboot.apfs     # iOS 系统卷 → RAM（一次 loader 会话一次）
+fastboot stage raphael-r33-flashboot.apfs     # iOS 系统卷 → RAM（一次 loader 会话一次）
 fastboot oem  run                              # 等 SpringBoard（约 1-2 分钟）
 ```
 
-- 想跑 GPU/序贯轮：把第一行的镜像换成 `-gpu-flash.img`（`gpu=1` 自动执行 adreno 步骤）
+- 想跑 GPU/常驻轮：把第一行的镜像换成 `-gpu-flash.img`（`gpu=1` 全相位 22 步 + `adreno_keep=1` GPU 常驻——R33 起 step 22 后不再拆除）
 - ⚠️ 启动卷**只 stage 这一个文件**：md1 备份不要 stage（镜像已内嵌全量小卷——R14 事故纪律）
 - ⚠️ userdata 上的 iOS 卷是唯一存货：绝不要让 MIUI 开机（Android 会重格回 f2fs，iOS 卷即毁）
 - 每次开机都要重复四步（会话住 RAM 是"不写闪存"设计的一部分）
 
 ## 构建（CI 一键）
 
-Actions → `R28j · SpringBoard 一键流水线` → Run workflow（默认参数即可）。流水线做的事：
+Actions → `R33 · SpringBoard 一键流水线` → Run workflow（默认参数即可）。流水线做的事：
 
 1. 工具链钉死（L1ghtmann v19.0.0-L2 具名 tag + 每轮全新缓存键、无 restore 链——R28i 对 lsd SIGBUS 构建漂移的定罪回应）
-2. 从本树源码构建内核（clean build，ccache 零回填），跑 R28j marker 门禁（判决串/证据串逐条计数 + 内嵌 adsp `.mdt` 逐字节证明）
-3. 对 R28d 底板镜像做外科手术：**只换内核条目**，装载器 v7 / ramdisk / cmdline / DTB 逐字节原样（SHA 硬校验）
+2. 从本树源码构建内核（clean build，ccache 零回填），跑 R33 marker 门禁（判决串/证据串逐条计数 + 内嵌 adsp `.mdt` 逐字节证明）
+3. 对 r32 release 底板镜像做外科手术：双镜像换内核条目 + GPU 镜像 cmdline 追加 `adreno_keep=1`（唯一变量），装载器 v7 / ramdisk / 日常 cmdline / DTB 逐字节原样（SHA 硬校验）
 4. 发布 Release（双镜像 + 启动卷 + SHA256SUMS + README 判读树 + 工具链审计表）
 
-本地构建：`xnu/apply.sh` → `xnu-deps/setup.sh` → `xnu-build.sh -k`（详见 `xnu/README.md`）；打包 `tools/r28j-flash-build.sh`；离线血统判定 `tools/r28j-kernel-id.py <image>`。
+本地构建：`xnu/apply.sh` → `xnu-deps/setup.sh` → `xnu-build.sh -k`（详见 `xnu/README.md`）；打包 `tools/r33-flash-build.sh`；离线血统判定 `tools/r33-kernel-id.py <image>`。
 
 ## 仓库结构
 

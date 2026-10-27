@@ -1248,3 +1248,37 @@ r28l flashboot → oem run；**等 ~2-3 分钟过风暴首发窗再抓 logdump**
 **设备侧计划不变**：F 判读树照旧（F1 = step 12 打印 TRUSTZONE ACCEPTS ⇒ 墙倒；F2 = 仍 0x45 ⇒ R30 大扫按 S 表分诊真码；F3 = did not map/wedge = 证据）。流程：`sh run_ios.sh flash r31 gpu -w 180`。
 
 **R31 CI 收官（run 40515492995，c54f78b，SUCCESS）**：门禁⑦全绿（R11-R31 全标记在场，16,199,776 B）+ 门禁⑤（flash-build 内嵌 count 门）首跑即过（adsp .mdt 7,820 B @ 0x6814 在内核内）+ kernel-id 双镜像双判 R31（v7 loader；GPU cmdline `gpu=1 adreno=22 adreno_pause=0 adreno_watch=0` 无 skip；日常镜像零 adreno token）。**R31 内核 sha256 = 8c86a90e45c8098b363cd797bb6ce31ea297e4255cb4d0ef4e91826f341230d2**（下轮入 KNOWN 与 sha 禁入表）。Release r31-springboard 七资产就位（raphael-xnu-r31-gpu-flash.img / raphael-xnu-r31-flash.img / r31-md1-root.apfs / raphael-r31-flashboot.apfs / README.txt / SHA256SUMS / toolchain-versions.txt）。设备侧：`sh run_ios.sh flash r31 gpu -w 180`，按 F 树判读（F1 = step 12 打印 TRUSTZONE ACCEPTS ⇒ zap 墙倒；F2 = 仍 0x45 ⇒ R30 大扫 SCMDMP/TZDIAG 按 S 表分诊真码；F3 = did not map/wedge = 证据）。
+
+## R32 设备判决 + R33 GPU 常驻轮（2026-10-28，墙倒之后的"留"）
+
+**R32 真机判决（用户 logdump 入账——fork 精确形的首次真机全相位测试）**：逐墙全倒。
+- step 12 **"TRUSTZONE ACCEPTS THE ZAP SHADER'S SIGNATURE FROM THIS KERNEL"**（厂商 .mdt 原 pack：头+表 verbatim、p_offset 0x1000 不动、blob 紧随表后；签元数据 TZ 收下，answer 0；调用被抢占 1 次后应答，与 Linux 同形）。
+- step 19 **"TRUSTZONE HAS AUTHENTICATED AND STARTED THE ZAP SHADER"**：MEM_SETUP 0x1000 @ dt pil_gpu_region 0x98f15000 → 写码 1968 B → AUTH_AND_RESET answer 0；空探针先答（"this point was reached alive"）。
+- step 21 **"the page reads 0x600dc0de: THE 3D CORE WRITES OUR MEMORY ON COMMAND"**；step 22 **"A PICTURE DRAWN BY THE GPU IS ON THE PANEL: orange, white, blue from the top"**——GPU 画的画面真机上屏。
+- **然后 step 23 + step-0 把这一切全拆了**：GMU slumber → zap give-up → SMMU 拆表 → CX collapse，"over; the system goes on starting"；SpringBoard 照旧软渲染（"SpringBoard: no GPU draws, vibrant views are plain"）。
+
+**根因（本轮修的 bug，文档-代码契约断裂）**：驱动头注释一直承诺 `gpu=1` = "全部步骤，且 GPU 留给系统画"；但 keep 决策（raphael_adreno.c 步骤循环尾）只读 `adreno_keep`。`gpu=1` 不带 `adreno=` 的 by-itself 日常形确实内建 keep=1（redwood_adreno_init 的 else 分支），可它从未在本项目跑过——本项目 GPU 镜像一直带 `adreno=22`（探针形），`PE_parse_boot_argn("adreno_keep")` 落空 ⇒ keep=0 ⇒ 演示完必拆。R32 GPU 镜像（gpu=1 adreno=22 adreno_pause=0 adreno_watch=0）正是这一形态。
+
+**参照系（用户指令"参考同机型正常使用 gpu 和 WIFI 的 HeliumStudio-Dev/hackios-xnu-kernel"）**：其 `raphael-bringup` 分支 = 同 XNU 基座（xnu-8796.121.2）的并行 raphael 移植，**日常 GPU 形 = 裸 `gpu=1`**（devices/raphael/device.conf BOOTARGS；即 by-itself keep 形），A640 常驻 + freedreno/FD640 GLES（真机 1080×2340 三角绘制+回读无错、桌面/控制中心/Safari 用户确认可用），WiFi = 5 GHz WPA3 SAE H2E 真机联网（独立大移植：ath10k/WCN399x + ICNSS/MPSS(PAS 4)/SMEM/SMP2P/GLINK/QRTR/RMTFS/TFTP/PD mapper/PDR/DMS/BDF/MSA-SMMU/五路 PMIC + SNOC 主机路径 + SAE 加密，~4.5k 行）。⇒ 本项目 R33 对齐其 GPU 常驻形（内核侧同构：keep=1）；GL 用户态与 WiFi 列为下一阶段工程（卷里无 GL dylib：R32 镜像 /redwood/lib 只有 5 个 dylib、无 libredwood.gl.dylib——injector 的 gpu_draws() 第一道 access() 门就挡住了，这正是 SpringBoard 软渲染的直接原因）。
+
+**R33 改动（每轮一个变量：GPU 常驻）**：
+- raphael_adreno.c：keep 决策改为 `gpu=1` 也算数（`adreno_keep=0` 显式否决权保留探针-即-拆的历史行为；`adreno_keep=1` 照旧）；代数戳 R32→R33（×2）+ `SCMDMP: R33 begins`；R32 主宣告（fork-exact form 十行块）退役为 R33 resident round 行（其判决已由设备 logdump 入账）；头注释补 R33 语义。step-19 厂商 .mdt 机制、M2 档案、N3 环 dump、R30 大扫、T2 对照全部原样骑乘（含 step-19 的 "(R32: the vendor .mdt below" 骑乘措辞）。
+- GPU 镜像 cmdline：r32 token 组原样 + **追加 `adreno_keep=1`**（唯一新增 token，双保险：内核新语义 + 显式 token，boot-args 回显里意图可见）。日常镜像 verbatim。
+- keep 路径核验（从 R32 探针状态安全续接）：fence 词页 bzero + to_memory（步骤尾照做）；gpu_free[0] = 0x20000000..0x0FFFFFFF+（探针块全部在 0x20000000 之下，无碰撞）；ring 状态由硬件 CP_RB_RPTR 实时跟踪（提交路径读它算 room），无软件残态；`redwood_adreno_stop()` 在 loader_return 前照常交接（RedwoodGPUStop → gpu_block_stop）。
+
+**R33 三件套（r32 派生，本轮离线验证全绿）**：
+- tools/r33-flash-build.sh：底板 = r32 release（内核条目 = R32 44b5a2b9…）；R32C sha 入律、v7 loader / R13 卷（372c7fcb…）原字节断言；GPU 镜像 cmdline = r32 token 组断言在场 + adreno_keep 断言缺席 + 追加 adreno_keep=1（重打包后再验"恰好多一个 token"）；内核门禁 R33 化（代数戳 ×2、resident round ×1、STAYS-ON 行 ×1、SCMDMP 起点 R33、R32 三戳 retired、骑乘串断言在场）。**离线 dry-run 全链通过**：以 r32 镜像内核条目打 R33 标记串的替身内核跑完整打包 → 双镜像产出（8,163,439 B 同尺寸）、跨镜像同内核同卷断言过、GPU cmdline 逐 token 断言过。
+- tools/r33-kernel-id.py：KNOWN 收编 R32 sha（判决词：墙倒轮）；MARKERS R33 化（R32 三戳 retired + R32 step-19 骑乘行 + STAYS-ON 行新行）；verdict R33 分支（R33 代数戳 ×2 + resident round + STAYS-ON + R33 起点 + 骑乘串 + R32 三戳缺席）+ R32 回退分支保留；cmdline 判读三态（GPU+keep=1 = R33 正确形 / GPU 无 keep = R32 探针形 NOTE / 日常 = 零 adreno token）。三镜像实测（r32 GPU → R32+NOTE；dry GPU → R33+resident switch；dry 日常 → R33+daily）全对。
+- .github/workflows/r33-springboard.yml：底板四件 SHA 硬校验 = r32 官方字节（a5a86f20…/f4b05044…/14485e7c…/372c7fcb…）；缓存键全新 r33-*；诊断 A R33 化；门禁大表 R33 化 + gone 收编 R32 三戳；sha 禁入表收编 44b5a2b9…；README/release body = **H 判读树**全文。验证链：YAML 解析 11 steps、全树重复键 CLEAN、6 run 块 bash -n PASS、3 PY heredoc 编译过（dedent 后）、**门禁块对替身内核实跑全绿**（53 项 grep 全中）。
+
+**预注册（先于刷机立字）——R33 H 判读树**：
+- 探针自检：P0 宣告行 "R33: the resident round"；P1 构建行 + p_offset 不动行；P2 全相位 mask 0x0；P3 T2 对照照旧 ACCEPTED (0)；P4 系统起来（R31d 极性修复保持生效）。
+- H1 = step 22 之后 "adreno: THE GPU STAYS ON for the system to draw with: the service RedwoodGPU" 且其后再无 slumber/give-up/CX-collapse 拆除块 ⇒ **GPU 常驻路径首次落地**（RedwoodGPU 服务在册、提交环活着）。⚠️ 预期声明：SpringBoard 仍软渲染（"no GPU draws"）——GL 用户态不在卷里，这是下一轮工程，**不是本轮失败**。
+- H2 = 任一步骤 FAILED 或 keep 行缺席 ⇒ 整份 logdump 送回按码分诊（12/19/21/22 已是设备实证基线，任何回退都是新变量）。
+- H3 = GPU 常驻态系统死亡/风暴 ⇒ 单 token 回滚：`fastboot oem cmdline-append "adreno_keep=0"`（否决权）或直接刷主镜像。
+
+**下一阶段（依 fork 参照立两项工程）**：
+- GL 用户态：libredwood.gl.dylib（Mesa/FD640 over RedwoodGPU 的 msm-DRM 子集接口 + eagl/CA 胶水）进卷——R13 谱系卷 4 MB 里现有库共 ~420 KB，Mesa 裁剪后可容；fork 的 userland/src（gl_test/inject_sb/eagl）与其 mk-mesa 流程为参照。
+- WiFi：raphael = WCN399x，路径 = ath10k-SNOC + ICNSS/MPSS(PAS 4) + SNOC 主机桥（fork 的 aa21593 为底本，其 docs/RAPHAEL-WIFI.md 列明五路 PMIC/BDF/NV 快照等私有输入）——独立大移植，按轮立项。
+
+设备侧：`sh run_ios.sh flash r33 gpu -w 180`（GPU 镜像先行），按 H 树判读；主镜像为对照。

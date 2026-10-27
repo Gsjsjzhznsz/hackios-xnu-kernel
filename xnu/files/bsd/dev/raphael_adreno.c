@@ -73,8 +73,14 @@
  * More boot-args:
  *   adreno=N        the first N steps only, then (unless N says a picture) everything started
  *                   is stopped again; the default with gpu=1 is all of them
- *   gpu=1           all the steps, and the GPU kept for the system to draw with
- *   adreno_keep=1   with adreno=21: as if gpu=1 (the boot-arg the window server's side knows)
+ *   gpu=1           all the steps, and the GPU kept for the system to draw with (R33: the
+ *                   promise is the code now, in the adreno= forms too -- it used to hold only
+ *                   when adreno= was absent, which is how the R32 GPU image demonstrated the
+ *                   picture and then tore every bit of it down)
+ *   adreno_keep=1   keeps the GPU whatever else the cmdline says (the boot-arg the window
+ *                   server's side knows)
+ *   adreno_keep=0   the veto: even gpu=1 stops everything once the steps are over (the
+ *                   probe-then-stop rounds' behaviour, kept for the rounds that want it)
  *   gpu_recover=1   a submission the core never finishes costs the run nothing (see below)
  *   gpu_va=N        how addresses in the GPU are described (0 none, 1 lines, 2 also guarded)
  *   adreno_speed=N  of the 3D core's speeds, the Nth (1 the lowest; the default is the second)
@@ -2356,7 +2362,7 @@ scm_state_dump(void)
                 cpu = 0;
         }
         PE_parse_boot_argn("adreno_scmsweep", &sweep, sizeof(sweep));
-        printf("adreno: %u: SCMDMP: R32 begins: the swallowed-code recovery sweep (the R30 machinery, riding); the current cpu is %d; the 64 KB sweep "
+        printf("adreno: %u: SCMDMP: R33 begins: the swallowed-code recovery sweep (the R30 machinery, riding); the current cpu is %d; the 64 KB sweep "
             "is %s\n", step, cpu, sweep ? "on" : "off (adreno_scmsweep=0)");
         /* R31c: TZREG/TZDIAG first -- the highest value (sec_img_auth's own fuse and
          * certificate lines) at the lowest risk (the TZ's diag is the hypervisor's OWN
@@ -5901,7 +5907,7 @@ redwood_adreno_init(void)
         }
 
         printf("adreno: steps up to %u, without those in mask %#x; step %u is the new one and waits %u ms %s "
-            "(R32: the kernel generation line -- one kernel, both images)\n", last_step,
+            "(R33: the kernel generation line)\n", last_step,
             skip_steps, newest_step, pause_ms, fine ? "before every access" : "after each announcement");
         /*
          * R28l: the phase bisection.  The R28k main image (the adreno phase skipped
@@ -5919,16 +5925,17 @@ redwood_adreno_init(void)
          * gpu_block_stop() is flag-driven: with nothing started every teardown branch
          * skips itself, so a truncated run ends exactly as cleanly as it began.
          */
-        printf("adreno: R32: the fork-exact form -- a real vendor pair of this very SoC (the POCO X3 Pro's tree, same\n"
-            "SM8150, same A640, same zap: its .elf and our .mbn are byte-identical in the header, the whole table and\n"
-            "the code, differing only inside the v6 blob's own certificate chain) proves the vendor .mdt's OWN pack:\n"
-            "the ELF header and the program table VERBATIM -- the hash segment's p_offset stays 0x1000, the merged\n"
-            "stream's value; R31's rewrite of it to 0x94 moved signature-covered bytes and the device refused that\n"
-            "form like every earlier one -- the blob rides right behind the table at 0x94, the code NOT among it; this\n"
-            "kernel builds exactly that from the stock .mbn's own bytes, writes the code to the dt's own pil_gpu_region\n"
-            "at 0x98f15000, and on any refusal the QHEE ring and the R30 state sweep (the SCM queue, the handle cache,\n"
-            "the 64 KB region, the TZ DIAG) go on the record before the give-up; the M2 form is the archive, the N3\n"
-            "ring dump and the R30 sweep ride verbatim\n");
+        printf("adreno: R33: the resident round -- the wall is DOWN on the device's own record (R32's logdump):\n"
+            "TrustZone takes the vendor .mdt's signature (step 12, answer 0), authenticates and starts the zap\n"
+            "(step 19: MEM_SETUP 0x1000 at the dt's pil_gpu_region 0x98f15000, the code written, AUTH_AND_RESET\n"
+            "answer 0), the 3D core takes commands (step 21, 0x600dc0de in our page) and draws a picture the panel\n"
+            "shows (step 22, orange white blue).  What R32 did next was stop it all -- the keep decision read only\n"
+            "adreno_keep while this header promises gpu=1 keeps the GPU.  R33 makes the promise the code: gpu=1\n"
+            "keeps in the adreno= forms too, adreno_keep=0 vetoes, and the GPU image's cmdline carries\n"
+            "adreno_keep=1 -- so the steps are NOT undone this boot: the service RedwoodGPU hands the block to the\n"
+            "system, the same resident shape the fork of this very phone runs daily (its gpu=1 daily: A640 up,\n"
+            "GLES through Mesa).  The GL userspace (Mesa over the RedwoodGPU service) is a later round; until it\n"
+            "rides the volume, SpringBoard draws in software and says so.\n");
         /*
          * R27: the flush channel's own test, before any step runs.  The loader writes the
          * whole log (its side and this ring) to the logdump partition and answers with the
@@ -5938,7 +5945,7 @@ redwood_adreno_init(void)
          * absent too, meaning the flush was not even asked for) says the channel itself
          * is what R26 never proved.
          */
-        put_the_log_away("step 1's first line: the flush channel's own test (R32: the kernel generation line)");
+        put_the_log_away("step 1's first line: the flush channel's own test (R33: the kernel generation line)");
         for (step = 1; step <= last_step; step++) {
                 if (skip_steps & 1u << step) {
                         continue;
@@ -5984,7 +5991,25 @@ redwood_adreno_init(void)
          * it for as long as the run lasts.)
          */
         put_the_log_away("the steps are over (R27): what follows is the system's own doing");
-        PE_parse_boot_argn("adreno_keep", &keep, sizeof(keep));
+        /*
+         * R33: the keep decision.  The header has always promised that gpu=1 keeps the GPU for
+         * the system to draw with; the code read only adreno_keep, so the R32 GPU image (gpu=1
+         * adreno=22 adreno_pause=0 adreno_watch=0) demonstrated the step 22 picture on the panel
+         * and then tore every bit of it down -- the resident path the fork of this phone runs
+         * daily never ran once here.  gpu=1 now keeps in the adreno= forms too; adreno_keep=0 is
+         * the veto (a probe-then-stop round gets its teardown back), adreno_keep=1 keeps as it
+         * did.  The device's own evidence that arming this is safe: R32's logdump, every step's
+         * answer on the record.
+         */
+        {
+                uint32_t gpu_arg = 0;
+                const bool keep_given = PE_parse_boot_argn("adreno_keep", &keep, sizeof(keep));
+
+                PE_parse_boot_argn("gpu", &gpu_arg, sizeof(gpu_arg));
+                if (!keep_given && gpu_arg != 0) {
+                        keep = 1;
+                }
+        }
         if (keep) {
                 if (done >= 21 && core_runs) {
                         gpu_free[0].start = GPU_ADDRESSES_START;
