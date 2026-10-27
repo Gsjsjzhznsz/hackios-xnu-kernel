@@ -54,14 +54,24 @@ jobs:
                        flex bison m4 perl python3 autoconf automake libtinfo6 xz-utils uuid-dev 7zip \
                        meson ninja-build llvm >/dev/null
           command -v clang && command -v ccache && command -v 7z && command -v meson && command -v ninja
-          # dsymutil：Ubuntu 的 apt clang 不往 /usr/bin 放它（R11 run 39973048286 的教训）
-          DS=$(command -v dsymutil || clang --print-prog-name=dsymutil 2>/dev/null || true)
-          [ -x "$DS" ] || DS=$(ls /usr/lib/llvm-*/bin/dsymutil 2>/dev/null | sort -V | tail -1 || true)
-          if [ -n "$DS" ] && [ -x "$DS" ]; then
-            sudo ln -sf "$DS" /usr/bin/dsymutil
+          # dsymutil：Ubuntu 的 apt clang 不往 /usr/bin 放它（R11 run 39973048286 的教训）。
+          # R34 run 40560646210 新课：R33(SUCCESS)→R34(FAILURE) 同一块逻辑、仅 apt 多装
+          # 了 llvm/meson/ninja，make 时 DSYMUTIL 却解析为空（bash 把 --minimize 当命令，
+          # Error 127）——宿主探测链的落点会随 apt 状态漂移。本轮：候选验到"能跑
+          # --version"才落位 + 解析结果原样打印进日志（自诊断）；③ 再以 DSYMUTIL=/bin/true
+          # 釜底抽薪（dSYM 对内核字节是死重，见 ③ 注释）。
+          DS=""
+          for cand in "$(command -v dsymutil 2>/dev/null || true)" \
+                      "$(clang --print-prog-name=dsymutil 2>/dev/null || true)" \
+                      "$(ls /usr/lib/llvm-*/bin/dsymutil 2>/dev/null | sort -V | tail -1 || true)"; do
+            if [ -n "$cand" ] && [ -x "$cand" ] && "$cand" --version >/dev/null 2>&1; then DS="$cand"; break; fi
+          done
+          if [ -n "$DS" ]; then
+            sudo ln -sf "$(readlink -f "$DS")" /usr/bin/dsymutil
           else
             printf '#!/bin/sh\nexit 0\n' | sudo tee /usr/bin/dsymutil >/dev/null && sudo chmod +x /usr/bin/dsymutil
           fi
+          echo "dsymutil resolved -> $(command -v dsymutil || echo NONE)（NONE=连 stub 都没落位，③ 的 /bin/true 兜底顶上）"
           # llvm-ar：Mesa 的构建件（mk-mesa.sh 的清单）
           AR=$(ls /usr/lib/llvm-*/bin/llvm-ar 2>/dev/null | sort -V | tail -1 || true)
           [ -n "$AR" ] && sudo ln -sf "$(readlink -f "$AR")" /usr/local/bin/llvm-ar
@@ -76,6 +86,8 @@ jobs:
             lld --version 2>/dev/null || true
             echo "--- apt meson/ninja/llvm-ar (the GL build's pieces) ---"
             meson --version; ninja --version; llvm-ar --version | head -1
+            echo "--- apt dsymutil（R31-R33 基线为 Ubuntu LLVM 18.1.3；③ 以 /bin/true 顶替其 dSYM 职责） ---"
+            dsymutil --version 2>/dev/null | head -1 || echo "no working dsymutil (stub path taken)"
           } | tee "$REL/toolchain-versions.txt"
           df -h /
 
@@ -193,7 +205,14 @@ jobs:
           : > "$XNU_WRAPPER_LOG"
           ccache -C >/dev/null 2>&1 || true
           ccache -M 2G >/dev/null 2>&1 || true
-          ./xnu-build.sh -j4 -k || echo "（make 退出码 $?——上游文档：链接后的检查，内核若已产出即成功）"
+          # dSYM 是死重：内核字节 = 编译+链接+strip（MakeInc.kernel:109 的 STRIP 吃
+          # .unstripped），.dSYM 内容只被 CTF 路径消费而本轮 DO_CTFMERGE=0、install 阶段
+          # 不跑——R31-R33 的真 dsymutil 本来就只是被 --minimize 警告后空转。真 dsymutil
+          # 是宿主脆弱依赖（R34 run 40560646210：DSYMUTIL 解析为空 → Error 127 杀死
+          # 构建）。此命令行旗标使 makedefs 的 origin 判断保留 /bin/true，dSYM 规则空转
+          # 成功、STRIP 照常产出内核；字节复现门禁（420f4b71…）的证明力不变。未来各轮
+          # 本地复现也须带同一旗标。
+          ./xnu-build.sh -j4 -k DSYMUTIL=/bin/true || echo "（make 退出码 $?——上游文档：链接后的检查，内核若已产出即成功）"
           K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
           ls -la "$K" || { echo "::error::内核没有产出"; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
           # --- R34 门禁一：R33 标记快检（树没被误改的第一道网）
