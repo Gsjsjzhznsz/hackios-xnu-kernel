@@ -1912,9 +1912,12 @@ zap_chain_has(const uint8_t *buf, uint64_t len, const char *needle)
 
 /* The zap shader's metadata in a page of ours, as TrustZone wants it; where that page is in physical memory.
  * R28m: no caller any more -- R28m builds by zap_header_m2 above -- but the function and its matrix
- * narrative stay in the record (the R21/R22 forms it built are the rounds' own history). */
+ * narrative stay in the record (the R21/R22 forms it built are the rounds' own history): `used` keeps
+ * the optimizer from stripping an unreferenced static (the R28m run 40477016307 lesson -- `unused`
+ * alone only silences the warning, dead-strip still ate the function and its R22/R23 markers), and
+ * `unused` keeps the build quiet.  The gates count its strings. */
 static bool
-zap_header(uint64_t *phys, bool whole) __unused
+zap_header(uint64_t *phys, bool whole) __attribute__((used, unused))
 {
         const uint8_t *header;
         vm_offset_t page = 0;
