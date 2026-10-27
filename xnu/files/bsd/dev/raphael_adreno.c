@@ -2340,7 +2340,7 @@ scm_state_dump(void)
                 cpu = 0;
         }
         PE_parse_boot_argn("adreno_scmsweep", &sweep, sizeof(sweep));
-        printf("adreno: %u: SCMDMP: R30 begins: the swallowed-code recovery; the current cpu is %d; the 64 KB sweep "
+        printf("adreno: %u: SCMDMP: R31 begins: the swallowed-code recovery sweep (the R30 machinery, riding); the current cpu is %d; the 64 KB sweep "
             "is %s\n", step, cpu, sweep ? "on" : "off (adreno_scmsweep=0)");
         base = 0x85775e00u + (uint32_t)cpu * 0x30u;
         p = (volatile const uint8_t *)ml_io_map(base, 0x200);
