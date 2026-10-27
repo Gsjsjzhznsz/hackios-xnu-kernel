@@ -242,7 +242,13 @@ jobs:
           d = open(sys.argv[1], 'rb').read()
           fw = open(sys.argv[2], 'rb').read()
           for marker, what in ((b'R28m: the kernel generation line', 'R28m 代数戳（驱动首行 + step 1 首次 flush）'),
-                               (b'R28m: the phase bisection', 'R28m 相位二分宣告（GPU 镜像 cmdline 裁到只读相位的语义行）'),
+                               (b'R28m: the M2 contract build + the N3 white-box probe', 'R28m 主目标宣告（M2 契约打包 + N3 日志环探针）'),
+                               (b'M2: seg %u: type', 'M2 逐段摆放表（type/flags/filesz/p_offset）'),
+                               (b'M2: the header rewritten canonical', 'M2 规范头重写差异数行'),
+                               (b'M2: THE SIGNATURE CHAIN SAYS', 'M2 签名链判词（R23 纪律延续）'),
+                               (b'HYPLOG: the registry at phys 0x146bfb30', 'N3 登记表实读行（ring 地址 + 尺寸）'),
+                               (b'HYPLOG: the ring, all %u bytes', 'N3 全环 dump 行'),
+                               (b'adreno_hyplog', 'N3 手动覆盖开关（PE_parse）'),
                                (b'R28k: the run goes on to the 3D core without the zap', 'R28k 拒绝后继续宣告（措辞原样保留；step 19 路径本轮不达）'),
                                (b'R28j: the two-parameter baseline', 'R28j 基线状态行（step 19 四开关自报）'),
                                (b'R28j: the T2 control', 'R28j T2 对照宣告（announce + 调用 what 串）'),
@@ -338,7 +344,10 @@ jobs:
                                (b"R28: the shape sweeps, retired behind adreno_shape_sweep=1", 'R28 形状扫描门控宣告（默认离场）'),
                                (b"R28: retired behind adreno_qfprom=1", 'R28 熔丝扫描门控宣告（默认离场；R28j 保持退役——secboot 行是 R25 杀手族）')):
               assert marker in d, f'源码构建的内核缺 {what}'
-          for gone, what in ((b'R28j: the kernel generation line', 'R28m：R28j 旧代数戳退役（本轮源码前移的机器证明）'),
+          for gone, what in ((b'R28l: the kernel generation line', 'R28m：R28l 旧代数戳退役（且 R28l 从未出片——双重死亡证明）'),
+                             (b'R28l: the phase bisection', 'R28m：R28l 相位宣告退役（本轮全相位，cmdline 无 skip）'),
+                             (b'R28m: the phase bisection', 'R28m：gen_r28m2 残留条目防御（内核里不存在该串）'),
+                             (b'R28j: the kernel generation line', 'R28m：R28j 旧代数戳退役（本轮源码前移的机器证明）'),
                              (b'R28k: the kernel generation line', 'R28m：R28k 旧代数戳退役（本轮源码前移的机器证明）'),
                              (b'the step stops here by design', 'R28j：R28i 的 INSTEAD 收尾措辞退役（本轮改 BEFORE）'),
                              (b'INSTEAD of the zap attempt', 'R28j：R28i 的 INSTEAD 措辞退役'),
@@ -461,7 +470,7 @@ jobs:
           df -h .
 
       # ---------------------------------------------------------------
-      - name: "⑥/⑥ SHA256 + README + 发布（R28m：L1-L3 相位二分判读树 + logdump P2/P3 读取纪律，只有 boot 资产）"
+      - name: "⑥/⑥ SHA256 + README + 发布（R28m：M/N 判读树（M2 契约打包 + N3 日志环）+ logdump P3 读取纪律，只有 boot 资产）"
         run: |
           set -eu
           cd "$REL"
