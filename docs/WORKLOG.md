@@ -1282,3 +1282,9 @@ r28l flashboot → oem run；**等 ~2-3 分钟过风暴首发窗再抓 logdump**
 - WiFi：raphael = WCN399x，路径 = ath10k-SNOC + ICNSS/MPSS(PAS 4) + SNOC 主机桥（fork 的 aa21593 为底本，其 docs/RAPHAEL-WIFI.md 列明五路 PMIC/BDF/NV 快照等私有输入）——独立大移植，按轮立项。
 
 设备侧：`sh run_ios.sh flash r33 gpu -w 180`（GPU 镜像先行），按 H 树判读；主镜像为对照。
+
+## R33 CI 收官 + 内核 sha 入账（run 40549952622，2026-10-28）
+
+**run 40549952622（9d6178f，SUCCESS）**：Release r33-springboard 七资产就位（raphael-xnu-r33-flash.img / raphael-xnu-r33-gpu-flash.img / raphael-r33-flashboot.apfs / r33-md1-root.apfs / SHA256SUMS / README.txt / toolchain-versions.txt；双镜像 8,163,439 B）。四件底板 sha256：b0f9f6df…（主镜像）/ 70116827…（GPU 镜像）/ 14485e7c…（flashboot）/ 372c7fcb…（md1 卷）——与 R34 工作流的底板硬校验同值，互证一致。
+
+**R33 内核 sha256 = 420f4b717b5dd0fe2f0b236bdbf2c686da6a2dd0169b3c9985de8e600e1e3560**（16,199,776 B；R34 已收编入 KNOWN 与 sha 禁入表，内核字节复现门禁据此断言 R34 不动内核）。公网回读复验（Task 20 纪律）：双镜像下载 sha256 与 SHA256SUMS 全符；tools/r33-kernel-id.py 双镜像双判 R33——内核条目 = R33 resident round + STAYS-ON 行（R32 三戳缺席）；GPU 镜像 cmdline = 全相位 token 组 + 唯一新 token `adreno_keep=1`；日常镜像零 adreno token（对照轮正确）；R13 卷（372c7fcb…）与 v7 loader（ec15106d…）verbatim 骑乘。设备侧 H1 已由用户 logdump 坐实（resident round 全相位跑满，STAYS-ON 后无拆除块；SpringBoard 软渲染为预期行为，GL 用户态 = R34 工程，非本轮失败）。
