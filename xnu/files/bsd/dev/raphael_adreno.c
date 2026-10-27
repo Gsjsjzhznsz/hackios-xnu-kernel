@@ -2277,6 +2277,16 @@ hyp_log_dump(void)
 }
 
 /*
+ * R31c, the device's own verdict on this sweep's ORDER: the first QUE row never printed on
+ * the phone -- the read of the SCM queue page (0x85775e00) HANGS (the hypervisor's private
+ * DDR; the "identity-mapped, EL1-readable" below was an extrapolation that the N3 ring's
+ * readability does not carry), and this dump runs inside the synchronous start path
+ * (redwood_adreno_init: "the start waits"), so the wedge WAS the black screen -- userland
+ * never started, and the record stopped at one empty QUE row.  The default order is now
+ * TZREG/TZDIAG alone (the hypervisor maps the TZ DIAG into the HLOS stage-2 itself at boot);
+ * QUE/HND/GLB/SCM/HYPDIAG wait for the sweep switch (=1), a dedicated round that accepts
+ * the wedge, with every earlier record flushed before each region.
+ *
  * R30 (the swallowed-code recovery): the N3 ring dump on the real device closed
  * the case on the wrapper -- the decoded ring holds hyp's WHOLE log history
  * (rounds 0: 29 lines, 1355 bytes, the boot lines included) and the only thing
@@ -2312,9 +2322,9 @@ hyp_log_dump(void)
  *           map at hyp's 0x8571200c), 0x2000 B.
  * The reads go through ml_io_map like the N3 ring's (Device memory, uncached) --
  * the ring's dump on R28m came back carrying the refusal-time lines, so the
- * technique reads fresh state on this phone.  adreno_scmsweep=0 skips the big
- * 64 KB sweep (the small reads stay); a wedge here is itself evidence, and the
- * flush before every region means it cannot take the earlier records with it.
+ * technique reads fresh state on this phone.  adreno_scmsweep=0 now skips every region but
+ * TZREG/TZDIAG (R31c: the small reads wedge too -- the device hung the whole start inside
+ * the first QUE row).
  */
 static void
 r30_rows(const char *tag, volatile const uint8_t *p, uint32_t len)
@@ -2342,6 +2352,39 @@ scm_state_dump(void)
         PE_parse_boot_argn("adreno_scmsweep", &sweep, sizeof(sweep));
         printf("adreno: %u: SCMDMP: R31 begins: the swallowed-code recovery sweep (the R30 machinery, riding); the current cpu is %d; the 64 KB sweep "
             "is %s\n", step, cpu, sweep ? "on" : "off (adreno_scmsweep=0)");
+        /* R31c: TZREG/TZDIAG first -- the highest value (sec_img_auth's own fuse and
+         * certificate lines) at the lowest risk (the TZ's diag is the hypervisor's OWN
+         * boot-time map into the HLOS stage-2, and the N3 registry reads proved the
+         * technique); the private-state regions ride behind the sweep switch. */
+        reg = (volatile const uint32_t *)ml_io_map(0x146bf720u, 4);
+        if (reg != (volatile const uint32_t *)0) {
+                uint32_t tzd = reg[0];
+
+                printf("adreno: %u: SCMDMP TZREG: the TZ DIAG registry word at phys 0x146bf720 is %#x (hyp's 0x857120b8 "
+                    "reads this word for its boot map)\n", step, tzd);
+                if (tzd != 0 && (tzd & 3u) == 0) {
+                        p = (volatile const uint8_t *)ml_io_map(tzd, 0x3000);
+                        if (p != (volatile const uint8_t *)0) {
+                                printf("adreno: %u: TZDIAG: the TZ's own log, base %#x, 0x3000 bytes, rows of 32 -- if "
+                                    "sec_img_auth ran, its fuse_read and certificate lines are HERE\n", step, tzd);
+                                r30_rows("TZDIAG", p, 0x3000);
+                        } else {
+                                printf("adreno: %u: TZDIAG: the region at %#x did not map\n", step, tzd);
+                        }
+                } else {
+                        printf("adreno: %u: TZDIAG: the registry word is not a sane base (%#x): TZ never published its "
+                            "diag base -- itself a verdict on the boot-time map\n", step, tzd);
+                }
+        } else {
+                printf("adreno: %u: SCMDMP TZREG: the registry (phys 0x146bf720) did not map\n", step);
+        }
+        put_the_log_away("the TZ DIAG region (or its empty registry word) is on the record");
+        if (!sweep) {
+                printf("adreno: %u: SCMDMP: the private-state regions (QUE, HND, GLB, the 64 KB SCM region, the hyp DIAG) "
+                    "wait for the sweep switch (=1) -- on the device the QUE read wedged the start and the boot never "
+                    "came back (R31c)\n", step);
+                return;
+        }
         base = 0x85775e00u + (uint32_t)cpu * 0x30u;
         p = (volatile const uint8_t *)ml_io_map(base, 0x200);
         if (p != (volatile const uint8_t *)0) {
@@ -2383,29 +2426,6 @@ scm_state_dump(void)
                 }
                 put_the_log_away("the SCM region sweep is on the record");
         }
-        reg = (volatile const uint32_t *)ml_io_map(0x146bf720u, 4);
-        if (reg != (volatile const uint32_t *)0) {
-                uint32_t tzd = reg[0];
-
-                printf("adreno: %u: SCMDMP TZREG: the TZ DIAG registry word at phys 0x146bf720 is %#x (hyp's 0x857120b8 "
-                    "reads this word for its boot map)\n", step, tzd);
-                if (tzd != 0 && (tzd & 3u) == 0) {
-                        p = (volatile const uint8_t *)ml_io_map(tzd, 0x3000);
-                        if (p != (volatile const uint8_t *)0) {
-                                printf("adreno: %u: TZDIAG: the TZ's own log, base %#x, 0x3000 bytes, rows of 32 -- if "
-                                    "sec_img_auth ran, its fuse_read and certificate lines are HERE\n", step, tzd);
-                                r30_rows("TZDIAG", p, 0x3000);
-                        } else {
-                                printf("adreno: %u: TZDIAG: the region at %#x did not map\n", step, tzd);
-                        }
-                } else {
-                        printf("adreno: %u: TZDIAG: the registry word is not a sane base (%#x): TZ never published its "
-                            "diag base -- itself a verdict on the boot-time map\n", step, tzd);
-                }
-        } else {
-                printf("adreno: %u: SCMDMP TZREG: the registry (phys 0x146bf720) did not map\n", step);
-        }
-        put_the_log_away("the TZ DIAG region (or its empty registry word) is on the record");
         reg = (volatile const uint32_t *)ml_io_map(0x857619e8u, 8);
         if (reg != (volatile const uint32_t *)0) {
                 uint64_t hyd = (uint64_t)reg[0] | (uint64_t)reg[1] << 32;
