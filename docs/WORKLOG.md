@@ -1169,3 +1169,34 @@ r28l flashboot → oem run；**等 ~2-3 分钟过风暴首发窗再抓 logdump**
 - ③**等待逻辑**：fb_present 改 **fastboot devices 轮询为主**（fastboot|xnuloader 都算在场——grab 后可直接续 flash；getvar product 降为兼容兜底）；wait_fastboot/wait_fastboot_long 要求**连续两次检测到才算"真的出现"**（单次毛刺不复位），强关等待不再依赖单次 getvar 应答。
 - ④**二次 boot 容错**：报错不再直接 die——oem stop 前置 + boot 分类放行后，仍尝试 wait_xnuloader + oem logdump + get_staged；**死点移到 get_staged**（loader 不响应拿不到日志才失败）。
 - 回归：bash -n + dash -n 双过；假 fastboot 夹具 16 断言全绿（clean_str/clean_cr、fb_present 三态、fb_boot_safe 四分类 + oem stop 实发验证、grab/菜单端到端带 \r 污染全链走到取日志死点）；测试脚本 scripts/test_runios_v2.sh + 环解码器 hyplog_decode.py 落盘。
+
+## R30 预注册 + 内核补丁 + 三件套（2026-10-27，先于刷机立字）
+
+**R30 静态侦察新证据（本轮反汇编新落）**：
+- **TZ DIAG 基址登记字锁定**：hyp.img 0x8571200c 起的映射函数实读——`mov w8,#0xf720; movk w8,#0x146b,lsl#16; ldr w8,[x8]` = **TZ DIAG 基址 = 物理 0x146bf720 处的 u32**，尺寸 **0x3000**，随 `bl 0x85737f6c` 映射进 HLOS 页表；失败分支打 "Failed to map TZ DIAG region to HLOS PT"（0x85748908）。孪生映射 = **HYP DIAG 基址 = u64 @ hyp 全局 0x857619e8**，尺寸 **0x2000**（失败分支 0x857488df）。
+- **HypX 注册链**：0x85712144 起查询 "HypXVersion"/"HypXCodeAddr"/"HypXSize"/"HypXDataAddr"（FN 0x85728254），值落 0x858a59b8/0x858a59d8/0x858a59e8 与 0x85775dd8/0x85775de0——0xfa11（名字查找失败）与 0xfa0d/0xfa0e/0xfa0f/0xfa11 错误族在案。
+- **R28m 真机环解码复核**（upload/r28m-gpu-logdump.txt 的 HYPLOG hex → hyplog_decode 同族脚本）：rounds=0 ⇒ 环内 29 行 = **hyp 全量日志史**（hyp_devcfg_init 噪声 → psci → HYPX REGISTRATION FAILED 0xfa11 → SMMU 噪声 → "Is TZ APP region mapped to HLOS VM = 1" → 拒绝时刻两行 [300045]）；**无任何 "Failed to map ... DIAG" 行 ⇒ 两个 DIAG 映射在真机 boot 时执行且成功**（登记字应非零）；环内无真码（N-b 复核成立）。⇒ R30 的 TZDIAG/HYPDIAG 捞取有真实预期。
+
+**R30 内核补丁（raphael_adreno.c，+231 行）**：
+- **scm_state_dump()**（被吞真码回收探针）：拒绝现场逐区读恒等映射物理内存，**每区 dump 后 put_the_log_away 再碰下一区**（后区 wedge 不吃前区记录）——
+  - QUE：0x85775e00 + cpu*0x30，0x200 B（SCM 队列条目：+0x1d4 状态机 / +0x1e0 pending fnid / +0x200 计数）；
+  - HND：0x858a6390 + cpu*0x18，0x40 B（per-cpu 句柄缓存 {fnid, valid}）；
+  - GLB：0x858a5900，0xc00 B（HypX 全局 + 请求计数器 0x858a6100 + 八核句柄 0x858a6390..0x858a6450）；
+  - SCMDMP：0x85775000，0x10000 B（SCM 区全量 64KB，2048 行；adreno_scmsweep=0 可关）；
+  - TZREG+TZDIAG：读 0x146bf720 的 u32 登记字（打印之），合理则映射 0x3000 dump；
+  - HDREG+HYPDIAG：读 0x857619e8 的 u64 登记字，合理（非零/4 对齐/<4GB）则映射 0x2000 dump。
+  - r30_rows() 十六进制行辅助（32B/行，与 HYPLOG 同款）；cpu_number() 取当前核（<kern/cpu_number.h>，本树 psci_smp.c 同款用法）；ml_io_map 读法与 N3 环同款（R28m 已证该读法在真机拿得到新鲜状态）。
+- **插入点**：refused: 路径 `hyp_log_dump()` 与其 flush 之后、give-up 之前；flush 结构改为三段（refusal 行 → N3 环 → R30 全区组）各自落盘。M2（zap_header_m2）与 N3（hyp_log_dump）机器原样随行；R28m 两处代数戳换 R30，宣告行换 R30（"R30: the swallowed-code recovery -- ..."，M2/N3 判决以历史引用在场）。
+- 静态自检（scripts/r30_selfcheck.py）：括号平衡 0；字符串字面量 marker 预测全对账（R30 戳 ×2、R30 宣告 ×1、SCMDMP 九标记各 1、adreno_scmsweep ×2【boot-arg 名 + off 文案】、M2/N3/R28k/R28j 保留族全数在场、R28m 两串退役零残留、定义先于调用）；scm_state_dump 1 定义 1 调用点，r30_rows 1 定义 6 调用点。
+
+**R30 三件套（R28m 派生，gen_r30*.py 三步）**：
+- tools/r30-flash-build.sh：门禁表 R30 化（代数戳 ×2 + R30 宣告 + SCMDMP 九标记 + adreno_scmsweep ×2；M2/N3/R28k/R28j 保留族原样），gone 表收编 R28m 两串；GPU tokens 不变（adreno=22 adreno_pause=0 adreno_watch=0）；bash -n 过。
+- tools/r30-kernel-id.py：docstring 重写（R28m 真机判决入史）、KNOWN 收编 R28m sha 911a69df…（run 40478487680）、MARKERS 表 R30 化（11 新项 + M2/N3 骑行项）、verdict 判据 R30 化（含 R28m 双串缺席断言）；py_compile 过。
+- .github/workflows/r30-springboard.yml：缓存键全新（r30-theos-v19L2-v1 / r30-xnu-deps-v1）；③诊断 A 十四项计数（应值全预注）；门禁大表 R30 化 + gone 收编 R28m；sha 禁入表收编 911a69df…；README/release body = **S 判读树**全文（见下）；YAML 解析通过（11 steps，release_tag 默认 r30-springboard）。
+- **工具史新课（本轮顺手抓到的潜伏缺陷）**：本系列此前所有轮的 README heredoc 终止符写 20 空格缩进，而 YAML 块标量 dedent = 10 ⇒ shell 见 "          EOF" **永不终止** ⇒ heredoc 吞到脚本尾：已发布各轮 README.txt 尾部带 3 行垃圾（EOF/echo/cat SHA256SUMS）且尾部两条命令从未执行（bash 对 EOF-of-file heredoc 只警告不失败，run 照样 SUCCESS）。实证：下载 release r28m-springboard/README.txt 尾 3 行逐字在案。R30 修复（终止符 10 空格 = 列 0），离线解析验证 bare EOF ×1。
+
+**预注册（先于刷机立字）——R30 S 判读树**：
+- 探针自检：P0 宣告行在场；P1 "steps up to 22 … mask 0x0"；P2 拒绝行后 N3 环 dump（对照基线）；P3 SCMDMP 区组逐区出现（QUE 8 行 → HND 2 行 → GLB 12 行 → SCMDMP 2048 行 → TZREG → TZDIAG 384 行（登记字合理时）→ HYPDIAG 256 行（同）），每区后跟 flush 行；P4 任一 "did not map"/flush 超时 = 记录之（继续跑）。
+- 判决分支：S1 QUE/HND/GLB 捞到 0x02000201 残迹 + 状态/返回码字段 ⇒ 对照拒绝分支表直接得唯一死因；S2 64KB 区发现 0x3000xx（≠0x300045）⇒ 同表分诊；S3 TZREG 非零且 TZDIAG 出可读文本 ⇒ S3a 有 PAS/GPU/zap/fuse_read 痕迹 = 认证到达 TZ 内部（真码双源互证）/ S3b 无 PAS 痕迹 = 死在 QSEE 入口/EL3（下一步 devcfg/ATF，XBL 镜像）；S4 TZREG = 0 = TZ 从未发布 diag 基址（登记链断在 XBL）；S5 全 did not map/全零 = 非恒等映射假说复活或 hyp 已擦除（下轮 adreno_hyplog 手动 + 分块小读）；S6 wedge = 该区不可从 EL1 读，本身即证据。
+- 真码判读表：0x30001B = api_ns 门；0x30001C/1D±n = 主认证流 0x1c04e410（拷贝/版本/哈希/魔数 0x2ec88ff0/元数据 elem 0xa,9,0x15,0x16,5,0xf,0x10/映射/防回滚/分配）；0x30000A..0E = mem pin（0x1c04d75c，sub 0x4d..0x51）；0x30004A 与 ret 8..14 → 0x30004E/4E/4E/50/1F/4F/4D 映射表 @0x1c11cee0；0x300042..49 = handler 错误带（0x300045 不在其中）；小值族（SCM_E_*）或 0xFFFFFFFF = ATF/EL3 入口；0x02000201 无残迹 = 调用未入队（逆向 hyp 队列状态机 0x8571801c）。
+- 附带：T2 对照（adsp ACCEPTED 0）照旧先跑 = 链路无罪基础判词；logdump 本轮拒绝现场多次 FLUSH（refusal 行 / N3 环 / R30 每区各一次），**每次 FLUSH 自有区独立截取判读**。设备侧流程：`sh run_ios.sh flash r30 gpu -w 180`。

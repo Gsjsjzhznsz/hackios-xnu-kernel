@@ -96,6 +96,7 @@
  */
 
 #include <kern/clock.h>
+#include <kern/cpu_number.h>
 #include <libkern/libkern.h>
 #include <mach/mach_types.h>
 #include <mach/vm_param.h>
@@ -2275,6 +2276,162 @@ hyp_log_dump(void)
         printf("adreno: %u: HYPLOG: the ring is on the record\n", step);
 }
 
+/*
+ * R30 (the swallowed-code recovery): the N3 ring dump on the real device closed
+ * the case on the wrapper -- the decoded ring holds hyp's WHOLE log history
+ * (rounds 0: 29 lines, 1355 bytes, the boot lines included) and the only thing
+ * it says about the refusal is the two [300045] wrapper lines; the true TZ
+ * return value w0 died unwritten at 0x8572703c's cbz.  But everything AROUND
+ * the swallowed call is identity-mapped DDR, EL1-readable (the N3 registry
+ * proof), so this probe walks the state the refused call left behind, one
+ * region at a time, each region's dump flushed to the storage before the next
+ * is touched (a wedge in a later region cannot eat an earlier one's record):
+ *
+ *   QUE     the current cpu's SCM queue entry, 0x85775e00 + cpu*0x30, 0x200 B
+ *           (the batch3/4 map of the structure: the state machine at +0x1d4,
+ *           the pending fnid at +0x1e0, the count at +0x200 -- whatever the
+ *           refused INIT left behind, the last residue of the call whose
+ *           answer died)
+ *   HND     the current cpu's handle-cache entry, 0x858a6390 + cpu*0x18, 0x40 B
+ *           (the {fnid, valid} pairs the conduit at 0x857182a4 keeps per cpu)
+ *   GLB     0x858a5900, 0xc00 B: the HypX globals (0x858a59b8/d8/e8 -- the real
+ *           ring decoded "HYPX REGISTRATION FAILED Reason: 0xfa11", so these
+ *           are expected empty), the SCM request counter at +0x800 (0x858a6100,
+ *           the one hyp's 0x85718154 increments per call), and all eight cpus'
+ *           handle entries from +0xa90 (0x858a6390)
+ *   SCM     0x85775000, 0x10000 B: the whole SCM region, rows of 32 -- the queue
+ *           fields at +0xe00, the scheduler states at +0x20000, everything
+ *           between; any returned-code field in there is on the record
+ *   TZDIAG  the TZ's own log: hyp maps it into the HLOS PT at boot (the real
+ *           ring holds NO "Failed to map TZ DIAG" line, and with rounds 0 that
+ *           history is complete), its base = the u32 word at phys 0x146bf720
+ *           (hyp's 0x857120b8 reads exactly this word for the map), 0x3000 B.
+ *           If the QSEE's sec_img_auth ran at all, its fuse_read / certificate
+ *           lines are HERE -- the batch3 verdict's ultimate witness.
+ *   HYPDIAG hyp's own diag buffer, base = the u64 at phys 0x857619e8 (the twin
+ *           map at hyp's 0x8571200c), 0x2000 B.
+ * The reads go through ml_io_map like the N3 ring's (Device memory, uncached) --
+ * the ring's dump on R28m came back carrying the refusal-time lines, so the
+ * technique reads fresh state on this phone.  adreno_scmsweep=0 skips the big
+ * 64 KB sweep (the small reads stay); a wedge here is itself evidence, and the
+ * flush before every region means it cannot take the earlier records with it.
+ */
+static void
+r30_rows(const char *tag, volatile const uint8_t *p, uint32_t len)
+{
+        for (uint32_t off = 0; off < len; off += 32) {
+                printf("adreno: %s +%04x: ", tag, off);
+                for (uint32_t j = 0; j < 32 && off + j < len; j++) {
+                        printf("%02x", p[off + j]);
+                }
+                printf("\n");
+        }
+}
+
+static void
+scm_state_dump(void)
+{
+        volatile const uint32_t *reg;
+        volatile const uint8_t *p;
+        int cpu = cpu_number();
+        uint32_t sweep = 1, base;
+
+        if (cpu < 0 || cpu > 7) {
+                cpu = 0;
+        }
+        PE_parse_boot_argn("adreno_scmsweep", &sweep, sizeof(sweep));
+        printf("adreno: %u: SCMDMP: R30 begins: the swallowed-code recovery; the current cpu is %d; the 64 KB sweep "
+            "is %s\n", step, cpu, sweep ? "on" : "off (adreno_scmsweep=0)");
+        base = 0x85775e00u + (uint32_t)cpu * 0x30u;
+        p = (volatile const uint8_t *)ml_io_map(base, 0x200);
+        if (p != (volatile const uint8_t *)0) {
+                printf("adreno: %u: SCMDMP QUE cpu%d: the SCM queue entry, phys %#x, 0x200 bytes (the pending fnid, "
+                    "the state machine, the returned-code residue of the call whose answer died)\n", step, cpu, base);
+                r30_rows("SCMDMP QUE", p, 0x200);
+        } else {
+                printf("adreno: %u: SCMDMP QUE cpu%d: the queue entry (phys %#x) did not map\n", step, cpu, base);
+        }
+        put_the_log_away("SCMDMP QUE is on the record");
+        base = 0x858a6390u + (uint32_t)cpu * 0x18u;
+        p = (volatile const uint8_t *)ml_io_map(base, 0x40);
+        if (p != (volatile const uint8_t *)0) {
+                printf("adreno: %u: SCMDMP HND cpu%d: the per-cpu handle cache entry, phys %#x, 0x40 bytes (the "
+                    "{fnid, valid} pairs the conduit caches)\n", step, cpu, base);
+                r30_rows("SCMDMP HND", p, 0x40);
+        } else {
+                printf("adreno: %u: SCMDMP HND cpu%d: the handle entry (phys %#x) did not map\n", step, cpu, base);
+        }
+        put_the_log_away("SCMDMP HND is on the record");
+        p = (volatile const uint8_t *)ml_io_map(0x858a5900u, 0xc00);
+        if (p != (volatile const uint8_t *)0) {
+                printf("adreno: %u: SCMDMP GLB: phys 0x858a5900, 0xc00 bytes: the HypX globals (the real ring decoded "
+                    "REGISTRATION FAILED 0xfa11, so they may be empty), the request counter at +0x800, all eight "
+                    "cpus' handle entries from +0xa90\n", step);
+                r30_rows("SCMDMP GLB", p, 0xc00);
+        } else {
+                printf("adreno: %u: SCMDMP GLB: the globals page (phys 0x858a5900) did not map\n", step);
+        }
+        put_the_log_away("SCMDMP GLB is on the record");
+        if (sweep) {
+                p = (volatile const uint8_t *)ml_io_map(0x85775000u, 0x10000);
+                if (p != (volatile const uint8_t *)0) {
+                        printf("adreno: %u: SCMDMP: the SCM region, all %u bytes, phys 0x85775000..0x85855000, rows of "
+                            "32; the queue fields sit at +0xe00, the scheduler states at +0x20000\n", step, 0x10000u);
+                        r30_rows("SCMDMP", p, 0x10000);
+                } else {
+                        printf("adreno: %u: SCMDMP: the SCM region (phys 0x85775000, 0x10000 bytes) did not map\n", step);
+                }
+                put_the_log_away("the SCM region sweep is on the record");
+        }
+        reg = (volatile const uint32_t *)ml_io_map(0x146bf720u, 4);
+        if (reg != (volatile const uint32_t *)0) {
+                uint32_t tzd = reg[0];
+
+                printf("adreno: %u: SCMDMP TZREG: the TZ DIAG registry word at phys 0x146bf720 is %#x (hyp's 0x857120b8 "
+                    "reads this word for its boot map)\n", step, tzd);
+                if (tzd != 0 && (tzd & 3u) == 0) {
+                        p = (volatile const uint8_t *)ml_io_map(tzd, 0x3000);
+                        if (p != (volatile const uint8_t *)0) {
+                                printf("adreno: %u: TZDIAG: the TZ's own log, base %#x, 0x3000 bytes, rows of 32 -- if "
+                                    "sec_img_auth ran, its fuse_read and certificate lines are HERE\n", step, tzd);
+                                r30_rows("TZDIAG", p, 0x3000);
+                        } else {
+                                printf("adreno: %u: TZDIAG: the region at %#x did not map\n", step, tzd);
+                        }
+                } else {
+                        printf("adreno: %u: TZDIAG: the registry word is not a sane base (%#x): TZ never published its "
+                            "diag base -- itself a verdict on the boot-time map\n", step, tzd);
+                }
+        } else {
+                printf("adreno: %u: SCMDMP TZREG: the registry (phys 0x146bf720) did not map\n", step);
+        }
+        put_the_log_away("the TZ DIAG region (or its empty registry word) is on the record");
+        reg = (volatile const uint32_t *)ml_io_map(0x857619e8u, 8);
+        if (reg != (volatile const uint32_t *)0) {
+                uint64_t hyd = (uint64_t)reg[0] | (uint64_t)reg[1] << 32;
+
+                printf("adreno: %u: SCMDMP HDREG: the hyp DIAG registry word at phys 0x857619e8 is %#llx (the twin map "
+                    "at hyp's 0x8571200c)\n", step, (unsigned long long)hyd);
+                if (hyd != 0 && (hyd & 3u) == 0 && hyd < 0x100000000ull) {
+                        p = (volatile const uint8_t *)ml_io_map((vm_offset_t)hyd, 0x2000);
+                        if (p != (volatile const uint8_t *)0) {
+                                printf("adreno: %u: HYPDIAG: the hypervisor's own diag buffer, base %#llx, 0x2000 bytes, "
+                                    "rows of 32\n", step, (unsigned long long)hyd);
+                                r30_rows("HYPDIAG", p, 0x2000);
+                        } else {
+                                printf("adreno: %u: HYPDIAG: the region at %#llx did not map\n", step,
+                                    (unsigned long long)hyd);
+                        }
+                } else {
+                        printf("adreno: %u: HYPDIAG: the registry word is not a sane base (%#llx)\n", step,
+                            (unsigned long long)hyd);
+                }
+        } else {
+                printf("adreno: %u: SCMDMP HDREG: the registry (phys 0x857619e8) did not map\n", step);
+        }
+        put_the_log_away("the hyp DIAG region (or its empty registry word) is on the record; R30 ends");
+}
+
 static bool
 step_zap_signature(void)
 {
@@ -4047,7 +4204,17 @@ refused:
          * 0x300045; its dump goes to the storage before the give-up is asked.
          */
         hyp_log_dump();
-        put_the_log_away("the QHEE log ring (N3) is on the record above; the give-up follows");
+        put_the_log_away("the QHEE log ring (N3) is on the record above; the R30 sweep follows");
+        /*
+         * R30: the swallowed-code recovery, NOW -- the identity-mapped state around
+         * the refused call (the SCM queue, the per-cpu handle cache, the whole SCM
+         * region, the TZ's own DIAG log) goes on the record region by region, each
+         * region flushed before the next is touched, before the give-up pushes new
+         * SCM traffic over it.
+         */
+        scm_state_dump();
+        put_the_log_away("the R30 sweep (the SCM queue, the handle cache, the 64 KB region, the TZ DIAG) is on the "
+            "record above; the give-up follows");
         /*
          * R28j: the zap's give-up, right after its own refusal -- the adsp's shape, so the
          * round's record is four calls in one boot: the adsp's attempt, the adsp's give-up,
@@ -5600,7 +5767,7 @@ redwood_adreno_init(void)
         }
 
         printf("adreno: steps up to %u, without those in mask %#x; step %u is the new one and waits %u ms %s "
-            "(R28m: the kernel generation line -- one kernel, both images)\n", last_step,
+            "(R30: the kernel generation line -- one kernel, both images)\n", last_step,
             skip_steps, newest_step, pause_ms, fine ? "before every access" : "after each announcement");
         /*
          * R28l: the phase bisection.  The R28k main image (the adreno phase skipped
@@ -5618,11 +5785,12 @@ redwood_adreno_init(void)
          * gpu_block_stop() is flag-driven: with nothing started every teardown branch
          * skips itself, so a truncated run ends exactly as cleanly as it began.
          */
-        printf("adreno: R28m: the M2 contract build + the N3 white-box probe -- the metadata page is rebuilt from the "
-            "file's own headers (every segment at its declared p_offset, the canonical header fields, the hash mark "
-            "required) and the QHEE log ring is dumped at the refusal: the swallowed true code, or the proof it is "
-            "not in the ring, on the record this boot (the R28l phase bisection's verdict -- the trigger face is the "
-            "adreno phase -- rides as prior; this GPU image runs ALL steps, the zap's step 19 included)\n");
+        printf("adreno: R30: the swallowed-code recovery -- the M2 verdict (0/52 bytes) and the ring's two [300045] "
+            "lines proved the hyp format layer innocent and the ring wrapper-only, so the true TZ return value died "
+            "unwritten at 0x8572703c; at the refusal this kernel dumps the identity-mapped state around the refused "
+            "call: the SCM queue entry, the per-cpu handle cache, the whole 64 KB SCM region, and the TZ DIAG region "
+            "(its base read from the registry word at phys 0x146bf720, the map hyp runs at boot) -- the true code, "
+            "or the proof of where TZ died, on the record this boot (the R28m M2/N3 machinery rides verbatim below)\n");
         /*
          * R27: the flush channel's own test, before any step runs.  The loader writes the
          * whole log (its side and this ring) to the logdump partition and answers with the
@@ -5632,7 +5800,7 @@ redwood_adreno_init(void)
          * absent too, meaning the flush was not even asked for) says the channel itself
          * is what R26 never proved.
          */
-        put_the_log_away("step 1's first line: the flush channel's own test (R28m: the kernel generation line)");
+        put_the_log_away("step 1's first line: the flush channel's own test (R30: the kernel generation line)");
         for (step = 1; step <= last_step; step++) {
                 if (skip_steps & 1u << step) {
                         continue;
