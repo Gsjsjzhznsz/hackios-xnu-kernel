@@ -1200,3 +1200,33 @@ r28l flashboot → oem run；**等 ~2-3 分钟过风暴首发窗再抓 logdump**
 - 判决分支：S1 QUE/HND/GLB 捞到 0x02000201 残迹 + 状态/返回码字段 ⇒ 对照拒绝分支表直接得唯一死因；S2 64KB 区发现 0x3000xx（≠0x300045）⇒ 同表分诊；S3 TZREG 非零且 TZDIAG 出可读文本 ⇒ S3a 有 PAS/GPU/zap/fuse_read 痕迹 = 认证到达 TZ 内部（真码双源互证）/ S3b 无 PAS 痕迹 = 死在 QSEE 入口/EL3（下一步 devcfg/ATF，XBL 镜像）；S4 TZREG = 0 = TZ 从未发布 diag 基址（登记链断在 XBL）；S5 全 did not map/全零 = 非恒等映射假说复活或 hyp 已擦除（下轮 adreno_hyplog 手动 + 分块小读）；S6 wedge = 该区不可从 EL1 读，本身即证据。
 - 真码判读表：0x30001B = api_ns 门；0x30001C/1D±n = 主认证流 0x1c04e410（拷贝/版本/哈希/魔数 0x2ec88ff0/元数据 elem 0xa,9,0x15,0x16,5,0xf,0x10/映射/防回滚/分配）；0x30000A..0E = mem pin（0x1c04d75c，sub 0x4d..0x51）；0x30004A 与 ret 8..14 → 0x30004E/4E/4E/50/1F/4F/4D 映射表 @0x1c11cee0；0x300042..49 = handler 错误带（0x300045 不在其中）；小值族（SCM_E_*）或 0xFFFFFFFF = ATF/EL3 入口；0x02000201 无残迹 = 调用未入队（逆向 hyp 队列状态机 0x8571801c）。
 - 附带：T2 对照（adsp ACCEPTED 0）照旧先跑 = 链路无罪基础判词；logdump 本轮拒绝现场多次 FLUSH（refusal 行 / N3 环 / R30 每区各一次），**每次 FLUSH 自有区独立截取判读**。设备侧流程：`sh run_ios.sh flash r30 gpu -w 180`。
+
+## R31 预注册 + fork 实证形补丁（2026-10-27，先于刷机立字）
+
+**外部实锤（HeliumStudio fork，用户提交侦察）**：github.com/HeliumStudio-Dev/hackios-xnu-kernel 对【同一台 raphael / SM8150、同一条 XBL → QHEE → EL1 链、同一版本 xnu-8796.121.2】的移植已实现 A640 日常渲染（docs/RAPHAEL.md）："A640 全部初始化步骤、TrustZone zap shader 认证、freedreno/FD640/OpenGL ES 3.2、1080×2340 三角形回读无错误"；"加载、认证与结束卸载均返回成功"。其 zap 认证序列（xnu/files/bsd/dev/hakios.adreno.c）：
+- **元数据 = 打包形**：`zap_header()` 硬校验 `52 + 32*segments + hashes == size`——ELF 头 + phdr 表 + 哈希段内容紧邻，**别无他物**（厂商 .mdt 原件形；ELF32，≤一页）；PAS_INIT_IMAGE 两参形（x4=0，与我们的 e1_mode=2 同形）对该页 **ACCEPTED**。
+- **代码段分离**：`a640_zap.b02`（≤0x1000）写入落位，零填充到 0x1000。
+- **落位 = dt 的 pil_gpu_region 0x98f15000**（MEM_SETUP 三参形，尺寸 0x1000）——推翻我们 R23 时代"pil_gpu_region 无人引用 ⇒ 新页才是 vendor 形"的判读。
+- **a640 不预发 PAS_SHUTDOWN**（他们首试 step 18 后的 SHUTDOWN 同样 wedge——与我们 R20 一致；a640 分支直接跳过）。
+- 附带同证：SMMU GPU stream 0/1 mask 0x401、GMU stream 5 0x400（与我们 R21 判读一致）；MPSS（PAS 4）与 WLAN 固件同样 ACCEPTED——PAS 通道本身无罪。
+
+**全案改判（三形矩阵闭合）**：stock a640_zap.mbn = 合并量产形（ELF32 头 + 3 phdr @52；哈希段 @0x1000、0x1a38 B = v6 元数据 + 小米链；**表尾 0x94 到 0x1000 为 3948B 零 gap**；代码段 @0x3000、0x7b0 B）。历史两形皆错：R21 = 截断页 [0..0x1000)（头声明 0x1000 而数据在 0x94——自相矛盾；无哈希段内容）；R24+/M2 = 整文件（gap + 代码段全在元数据缓冲内）。**胜形 = [头 52B][表 96B][哈希 blob 0x1a38] 打包 0x1AC8 B，哈希段 phdr 的 p_offset 重写 0x1000 → 0x94**（厂商 .mdt 自身形态；v6 签名覆盖元数据 blob 而非 phdr）。T2 的 adsp ACCEPTED 之谜同解：adsp.mbn 本身就是 mdt 打包形。
+- 附带发现（R30 结构性缺陷）：M2 形的拒绝发生在 **step 12**（step_zap_signature），R28m run 到 12 即停——**R30 的 SCMDMP 探针只挂 step 19 的 refused 标签，在 M2 形拒绝下永不执行**（R30 已发布未刷机，被 R31 取代；其 sha 4a708830… 入 KNOWN 与 sha 禁入表）。
+
+**R31 内核补丁（raphael_adreno.c，+124/-18 行）**：
+- **zap_metadata_packed(phys, msize)**：stock 文件 → ELF32 校验 → phdr 表解析 → 哈希段（旗标 0x02000000）定位 → 打包页构造（头 + 表 verbatim，p_offset 单字段重写 0x1000→0x94，blob 紧随），0x1AC8 B ≤ 16K 页；to_memory 落缓存；构建行打日志（"the packed metadata is built… the hash segment's p_offset rewritten %#x -> %#x… the code is NOT in this buffer"）。
+- **step 12 换打包形** + 拒绝路径补 R30 大扫（refusal 行 → N3 环 → SCMDMP/TZDIAG 全区组 → 收尾，各段独立 flush）——M2 形拒绝死在 12 的结构性补洞。
+- **step 19 换打包形**（e1_mode 语义不变，whole = 打包长）；**落位默认 0x98f15000**（adreno_zapmem 覆盖保留）；MEM_SETUP 尺寸 0x1000 不变；写码逻辑不变（文件 PT_LOAD 0x7b0 零填充至 0x1000）。
+- zap_header_m2 → `__attribute__((used, unused))` 存档（dead-strip 纪律）；zap_page 加 unused 标注；R31 代数戳 ×2 + 宣告行（"R31: the fork-proven form -- …"）；静态自检全绿（括号平衡、marker 预测全对账、打包函数 1 定义 2 调用、scm_state_dump 两拒绝路径各 1、R30 双串零残留、落位常量在位）。
+
+**R31 三件套（R30 派生，gen_r31*.py）**：
+- tools/r31-flash-build.sh：门禁 R31 化（代数戳 ×2、宣告 ×1、打包构建行 ×1、p_offset 重写 ×2、SCMDMP 九标记骑行），gone 收编 R30 双串；bash -n 过。
+- tools/r31-kernel-id.py：docstring 重写、KNOWN 收编 R30 sha、MARKERS/verdict R31 化；py_compile 过。
+- .github/workflows/r31-springboard.yml：缓存键全新、诊断 A 十七项、门禁大表 R31 化 + gone 收编 R30、sha 禁入表收编 4a708830…、README/release body = **F 判读树**全文；严格重复键扫描 + heredoc 终止符验证通过（11 steps，r31-springboard）。
+- **工具史新课（第 N+1 课，同坑二踩）**：gen_r31c 的 BODY 字符串再次自带 `body: |` 头行（与 R30 的 gen_r30c 同一错误），首次替换后 'body' 重复——严格扫描当场抓获，删头行重生成。R30 轮的同型 bug 已进史册（commit 87075a9），本轮仍复犯 ⇒ 新规则：**gen 脚本的 body 常量不得含 YAML 键行**，替换函数以 bstart 定位键行之后。
+
+**预注册（先于刷机立字）——R31 F 判读树**：
+- 探针自检：P0 宣告行 "R31: the fork-proven form"；P1 打包构建行 + p_offset 重写行（step 12 一条 + 宣告一条 = 二进制计 2）；P2 全相位 mask 0x0；P3 T2 对照照旧 ACCEPTED (0)。
+- F1 = step 12 "TRUSTZONE ACCEPTS THE ZAP SHADER'S SIGNATURE FROM THIS KERNEL" ⇒ 墙倒；step 19 走 MEM_SETUP(0x98f15000/0x1000) → 写码 → AUTH_AND_RESET ⇒ "TRUSTZONE HAS AUTHENTICATED AND STARTED THE ZAP SHADER" ⇒ step 20/21/22 全相位（对照 fork 的 step 20 3D 核心序列）。
+- F2 = step 12 仍 0x45 ⇒ fork 差异不止元数据 ⇒ 读 R30 大扫（SCMDMP/TZDIAG）按 S 表分诊真码（0x30001B/0x30001D±n/0x30000A..E/0x300042-49/小值族）。
+- F3 = did not map / wedge = 证据。设备侧流程：`sh run_ios.sh flash r31 gpu -w 180`。

@@ -1,0 +1,693 @@
+name: R31 · SpringBoard 一键流水线（fork 实证形 · GPU 镜像全相位 adreno=22：打包元数据 [ELF头][phdr][哈希段] + 代码落位 dt pil_gpu_region 0x98f15000，拒绝现场仍逐区 dump SCM/TZ DIAG，装载器 v7 原字节，卷零改动）
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_repo:
+        description: "hackios 内核树 fork（含 xnu/ + raphael_adsp_fw.h + tools/r31-*）"
+        required: true
+        default: "Gsjsjzhznsz/hackios-xnu-kernel"
+      release_tag:
+        description: "Release tag（直链的一部分）"
+        required: true
+        default: "r31-springboard"
+      r28d_image:
+        description: "R28d 日常镜像直链（外科手术的底板）"
+        required: false
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r28d-springboard/raphael-xnu-r28d-flash.img"
+      r28d_gpu_image:
+        description: "R28d GPU 镜像直链（外科手术的底板）"
+        required: false
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r28d-springboard/raphael-xnu-r28d-gpu-flash.img"
+      r28d_flashboot:
+        description: "R28d 启动卷直链（= R13 全量字节，真机验证过）"
+        required: false
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r28d-springboard/raphael-r28d-flashboot.apfs"
+      r28d_root:
+        description: "R28d 小卷 md1 直链（对照用：本轮镜像的 ramdisk 条目必须逐字节等于它）"
+        required: false
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r28d-springboard/r28d-md1-root.apfs"
+permissions:
+  contents: write
+concurrency:
+  group: r31-springboard
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 200
+    env:
+      REL: ${{ github.workspace }}/release
+      THEOS: /home/runner/theos     # (literal: GitHub Actions' env: block expands nothing)
+      CCACHE_DIR: ${{ github.workspace }}/hackios/.ccache
+    steps:
+      # ---------------------------------------------------------------
+      - name: "①/⑥ 磁盘准备与依赖（内核构建工具链）"
+        run: |
+          set -eu
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+                       /usr/local/share/boost /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential python3-dev clang lld ccache \
+                       flex bison m4 perl python3 autoconf automake libtinfo6 xz-utils uuid-dev 7zip >/dev/null
+          command -v clang && command -v ccache && command -v 7z
+          # dsymutil：Ubuntu 的 apt clang 不往 /usr/bin 放它（R11 run 39973048286 的教训）
+          DS=$(command -v dsymutil || clang --print-prog-name=dsymutil 2>/dev/null || true)
+          [ -x "$DS" ] || DS=$(ls /usr/lib/llvm-*/bin/dsymutil 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$DS" ] && [ -x "$DS" ]; then
+            sudo ln -sf "$DS" /usr/bin/dsymutil
+          else
+            printf '#!/bin/sh\nexit 0\n' | sudo tee /usr/bin/dsymutil >/dev/null && sudo chmod +x /usr/bin/dsymutil
+          fi
+          mkdir -p "$REL"
+          # R28i 工具链审计第一页：runner 镜像自带的编译器版本，原样入档（R28h-B 的 lsd SIGBUS
+          # 嫌疑头名是构建环境漂移——r25-* 缓存键的跨代 restore 链 + runner 滚动更新；本轮把
+          # 每一层工具链的完整版本号写进构建日志与 release 资产，未来任何一轮都能对表）
+          {
+            echo "R28i toolchain audit (recorded $(date -u +%FT%TZ))"
+            echo "--- runner image ---"
+            cat /etc/os-release | grep -E '^(PRETTY_NAME|VERSION)=' || true
+            echo "--- apt clang (the kernel's host compiler) ---"
+            clang --version | head -2
+            lld --version 2>/dev/null || true
+            echo "--- apt dsymutil ---"
+            dsymutil --version 2>/dev/null | head -1 || true
+          } | tee "$REL/toolchain-versions.txt"
+          df -h /
+
+      # ---------------------------------------------------------------
+      - name: "②/⑥ 取树 + 取 R28d 资产（本轮底板；SHA 对官方 SHA256SUMS 硬校验）"
+        run: |
+          set -eu
+          git clone --depth 1 "https://github.com/${{ inputs.kernel_repo }}.git" hackios
+          cd hackios
+          echo "→ 内核树 @ $(git log -1 --format='%h %s')"
+          ls -lh xnu/files/bsd/dev/raphael_adreno.c xnu/files/bsd/dev/raphael_adsp_fw.h \
+                tools/r31-flash-build.sh tools/r31-kernel-id.py fw-gpu-raphael/adsp.mbn
+          # R28d 的四件资产：两张镜像是外科手术的底板（装载器 v7 原字节在里面），
+          # 启动卷与小卷本轮原样沿用（小卷同时是"镜像 ramdisk 条目必须逐字节等于它"的对照物）。
+          mkdir -p r28d
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o r28d/raphael-xnu-r28d-flash.img  "${{ inputs.r28d_image }}"
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o r28d/raphael-xnu-r28d-gpu-flash.img "${{ inputs.r28d_gpu_image }}"
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o r28d/raphael-r28d-flashboot.apfs "${{ inputs.r28d_flashboot }}"
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o r28d/r28d-md1-root.apfs "${{ inputs.r28d_root }}"
+          sha256sum r28d/* | tee r28d/SHA256SUMS.r28d
+          # 硬校验：四件资产必须是 R28d release 的官方字节（r28d-springboard 的 SHA256SUMS）
+          python3 - r28d/ <<'PY'
+          import hashlib, sys
+          want = {
+              'raphael-xnu-r28d-flash.img':    '95278e76df1857e069e40f97815f533e8a8ea0328516bb6421d79a4e2959bb72',
+              'raphael-xnu-r28d-gpu-flash.img':'ef441b1c9630ade83e61c0fd4cbad09229694361367a00f6df640e2cd85b1f71',
+              'raphael-r28d-flashboot.apfs':   '14485e7c5ce125ef516168445c2500ac04ca5e40a908c2aef516b2d92c24ba0c',
+              'r28d-md1-root.apfs':            '372c7fcb7730726a8fb806eec7251e0e75a4188f64db6fbaedcf5b7663672dd4',
+          }
+          for name, sha in want.items():
+              got = hashlib.sha256(open(sys.argv[1] + name, 'rb').read()).hexdigest()
+              assert got == sha, f'{name}: {got} != the R28d release sha {sha}'
+          print('底板四件全部等于 R28d release 的官方字节（r28d-springboard SHA256SUMS）')
+          PY
+          # 立等可取的装载器门禁：R28d 镜像里的 loader 条目必须是设备已验证的 v7（ec15106d…），
+          # 内核条目必须是 R28d、小卷必须是 R13 谱系——本轮手术的底板谱系三查
+          python3 tools/r31-kernel-id.py r28d/raphael-xnu-r28d-flash.img r28d/raphael-xnu-r28d-gpu-flash.img | tee r28d-id.txt
+          grep -q "ec15106da4bad290" r28d-id.txt || { echo "::error::R28d 镜像的 loader 不是设备验证过的 v7（ec15106d…）"; exit 1; }
+          grep -Ec "loader +sha256" r28d-id.txt | grep -qx 2 || { echo "::error::两张 R28d 镜像都要读到 loader 条目"; exit 1; }
+          grep -q "VERDICT: the kernel entry is R28d" r28d-id.txt || { echo "::error::底板镜像的内核不是 R28d"; exit 1; }
+          grep -q "VERDICT: the ramdisk entry is R13..R28d VERBATIM" r28d-id.txt || { echo "::error::底板镜像的小卷不是 R13 谱系"; exit 1; }
+          # 两张底板镜像的 ramdisk 条目必须就是 r28d-md1-root.apfs 的字节（本轮"卷零改动"的对照物）
+          python3 - r28d/ <<'PY'
+          import gzip, struct, sys
+          def ramdisk_of(path):
+              img = open(path, 'rb').read()
+              blob = gzip.decompress(img[4096:4096 + struct.unpack('<I', img[8:12])[0]])
+              x = blob.find(b'XNUP')
+              size = struct.unpack('<I', blob[x+4:x+8])[0]
+              i, out = x + 8, {}
+              while i + 24 <= x + 8 + size and blob[i] != 0:
+                  name = blob[i:i+16].rstrip(b'\0').decode()
+                  esize = struct.unpack('<I', blob[i+16:i+20])[0]
+                  out[name] = blob[i+24:i+24+esize]
+                  i += 24 + ((esize + 15) & ~15)
+              return out['ramdisk']
+          base = open(sys.argv[1] + 'r28d-md1-root.apfs', 'rb').read()
+          for n in ('raphael-xnu-r28d-flash.img', 'raphael-xnu-r28d-gpu-flash.img'):
+              r = ramdisk_of(sys.argv[1] + '/' + n)
+              assert r == base, f'{n}: ramdisk 条目与 r28d-md1-root.apfs 不一致'
+          print('底板两镜像的 ramdisk 条目 == r28d-md1-root.apfs，逐字节')
+          PY
+
+      # ---------------------------------------------------------------
+      # R28i 工具链纪律（R31 原样继承）：lsd SIGBUS 的头号嫌疑是 r25-* 缓存键的
+      # 跨代 restore 链（两次构建可能拿到不同代的 theos / xnu-deps）。每轮缓存键
+      # 全新、**不带 restore-keys**：首跑必 miss → 从钉死的 URL 重建（L1ghtmann
+      # v19.0.0-L2 具名 tag + theos/sdks 固定源），重建是确定性的；后续同键命中
+      # 同一份。跨代混用从结构上不再可能。
+      - name: "②c/⑥ 缓存：theos（工具链 + iPhoneOS16.5.sdk；R31 全新键、无 restore 链）"
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/theos
+          key: r31-theos-v19L2-v1
+      - name: "②d/⑥ 缓存：xnu-deps（Apple 开源件 + host 工具 + SDK 链接树；R31 全新键、无 restore 链）"
+        uses: actions/cache@v4
+        with:
+          path: hackios/xnu-deps
+          key: r31-xnu-deps-v1
+      # R31 沿 R28i 的 clean build 纪律：ccache 零回填（空仓起跑），
+      # 本轮每个 .o 都从本轮源码编译；缓存只存不用（给后面的轮次）。
+      - name: "②e/⑥ ccache（R31 clean build——零回填，只存不用）"
+        uses: actions/cache@v4
+        with:
+          path: hackios/.ccache
+          key: r31-ccache-${{ github.run_id }}
+
+      # ---------------------------------------------------------------
+      - name: "③/⑥ 内核源码构建（theos 固定 v19.0.0-L2 + xnu/apply.sh + xnu-deps + clean ccache + make + R31 门禁）"
+        run: |
+          set -eu
+          # theos 本体 + 工具链：R28i 起工具链 URL 钉死（R31 原样继承，不再 releases/latest——
+          # latest 一旦上游发新版本，两次构建之间就会漂移）。钉的是 git tag
+          # main-update_3-eabca92（release 显示名 v19.0.0-L2）——download URL 只认
+          # git tag，不认显示名，run 40213864365 就是栽在拿显示名当 tag 404；
+          # 该 release 自 2024-04 未动过，与 R28d/R28g 实际拉到的字节相同，纯收紧
+          if [ ! -x "$THEOS/toolchain/linux/iphone/bin/ld64" ]; then
+            rm -rf "$THEOS"
+            git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
+            mkdir -p "$THEOS/toolchain"
+            curl -fL --retry 3 --retry-delay 5 -sS https://github.com/L1ghtmann/llvm-project/releases/download/main-update_3-eabca92/iOSToolchain-x86_64.tar.xz | tar -xJ -C "$THEOS/toolchain/"
+          fi
+          "$THEOS/toolchain/linux/iphone/bin/ld64" --version | tee -a "$REL/toolchain-versions.txt" || true
+          echo "--- theos toolchain tarball identity ---" | tee -a "$REL/toolchain-versions.txt"
+          echo "L1ghtmann/llvm-project v19.0.0-L2 (git tag main-update_3-eabca92; pinned; R28i discipline, R31 inherits)" | tee -a "$REL/toolchain-versions.txt"
+          if [ ! -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include" ]; then
+            rm -rf "$THEOS/sdks/iPhoneOS16.5.sdk" /tmp/theos-sdks
+            git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/theos-sdks
+            git -C /tmp/theos-sdks sparse-checkout set iPhoneOS16.5.sdk
+            mkdir -p "$THEOS/sdks"
+            mv /tmp/theos-sdks/iPhoneOS16.5.sdk "$THEOS/sdks/"
+            rm -rf /tmp/theos-sdks
+          fi
+          test -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include" || { echo "::error::theos/sdks 的 iPhoneOS16.5.sdk 就位失败"; exit 1; }
+          df -h /
+          cd hackios
+          xnu/apply.sh
+          # 内核编译器钉死：theos 工具链的 clang（上面按 git tag 下载的那份），绝不许
+          # runner 的 apt clang 编内核 —— R28i run 40214391444：当日 apt clang 把三个
+          # "T2 VERDICT:" 判决串无声无息地从内核里剥了（-w 吃掉了警告，门禁兜住的）；
+          # R28d→R28g 的 apt clang 漂移也是 lsd SIGBUS 的头号嫌疑。xnu-clang wrapper
+          # 读 XNU_HOST_CLANG（本轮起支持）；host 工具（mig 等）仍用 apt 的。
+          XNU_HOST_CLANG="$THEOS/toolchain/linux/iphone/bin/clang"
+          export XNU_HOST_CLANG
+          test -x "$XNU_HOST_CLANG" || { echo "::error::theos 工具链 clang 缺位（$XNU_HOST_CLANG）"; exit 1; }
+          "$XNU_HOST_CLANG" --version | tee -a "$REL/toolchain-versions.txt"
+          grep -q "eabca92" "$REL/toolchain-versions.txt" || { echo "::error::内核编译器不是钉死的 theos clang（eabca92）"; exit 1; }
+          bash xnu-deps/setup.sh || { echo "::error::setup.sh 失败——exporthdrs.log 尾部："; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
+          export XNU_CCACHE=1 CCACHE_COMPILERCHECK=content XNU_WRAPPER_LOG="$PWD/xnu-clang-args.log"
+          : > "$XNU_WRAPPER_LOG"
+          ccache -C >/dev/null 2>&1 || true
+          ccache -M 2G >/dev/null 2>&1 || true
+          echo "→ R31 clean build：ccache 零回填空仓起跑，本轮每个对象都从本轮源码编译"
+          echo "→ ccache 起步统计（应全零）："; ccache -s 2>/dev/null | head -8 || true
+          ./xnu-build.sh -j4 -k || echo "（make 退出码 $?——上游文档：链接后的检查，内核若已产出即成功）"
+          K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
+          ls -la "$K" || { echo "::error::内核没有产出——exporthdrs.log 与 make 日志尾部："; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
+          # --- R31 诊断（快检）：R31 新增/判决串计数 + wrapper 自录 argv 留档 ---
+          #    R28i 曾用 17 变体重放矩阵 + IR 探针定位“编译器无声删串”事件（元凶＝当日
+          #    apt clang，run 40214391444；现已钉死 theos clang，矩阵退役，只留快检与
+          #    argv 留档——若任何计数与门禁不符，xnu-clang-args.log 里有离线重放要用的
+          #    真实命令行）。
+          echo "→ 诊断 A：R31/R28j 判决/证据串计数（应与门禁表一致）"
+          echo "    T2 VERDICT: = $(strings -a "$K" | grep -cF 'T2 VERDICT:')（应 3）"
+          echo "    the zap attempt follows = $(strings -a "$K" | grep -cF 'the zap attempt follows in this same boot')（应 1）"
+          echo "    R28j give-up = $(strings -a "$K" | grep -cF 'R28j: the give-up right after the refusal')（应 1）"
+          echo "    T2 page check = $(strings -a "$K" | grep -cF 'T2 page check')（应 1）"
+          echo "    E1 page check = $(strings -a "$K" | grep -cF 'E1 page check')（应 1）"
+          echo "    adsp hash head = $(strings -a "$K" | grep -cF "the adsp's hash segment's head")（应 1）"
+          echo "    zap hash head = $(strings -a "$K" | grep -cF "the zap's hash segment's head")（应 1）"
+          echo "    R31 generation line = $(strings -a "$K" | grep -cF 'R31: the kernel generation line')（应 2）"
+          echo "    R31 announce = $(strings -a "$K" | grep -cF 'R31: the fork-proven form')（应 1）"
+          echo "    R31 packed built = $(strings -a "$K" | grep -cF 'the packed metadata is built')（应 1）"
+          echo "    R31 p_offset rewrite = $(strings -a "$K" | grep -cF \"the hash segment's p_offset rewritten\")（应 2）"
+          echo "    R31 SCMDMP begin = $(strings -a "$K" | grep -cF 'SCMDMP: R31 begins')（应 1）"
+          echo "    R31 QUE = $(strings -a "$K" | grep -cF 'SCMDMP QUE cpu%d: the SCM queue entry')（应 1）"
+          echo "    R31 HND = $(strings -a "$K" | grep -cF 'SCMDMP HND cpu%d: the per-cpu handle cache entry')（应 1）"
+          echo "    R31 GLB = $(strings -a "$K" | grep -cF 'SCMDMP GLB: phys 0x858a5900')（应 1）"
+          echo "    R31 SCM sweep = $(strings -a "$K" | grep -cF 'the SCM region, all %u bytes')（应 1）"
+          echo "    R31 TZREG = $(strings -a "$K" | grep -cF 'SCMDMP TZREG: the TZ DIAG registry word')（应 1）"
+          echo "    R31 TZDIAG = $(strings -a "$K" | grep -cF \"TZDIAG: the TZ's own log\")（应 1）"
+          echo "    R31 HDREG = $(strings -a "$K" | grep -cF 'SCMDMP HDREG: the hyp DIAG registry word')（应 1）"
+          echo "    R31 HYPDIAG = $(strings -a "$K" | grep -cF \"HYPDIAG: the hypervisor's own diag buffer\")（应 1）"
+          echo "    R31 scmsweep switch = $(strings -a "$K" | grep -cF 'adreno_scmsweep')（应 2）"
+          echo "    M2 seg table = $(strings -a "$K" | grep -cF 'M2: seg %u: type')（应 1）"
+          echo "    M2 canonical rewrite = $(strings -a "$K" | grep -cF 'M2: the header rewritten canonical')（应 1）"
+          echo "    M2 chain verdict = $(strings -a "$K" | grep -cF 'M2: THE SIGNATURE CHAIN SAYS')（应 1）"
+          echo "    N3 registry line = $(strings -a "$K" | grep -cF 'HYPLOG: the registry at phys 0x146bfb30')（应 1）"
+          echo "    N3 ring dump line = $(strings -a "$K" | grep -cF 'HYPLOG: the ring, all %u bytes')（应 1）"
+          echo "    N3 boot arg = $(strings -a "$K" | grep -cF 'adreno_hyplog')（应 1）"
+          echo "    R28k run-goes-on（R28k 措辞原样保留，路径本轮不达） = $(strings -a "$K" | grep -cF 'R28k: the run goes on to the 3D core without the zap')（应 1）"
+          echo "    R28j generation line = $(strings -a "$K" | grep -cF 'R28j: the kernel generation line')（应 0）"
+          echo "→ 诊断 B：raphael_adreno 的真实 argv 已由 wrapper 录进 xnu-clang-args.log（删串复发时离线重放用）"
+          grep -m1 "raphael_adreno.c" "$PWD/xnu-clang-args.log" | cut -c1-300 || true
+          echo "→ ccache 收官统计："; ccache -s 2>/dev/null | head -8 || true
+          # ---- R31 门禁：本轮自己的标记（含内嵌 .mdt 的字节级证明）、保留的先轮标记、
+          # 退役措辞反查（R28i 的 INSTEAD 措辞本轮退役）、新 sha 断言（不允许等于任何一代历史内核）
+          python3 - "$K" fw-gpu-raphael/adsp.mbn <<'PY'
+          import hashlib, sys
+          d = open(sys.argv[1], 'rb').read()
+          fw = open(sys.argv[2], 'rb').read()
+          for marker, what in ((b'R31: the kernel generation line', 'R31 代数戳（驱动首行 + step 1 首次 flush）'),
+                               (b'R31: the fork-proven form', 'R31 主目标宣告（fork 实证形）'),
+                               (b'the packed metadata is built', 'R31 打包元数据构建行'),
+                               (b"the hash segment's p_offset rewritten", 'R31 p_offset 重写行（打包函数 + 宣告 = 2）'),
+                               (b'SCMDMP: R31 begins', 'R31 探针起点行'),
+                               (b'SCMDMP QUE cpu%d: the SCM queue entry', 'R31 队列条目行（0x85775e00+cpu*0x30）'),
+                               (b'SCMDMP HND cpu%d: the per-cpu handle cache entry', 'R31 句柄缓存行（0x858a6390+cpu*0x18）'),
+                               (b'SCMDMP GLB: phys 0x858a5900', 'R31 全局块行（HypX/计数器/八核句柄）'),
+                               (b'the SCM region, all %u bytes', 'R31 64KB SCM 区全扫行'),
+                               (b'SCMDMP TZREG: the TZ DIAG registry word', 'R31 TZ DIAG 登记字行（0x146bf720）'),
+                               (b"TZDIAG: the TZ's own log", 'R31 TZ DIAG dump 行'),
+                               (b'SCMDMP HDREG: the hyp DIAG registry word', 'R31 hyp DIAG 登记字行（0x857619e8）'),
+                               (b"HYPDIAG: the hypervisor's own diag buffer", 'R31 hyp DIAG dump 行'),
+                               (b'adreno_scmsweep', 'R31 大扫开关（boot-arg 名 + off 文案 = 2 次）'),
+                               (b'M2: seg %u: type', 'M2 逐段摆放表（type/flags/filesz/p_offset）'),
+                               (b'M2: the header rewritten canonical', 'M2 规范头重写差异数行'),
+                               (b'M2: THE SIGNATURE CHAIN SAYS', 'M2 签名链判词（R23 纪律延续）'),
+                               (b'HYPLOG: the registry at phys 0x146bfb30', 'N3 登记表实读行（ring 地址 + 尺寸）'),
+                               (b'HYPLOG: the ring, all %u bytes', 'N3 全环 dump 行'),
+                               (b'adreno_hyplog', 'N3 手动覆盖开关（PE_parse）'),
+                               (b'R28k: the run goes on to the 3D core without the zap', 'R28k 拒绝后继续宣告（措辞原样保留；step 19 路径本轮不达）'),
+                               (b'R28j: the two-parameter baseline', 'R28j 基线状态行（step 19 四开关自报）'),
+                               (b'R28j: the T2 control', 'R28j T2 对照宣告（announce + 调用 what 串）'),
+                               (b'the zap attempt follows in this same boot', 'R28j 序贯收尾宣告（BEFORE 轮的判决后行）'),
+                               (b'R28j: the give-up right after the refusal', 'R28j zap 拒绝后紧跟的 give-up'),
+                               (b"R28j: the adsp's give-up", 'R28j adsp give-up 描述串'),
+                               (b'T2 page check', 'R28j T2 页对齐/长度检查行'),
+                               (b'E1 page check', 'R28j E1 页对齐/长度检查行'),
+                               (b"the adsp's hash segment's head", 'R28j adsp 哈希段头 0x40 dump 行'),
+                               (b"the zap's hash segment's head", 'R28j zap 哈希段头 0x40 dump 行'),
+                               (b"the kernel's own embedded copy", 'R28i 起的内嵌副本宣告（announce + 来源行）'),
+                               (b'fw/adsp.mbn', '内嵌副本来源行（文件名）'),
+                               (b'T2 VERDICT:', 'T2 判决行（三岔）'),
+                               (b"THE ADSP'S CHAIN SAYS", 'adsp 链判词'),
+                               (b'T2 armed', 'T2 参数行'),
+                               (b'adreno_test_adsp', 'T2 开关（默认开；=0 具名关闭）'),
+                               (b"the CPU monitor's override goes to every process", 'R28d minimac：CPU monitor 豁免行（lsd 的 1015）'),
+                               (b'\x9f\x4e\x00\x71', 'cmp w20,#0x13（门铃 19 分发）'),
+                               (b'\x08\x01\xa0\x52', 'movz w8,#0x8,lsl#16（门铃 19 使能）'),
+                               (b'RAPHAEL TOUCH', '触摸驱动'),
+                               (b'buttons: step 1', '按键驱动'),
+                               (b'a640_gmu.bin', 'GPU 驱动（a640 固件名）'),
+                               (b'a640_zap.mbn', 'GPU 驱动（zap mbn）'),
+                               (b'the panel dimmed to', 'fbdim 调光'),
+                               (b'going on with the configured rates', 'R12 测量降级（adreno step5）'),
+                               (b'going with the ID registers', 'R13 SMMU 修复（IDR 优先）'),
+                               (b'was not started: the firmware answers', 'PSCI SMP 起核路径'),
+                               (b"this firmware's verdict of started", 'R14 GMU 判据分支'),
+                               (b"the power-on block's pull-ups", 'R14 PON 拉电阻回读'),
+                               (b"'s status byte changed to", 'R14 按键原始字节见证'),
+                               (b"the two pages the GMU's own code asks for", 'R15 GMU scratch 两页'),
+                               (b'cb tlbiall', 'R15 上下文银行全量 TLB 清洗'),
+                               (b'a context bank nobody used before', 'R16 处女银行（GMU 路径）'),
+                               (b'trying context bank', 'R16 银行候选（GMU 路径）'),
+                               (b'tlbiallnsnh', 'R16 全局 TLB 失效'),
+                               (b'the stream the bank names for it', 'R16 故障流 ID 取证'),
+                               (b'what our own tables say for', 'R16 页表 walk 转储'),
+                               (b'arrived late', 'R16 迟到答案'),
+                               (b'make the SMMU forget every translation again', 'R16 msg30 前再清洗'),
+                               (b'survivable, cleared, the wait goes on', 'R17 可活故障容忍'),
+                               (b'while the GMU was deciding', 'R17 等待期故障轮询'),
+                               (b'has stopped answering', 'R17 假失败判据修复'),
+                               (b'with a bus error', 'R17 致命故障分类'),
+                               (b'the patience was not wasted', 'R17 答案耗时标定'),
+                               (b'while the 3D core was powered', 'R17 OOB 循环故障轮询'),
+                               (b'the bank is programmed and ON before the stream table is touched', 'R19 先开后表的参考顺序（保留）'),
+                               (b"the core's second stream (1) through the same context", 'R19 二流绑定（=1 实验分支在场）'),
+                               (b"raphael's dt gives the gfx streams the mask 0x401", 'R21 本机 DT 形态判词'),
+                               (b"the second stream (1) under entry 0's own wing", 'R21 二流默认罩住'),
+                               (b"raphael's TrustZone took the processor with it", 'R21 判词：give-up 不再默认发'),
+                               (b"the give-up call is not sent by default", 'R21 通道先行'),
+                               (b'no zap shader can be asked for', 'R21 通道暗门判词'),
+                               (b"the whole door is dark", 'R21 整门皆暗'),
+                               (b"adreno_tzunload", 'R21 give-up 实验开关'),
+                               (b'with the channel proven', 'R21 通道验证后补发'),
+                               (b'whether it "supports" the GPU\'s image', 'R21 supports 诊断'),
+                               (b"the same of the audio's, for comparison", 'R21 audio 对照'),
+                               (b'the metadata is built as', 'R22 元数据形态宣告'),
+                               (b'the whole file, every p_offset at the real bytes (Linux\'s)', 'R22 全文件形态'),
+                               (b'the call was preempted %d time%s before it was answered', 'R22 被抢占计数'),
+                               (b"a one-page metadata the way it is asked", 'R22 单页元数据判词'),
+                               (b'THE SIGNATURE CHAIN SAYS', 'R23 签名链判词'),
+                               (b'the hashes carry "', 'R23 哈希段明文名字'),
+                               (b"A TEST KEY (Qualcomm SecTools", 'R23 测试签名判词（防旧件回流）'),
+                               (b"one attempt, the form both working callers use", 'R23 单一规范尝试'),
+                               (b'the control: a page of zeroes as the GPU\'s metadata', 'R23 零页对照宣告'),
+                               (b'control, the GPU\'s id over zeroes', 'R23 GPU 零页对照'),
+                               (b'control, the audio\'s id over the same zeroes', 'R23 audio 零页对照'),
+                               (b'THE SAME CODE: the refusal comes BEFORE the image', 'R23 同码判词（调用级）'),
+                               (b"A DIFFERENT ANSWER: TrustZone does read the buffer", 'R23 换码判词（镜像级）'),
+                               (b'the place is a fresh page of ours', 'R23 动态页落位'),
+                               (b"dt's pil_gpu_region is referenced by nothing", 'R23 孤儿区判词'),
+                               (b'adreno_zapmem', 'R23 落位覆盖开关'),
+                               (b'no memory for the zap image', 'R23 落位分配判词'),
+                               (b'Xiaomi Attestation CA', 'R25 小米量产链探针'),
+                               (b'Xiaomi Root CA', 'R25 小米根链探针'),
+                               (b"THE PHONE'S OWN PRODUCTION CHAIN", 'R25 量产链判词'),
+                               (b'no test-key marks and no Xiaomi marks', 'R25 三岔兜底判词'),
+                               (b'XNULIVE3', 'R26 内核三页结构（flush 通道）'),
+                               (b'adreno_e1_mode', 'R26 E1 形态开关'),
+                               (b'the empty probe', 'R26 空探针'),
+                               (b'step 19 entered', 'R26 step 19 入口宣告'),
+                               (b'goes to the storage first', 'R26 落盘守卫判词'),
+                               (b'did not put the log away in time', 'R26 flush 超时判词'),
+                               (b'R26 E1, adreno_e1_mode=3', 'R26 E1 三参形态（受审）'),
+                               (b'R26 E1, adreno_e1_mode=2', 'R26 E1 两参形态（对照）'),
+                               (b"step 1's first line: the flush channel's own test", 'R27 flush 通道自测（step 1 首行）'),
+                               (b"step 20 entered: the 3D core's registers are next", 'R27 step 20 入口守卫'),
+                               (b'step 21 entered: out of secure mode', 'R27 step 21 入口守卫'),
+                               (b'step 22 entered: the first frame is next', 'R27 step 22 入口守卫'),
+                               (b'the steps are over (R27)', 'R27 探针结束守卫'),
+                               (b'adreno_shape_sweep', 'R28 形状扫描退役开关'),
+                               (b"R28: the shape sweeps, retired behind adreno_shape_sweep=1", 'R28 形状扫描门控宣告（默认离场）'),
+                               (b"R28: retired behind adreno_qfprom=1", 'R28 熔丝扫描门控宣告（默认离场；R28j 保持退役——secboot 行是 R25 杀手族）')):
+              assert marker in d, f'源码构建的内核缺 {what}'
+          for gone, what in ((b'R28l: the kernel generation line', 'R31：R28l 旧代数戳退役（且 R28l 从未出片——双重死亡证明）'),
+                             (b'R28l: the phase bisection', 'R31：R28l 相位宣告退役（本轮全相位，cmdline 无 skip）'),
+                             (b'R31: the phase bisection', 'R31：gen_r312 残留条目防御（内核里不存在该串）'),
+                             (b'R28j: the kernel generation line', 'R31：R28j 旧代数戳退役（本轮源码前移的机器证明）'),
+                             (b'R28k: the kernel generation line', 'R31：R28k 旧代数戳退役（本轮源码前移的机器证明）'),
+                             (b'the step stops here by design', 'R28j：R28i 的 INSTEAD 收尾措辞退役（本轮改 BEFORE）'),
+                             (b'INSTEAD of the zap attempt', 'R28j：R28i 的 INSTEAD 措辞退役'),
+                             (b'R28i: the kernel generation line', 'R28j：R28i 旧代数戳退役（本轮源码前移的机器证明）'),
+                             (b'R28i: the two-parameter baseline', 'R28j：R28i 旧基线措辞退役（本轮源码前移的机器证明）'),
+                             (b'R28i: the T2 control', 'R28j：R28i 旧 T2 宣告退役（本轮源码前移的机器证明）'),
+                             (b'of the stream table does not keep what is written', 'R18 条目 0 拒写取证'),
+                             (b'of the stream table instead', 'R18 换条目路由'),
+                             (b'the free entries are offered one by one', 'R18 条目候选搜索'),
+                             (b'refused every entry', 'R18 全条目拒绝判词'),
+                             (b'the hypervisor drops SMR/S2CR', 'R19 看守者判词（R21 证伪并除名）'),
+                             (b'TAKEN TO MEAN THAT IT KEEPS A ZAP SHADER', 'R21 除名：拒绝即失败'),
+                             (b'attempt %u of 3', 'R22 三连矩阵（R23 除名）'),
+                             (b"R21's packed metadata, a call that may be preempted", 'R22 尝试2（R23 除名）'),
+                             (b'the whole .mbn as the metadata, a call "at once"', 'R22 尝试3（R23 除名）'),
+                             (b'the give-up call takes the refusal back', 'R22 尝试间清理（R23 除名）'),
+                             (b'attempt %u refused: the call returns', 'R22 逐试拒绝码（R23 除名）'),
+                             (b'the next attempt goes on all the same', 'R22 矩阵判读（R23 除名）'),
+                             (b'three attempts -- the whole .mbn as the metadata', 'R22 矩阵宣告（R23 除名）'),
+                             (b"no test-key marks -- the chain reads like the phone's own", 'R23 两岔兜底（R25 三岔除名）'),
+                             (b"read the secboot and rollback fuses (E7: the whole qfprom windows", 'R25b：step 2 的 E7 整扫退役（早死轮摘除）'),
+                             (b"R25 E1: Linux's shape", 'R26：E1 文本改由 adreno_e1_mode 两态承载（R25 措辞退役）'),
+                             (b"R25: the shape sweeps", 'R28：形状扫描总宣告退役（改判定罪，adreno_shape_sweep 开关门控）'),
+                             (b"R25b: E7 moved to the end of the refusal path", 'R28：熔丝扫描在案措辞退役（adreno_qfprom 开关门控）'),
+                             (b'R28: the two-parameter baseline', 'R28b：R28 旧基线措辞退役（源码确实前移的机器证明）'),
+                             (b'R28b: the kernel generation line', 'R28d：R28b 旧代数戳退役（本轮源码前移的机器证明）'),
+                             (b'R28b: the two-parameter baseline', 'R28d：R28b 旧基线措辞退役（本轮源码前移的机器证明）'),
+                             (b'R28d: the kernel generation line', 'R28g：R28d 旧代数戳退役（本轮源码前移的机器证明）'),
+                             (b'R28d: the two-parameter baseline', 'R28g：R28d 旧基线措辞退役（本轮源码前移的机器证明）'),
+                             (b'R28g: the kernel generation line', 'R28i：R28g 旧代数戳退役（本轮源码前移的机器证明）'),
+                             (b'R28g: the two-parameter baseline', 'R28i：R28g 旧基线措辞退役（本轮源码前移的机器证明）'),
+                             (b'R28g: the T2 control', 'R28i：R28g 旧 T2 宣告退役（本轮源码前移的机器证明）'),
+                             (b'no fw/adsp.mbn in the small image', 'R28i：R28g 缺件判词退役（内嵌副本必有，此路径已死）')):
+              assert gone not in d, f'已退役标记未删净：{what}（{gone!r} 仍在二进制里）'
+          # 内嵌 .mdt 的字节级证明：源文件的每一个字节都在内核里
+          at = d.find(fw)
+          assert at >= 0, '内嵌的 adsp .mdt 不在内核二进制里'
+          assert d.count(fw) == 1, '内嵌的 adsp .mdt 在内核里出现了不止一次'
+          print(f'✓ 内嵌 adsp .mdt 逐字节在内核里（{len(fw):,} B @ 文件偏移 {at:#x}，仅此一份）')
+          print(f'✓ 源码构建的内核带齐 R11-R31 全部标记、R28j 代数戳与 R28i 的 INSTEAD 措辞已删净（{len(d):,} B）')
+          ksha = hashlib.sha256(d).hexdigest()
+          print(f'✓ 本轮源码构建内核 sha256 = {ksha}')
+          print('   已知历史值：R27/R27b = 372f0b0a…，R28 = 9e3dd447…，R28b/R28c 内核 = 36a1e953…，')
+          print('   R28d = 99b9ea75…，R28g（lsd SIGBUS 轮）= 9cbcac8a…，R28i（T2 ACCEPTED 轮）= 3a0d746d…，')
+          print('   R28j（J1 轮）= 57db84e7…，R28k（拒绝后继续轮）= 916d7719…，')
+          print('   R28m（M2/N3 轮）= 911a69df…，R30（状态大扫轮，未刷即被取代）= 4a708830…；')
+          print('   R31 源码已改词（代数戳 + R31 宣告 + scm_state_dump/r31_rows 两个新函数），必须是其中任何一个都不是的新值')
+          print('   （R28l 无席位：run 40331159223 死在 flash-build 收尾断言，从未产出镜像）')
+          for label, needle in (('R31 代数戳（want 2）', b'R31: the kernel generation line'),
+                                ('R31 宣告（want 1）', b'R31: the fork-proven form'),
+                                ('R31 打包构建行（want 1）', b'the packed metadata is built'),
+                                ('R31 p_offset 重写（want 2）', b"the hash segment's p_offset rewritten"),
+                                ('R30 代数戳（want 0）', b'R30: the kernel generation line'),
+                                ('R30 宣告（want 0）', b'R30: the swallowed-code recovery'),
+                                ('R31 SCMDMP 起点（want 1）', b'SCMDMP: R31 begins'),
+                                ('R31 QUE（want 1）', b'SCMDMP QUE cpu%d: the SCM queue entry'),
+                                ('R31 HND（want 1）', b'SCMDMP HND cpu%d: the per-cpu handle cache entry'),
+                                ('R31 GLB（want 1）', b'SCMDMP GLB: phys 0x858a5900'),
+                                ('R31 SCM 全扫（want 1）', b'the SCM region, all %u bytes'),
+                                ('R31 TZREG（want 1）', b'SCMDMP TZREG: the TZ DIAG registry word'),
+                                ('R31 TZDIAG（want 1）', b"TZDIAG: the TZ's own log"),
+                                ('R31 HDREG（want 1）', b'SCMDMP HDREG: the hyp DIAG registry word'),
+                                ('R31 HYPDIAG（want 1）', b"HYPDIAG: the hypervisor's own diag buffer"),
+                                ('R31 开关（want 2）', b'adreno_scmsweep'),
+                                ('R28m 代数戳（want 0）', b'R28m: the kernel generation line'),
+                                ('R28m 宣告（want 0）', b'R28m: the M2 contract build + the N3 white-box probe'),
+                                ('M2 逐段表（want 1）', b'M2: seg %u: type'),
+                                ('M2 规范重写（want 1）', b'M2: the header rewritten canonical'),
+                                ('M2 链判词（want 1）', b'M2: THE SIGNATURE CHAIN SAYS'),
+                                ('N3 登记表行（want 1）', b'HYPLOG: the registry at phys 0x146bfb30'),
+                                ('N3 全环行（want 1）', b'HYPLOG: the ring, all %u bytes'),
+                                ('N3 开关（want 1）', b'adreno_hyplog'),
+                                ('R28k 继续宣告（want 1，措辞保留）', b'R28k: the run goes on to the 3D core without the zap'),
+                                ('R28k 代数戳（want 0）', b'R28k: the kernel generation line'),
+                                ('R28j 代数戳（want 0）', b'R28j: the kernel generation line'),
+                                ('R28j 基线（want 1）', b'R28j: the two-parameter baseline'),
+                                ('R28j T2 宣告（want 2）', b'R28j: the T2 control'),
+                                ('R28j 序贯收尾（want 1）', b'the zap attempt follows in this same boot'),
+                                ('R28j zap give-up（want 1）', b'R28j: the give-up right after the refusal'),
+                                ('R28j 页检查（want 各 1）', b'T2 page check'),
+                                ('R28j 哈希段头（want 各 1）', b"the adsp's hash segment's head"),
+                                ('R28j T2 判决（want 3）', b'T2 VERDICT:'),
+                                ('R28j T2 开关（want 4）', b'adreno_test_adsp'),
+                                ('R28i 代数戳（want 0）', b'R28i: the kernel generation line'),
+                                ('R28i baseline（want 0）', b'R28i: the two-parameter baseline'),
+                                ('R28i INSTEAD 措辞（want 0）', b'the step stops here by design'),
+                                ('R28g 代数戳（want 0）', b'R28g: the kernel generation line'),
+                                ('R28d baseline（want 0）', b'R28d: the two-parameter baseline')):
+                  print(f'    grep {label}: {d.count(needle)}')
+          assert ksha not in ('372f0b0af38d84f7d343a322f21c41156e6675581e08964b0ac15378be447d9c',
+                              '9e3dd447d1e92158b9e7159cf3508ca3414e6366d066373210ed746f590667b3',
+                              '36a1e9534da454854a0110724447ffa06d9fcae8995e98cf1487d419cfed3ed6',
+                              '99b9ea75de307be1fe2fb368a67493d850c762f71580bb6d1a4e4b010c698603',
+                              '9cbcac8a4d66b1a64ec3e7b723055be367027ec190d9ef89b7c8bb0e106855a3',
+                              '3a0d746dbc03136bd23bce1b82f6280b8bfd443b2e34ad8f93cfb3b6669fee53',
+                              '57db84e7400f1a353930e1a7ef4825ffd17ef3d0252c04efd3f77508479d6b82',
+                              '916d7719d400bfd69350b69df9fd3a0d082cc5c1cc007920184c58184eb6fe89',
+                              '911a69df7434ee76e004d2e5243b290cf73dc582e2f86f019bf5e986faf89c4e',
+                              '4a7088302cea1e81e044f531b4323690c617a1f271997aee7a8fbce0d255fe8f'), '新源码必须给出新内核 sha256（R27/R28/R28b/R28d/R28g/R28i/R28j/R28k/R28m/R30 都不允许；R28l 无席位——从未出片）'
+          PY
+          df -h /
+
+      # ---------------------------------------------------------------
+
+      - name: "诊断产物（wrapper argv 日志，失败也上传）"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: t2-diag
+          path: |
+            hackios/xnu-clang-args.log
+          if-no-files-found: ignore
+
+      - name: "⑤/⑥ 打 r31 双启动镜像（外科手术：双镜像换 kernel 条目；GPU 镜像 cmdline 加 gpu=1+全相位 token 组——R28l 死因断言已修，日常镜像 cmdline / 装载器 v7 / ramdisk / DTB / 头字段 = R28d 原字节）"
+        run: |
+          set -eu
+          cd hackios
+          bash tools/r31-flash-build.sh r28d/raphael-xnu-r28d-flash.img r28d/raphael-xnu-r28d-gpu-flash.img
+          cp raphael-xnu-r31-flash.img "$REL/"
+          cp raphael-xnu-r31-gpu-flash.img "$REL/"
+          # 启动卷与小卷：R28d 的官方字节，名字换成本轮（对照用，不刷也不影响 boot）
+          cp r28d/raphael-r28d-flashboot.apfs "$REL/raphael-r31-flashboot.apfs"
+          cp r28d/r28d-md1-root.apfs "$REL/r31-md1-root.apfs"
+          # 对打包后的双镜像离线复证（与 ③ 源码构建、⑤ 打包内打印三方对齐）
+          python3 tools/r31-kernel-id.py \
+                  "$REL/raphael-xnu-r31-flash.img" "$REL/raphael-xnu-r31-gpu-flash.img" | tee r31-kernel-id.txt
+          grep -c "VERDICT: the kernel entry is R31" r31-kernel-id.txt | grep -qx 2 || { echo "::error::双镜像必须双双判 R31 内核"; exit 1; }
+          grep -c "VERDICT: the ramdisk entry is R13..R28d VERBATIM" r31-kernel-id.txt | grep -qx 2 || { echo "::error::双镜像的小卷必须是 R28d 原字节（本轮不换卷）"; exit 1; }
+          grep -c "ec15106da4bad290" r31-kernel-id.txt | grep -qx 2 || { echo "::error::双镜像的 loader 必须是设备验证过的 v7（ec15106d…）"; exit 1; }
+          grep -q "WITH the full-step tokens" r31-kernel-id.txt || { echo "::error::GPU 镜像的 cmdline 必须带完整全相位 token 组（adreno=22 adreno_pause=0 adreno_watch=0，无 skip）"; exit 1; }
+          grep -q "WITHOUT any adreno token" r31-kernel-id.txt || { echo "::error::日常镜像的 cmdline 必须不带任何 adreno token（控制组原样）"; exit 1; }
+          # GPU 镜像的 cmdline 必须带 gpu=1（R28d 原样）、日常镜像不带（R28d 原样）
+          # —— 数数据行（"cmdline       :" 前缀），VERDICT 行不匹配它（R28i 的教训）。
+          test "$(grep 'cmdline       :' r31-kernel-id.txt | grep -c 'gpu=1')" = 1 || { echo "::error::两张镜像的 cmdline 数据行里必须恰好 GPU 镜像带 gpu=1"; exit 1; }
+          test "$(grep 'cmdline       :' r31-kernel-id.txt | grep -c 'adreno=22')" = 1 || { echo "::error::两张镜像的 cmdline 数据行里必须恰好 GPU 镜像带 adreno=22（全相位）"; exit 1; }
+          test "$(grep 'cmdline       :' r31-kernel-id.txt | grep -c 'adreno_skip')" = 0 || { echo "::error::R31 的 GPU cmdline 不得带 adreno_skip（step 19 必须跑）"; exit 1; }
+          echo "（cmdline 检查过：GPU 镜像 = R28d 原字节 + gpu=1 + 全相位 token 组，日常镜像 = R28d 原字节 verbatim；R28l 死因断言已修）"
+          ls -lh "$REL"
+          df -h .
+
+      # ---------------------------------------------------------------
+      - name: "⑥/⑥ SHA256 + README + 发布（R31：M/N 判读树（M2 契约打包 + N3 日志环）+ logdump P3 读取纪律，只有 boot 资产）"
+        run: |
+          set -eu
+          cd "$REL"
+          : > SHA256SUMS
+          for f in raphael-xnu-r31-flash.img raphael-xnu-r31-gpu-flash.img \
+                   raphael-r31-flashboot.apfs r31-md1-root.apfs; do
+            sha256sum "$f" >> SHA256SUMS
+          done
+          REPO="${{ github.repository }}"
+          TAG="${{ inputs.release_tag }}"
+          cat > README.txt <<EOF
+          ============================================================
+           R31 · 纯血 hackios SpringBoard 交付包（raphael / K20 Pro）
+           —— fork 实证形：打包元数据 [ELF头][phdr表][哈希段]，代码落位
+              dt pil_gpu_region 0x98f15000；拒绝现场仍逐区 dump SCM/TZ DIAG
+          ============================================================
+          ⚠️⚠️⚠️ 启动卷只 stage 一个文件：raphael-r31-flashboot.apfs ⚠️⚠️⚠️
+            （R14 事故纪律不变：md1 备份不要 stage，flash.img 已内嵌全量小卷）
+          主镜像   : raphael-xnu-r31-flash.img（触摸 + 按键 + 八核；不跑 GPU 步骤；
+                      cmdline 逐字节 = R28d 原字节，R28k 已证干净的控制组）
+          GPU 镜像 : raphael-xnu-r31-gpu-flash.img（同上 + gpu=1 +
+                      adreno=22 adreno_pause=0 adreno_watch=0：全相位 22 步全跑，
+                      宣告行应打 "steps up to 22, without those in mask 0x0"）
+          启动卷   : raphael-r31-flashboot.apfs（= R28d 官方字节 = R13 全量，原样转发）
+          小卷 md1 : r31-md1-root.apfs（= R28d 官方字节；对照用）
+
+          【R31 改了什么、为什么】
+            外部实锤入账：HeliumStudio 对【同一台 raphael、同一条 XBL → QHEE →
+            EL1 链、同一版本 xnu-8796.121.2】的移植已实现 A640 日常渲染——
+            其 PAS_INIT_IMAGE 对【打包元数据】返回 ACCEPTED（文档原文
+            "TrustZone zap shader 认证……通过"、"加载、认证与结束卸载均返回
+            成功"）。其元数据形态有硬校验：52 + 32*段数 + 哈希长 == 文件长，
+            即【ELF 头 + phdr 表 + 哈希段内容，别无他物】（厂商 .mdt 原件形）；
+            代码段单独放 dt 保留区 pil_gpu_region 0x98f15000（MEM_SETUP 尺寸
+            0x1000）；a640 不预发 give-up。
+            对照我们的历史：R21 传截断页（无哈希段）；R24+/M2 传整文件
+            （3948B 零 gap + 代码段都在内）——两形都被 0x45 拒。T2 的 adsp
+            之所以 ACCEPTED，正是因为 adsp.mbn 本身就是 mdt 打包形。
+            R31 的动作：从 stock a640_zap.mbn 自有字节构造打包形——头 + 表
+            逐字节 verbatim，哈希段内容（v6 元数据 + 小米链，0x1a38 B）紧随
+            表后，唯一改动 = 哈希段 phdr 的 p_offset 从 0x1000 重写为 0x94
+            （厂商 .mdt 自身形态，自洽；v6 签名覆盖元数据 blob 而非 phdr）；
+            代码段不进元数据页，step 19 从文件自身 PT_LOAD 取出写入
+            0x98f15000。R30 状态大扫（SCM 队列/句柄缓存/64KB 区/TZ DIAG）
+            同时挂在 step 12 与 step 19 两条拒绝路径——M2 时代的拒绝死在
+            step 12，探针此前根本执行不到。M2 机器（zap_header_m2）转为
+            (used, unused) 存档；N3 环 dump 与 R28k 继续措辞原样骑行。
+
+          【本轮判读树（F：fork 实证形的裁决）】
+            第一刷 · GPU 镜像（全相位；等 ~2-3 分钟过风暴首发窗）：
+              探针自检（任一不满足 ⇒ 本票作废，修复后重跑）：
+                P0  宣告行 "adreno: R31: the fork-proven form" 在场
+                P1  打包行 "the packed metadata is built" + p_offset 重写行
+                    （step 12 一条 + 宣告一条）
+                P2  "steps up to 22, without those in mask 0x0"——全相位落地
+                P3  T2 对照照旧 ACCEPTED (0)（链路无罪基线）
+              判决分支：
+                F1  step 12 "TRUSTZONE ACCEPTS THE ZAP SHADER'S SIGNATURE FROM
+                    THIS KERNEL" ⇒ 墙倒——step 19 走 MEM_SETUP(0x98f15000) →
+                    写码 → AUTH_AND_RESET ⇒ "TRUSTZONE HAS AUTHENTICATED AND
+                    STARTED THE ZAP SHADER" ⇒ step 20/21/22 继续全相位
+                F2  step 12 仍 0x45 ⇒ fork 形态差异不止元数据 ⇒ 读 R30 大扫
+                    （SCMDMP QUE/HND/GLB/64KB + TZDIAG）定真码，按 S 表分诊
+                F3  任一区 "did not map"/wedge ⇒ 本身即证据（预注册已含）
+              真码判读表（T3-batch3/batch4 静态枚举，一表到底）：
+                0x30001B = api_ns 门；0x30001C/1D±n = 主认证流 0x1c04e410 各
+                分支；0x30000A..0E = mem pin（0x1c04d75c）；0x30004A 与
+                ret 8..14 → 0x30004E/4E/4E/50/1F/4F/4D 映射表 @0x1c11cee0；
+                0x300042..49 = handler 错误带；小值族 = ATF/EL3 入口；
+                0x02000201 无残迹 = 调用未入队（逆向 hyp 队列状态机）。
+            控制组 · 主镜像（可选，R28k 已证干净）：第三验证入账即可。
+
+          【logdump 读取纪律（P3：三次残迹教训的对策）】
+            分区每次整写都以头行开始：== XNU FLUSH #N at T s (why); L bytes
+            follow == 。拉取后按头行截断：本轮记录 = 头行 + 紧随的 L 字节，
+            其后的一切都是更长旧写的残留，不进判读。自有区判读双保险：写
+            边界（写尾腰斩行）+ 指针计数（"N s: the kernel has logged"）。
+            设备端一键工具 run_ios.sh 的 diag/split 已焊入本纪律。本轮拒绝
+            现场多次 FLUSH（refusal 行 / N3 环 / R30 每区各一次）——每次
+            FLUSH 的自有区都要独立截取判读。
+
+          【离线复验】
+            python3 tools/r31-kernel-id.py <image>
+            （代数 grep：R31 代数戳=2、R31 宣告=1、打包构建行=1、
+             p_offset 重写=2、SCMDMP 九标记各 1、scmsweep 开关=2、
+             M2 三标记各 1、N3 三标记各 1、R28k 继续宣告=1、
+             R30/R28m/R28k/R28l 代数戳=0、R28j 基线=1、R28j T2 宣告=2、
+             序贯收尾=1、zap give-up=1、页检查各 1、哈希段头各 1、
+             判决=3、开关=4；R28i 及更早措辞全 0；
+             ramdisk 判 R13..R28d VERBATIM；
+             cmdline：GPU 镜像带 gpu=1 + adreno=22 全相位组、无 adreno_skip、
+             日常镜像无任何 adreno token）
+
+          【工具链审计】
+            toolchain-versions.txt：每层编译器完整版本号 + 具名 tag
+            （R28i 纪律，R31 原样继承；缓存键全新）。
+            同源码异行为时先对这张表。
+
+          【手机端（Termux / bootloader）】
+            fastboot boot  raphael-xnu-r31-gpu-flash.img   # R31 轮（GPU 镜像）
+            fastboot oem  ramdisk
+            fastboot stage raphael-r31-flashboot.apfs
+            fastboot oem  run      # 等宣告行 + 打包行 + steps 1..22（或到 FAILED 止）
+                                   # 再等 ~2 分钟过风暴首发窗，然后抓 logdump
+            # 设备端一键：sh run_ios.sh flash r31 gpu -w 180
+            # 控制组（可选）：同样的四步，换 raphael-xnu-r31-flash.img
+          直链：
+            https://github.com/\${REPO}/releases/download/\${TAG}/raphael-xnu-r31-gpu-flash.img
+            https://github.com/\${REPO}/releases/download/\${TAG}/raphael-xnu-r31-flash.img
+            https://github.com/\${REPO}/releases/download/\${TAG}/raphael-r31-flashboot.apfs
+            https://github.com/\${REPO}/releases/download/\${TAG}/r31-md1-root.apfs
+            https://github.com/\${REPO}/releases/download/\${TAG}/SHA256SUMS
+          ⚠️ userdata 上的 iOS 卷是唯一存货：绝不要让 MIUI 开机
+             （Android 会重格回 f2fs，iOS 卷即毁）。
+          ⚠️ 每次开机都要重复 boot/oem ramdisk/stage/oem run 四步
+             （启动卷住 RAM 不落盘，"不写手机闪存"设计的一部分）。
+          ⚠️ 含 Apple 版权内容，仅个人研究；下载完成后请尽快删除本 Release。
+          EOF
+
+      - name: "⑥b/⑥ 发布 Release（直链交付，r31-springboard）"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: "R31 · 纯血 hackios SpringBoard · 被吞真码回收（GPU 镜像全相位 adreno=22，拒绝现场逐区 dump SCM 队列/句柄缓存/64KB 状态区/TZ DIAG）"
+          body: |
+            raphael (K20 Pro) R31 交付包：**fork 实证形——GPU 镜像全相位**。
+
+            外部实锤：HeliumStudio 对同一台 raphael（同 XBL→QHEE→EL1 链、同
+            xnu-8796.121.2）的移植 A640 日常渲染，其 PAS_INIT_IMAGE 对打包
+            元数据返回 ACCEPTED。形态硬校验：52 + 32*段数 + 哈希长 == 文件长
+            ——【ELF 头 + phdr 表 + 哈希段，别无他物】（厂商 .mdt 原件形）；
+            代码段单独放 dt 保留区 pil_gpu_region 0x98f15000（MEM_SETUP
+            0x1000）。我们此前的两形——R21 截断页、R24+/M2 整文件（含
+            3948B gap 与代码段）——都是错形，0x45 两拒；T2 的 adsp 之所以
+            ACCEPTED 正因 adsp.mbn 本身就是 mdt 打包形。
+
+            R31 的动作：从 stock a640_zap.mbn 自有字节构造打包形（头 + 表
+            verbatim，哈希段 0x1a38 B 紧随表后，唯一改动 = 哈希段 p_offset
+            0x1000 → 0x94），代码不进元数据页，step 19 从文件 PT_LOAD 取出
+            写 0x98f15000。R30 状态大扫（SCM 队列 0x85775e00+cpu*0x30 / 句柄
+            缓存 0x858a6390+cpu*0x18 / 全局块 0x858a5900 / 64KB SCM 区 /
+            TZ DIAG 0x146bf720 / hyp diag 0x857619e8）同时挂 step 12 与
+            step 19 两条拒绝路径。M2 机器转 (used, unused) 存档。
+
+            判读树 F：F1 = step 12 ACCEPTED ⇒ 墙倒，step 19 走落位/写码/
+            认证，step 20-22 全相位；F2 = 仍 0x45 ⇒ 读 R30 大扫按 S 表分诊
+            （0x30001B api_ns 门 / 0x30001D±n 主认证流 / 0x30000A..E mem pin /
+            0x300042-49 handler 错误带 / 小值族 ATF-EL3）；F3 = did not map/
+            wedge = 证据。附带：T2 对照照旧 ACCEPTED (0)。
+
+            手术：kernel 条目双镜像同换；GPU 镜像 cmdline 加 gpu=1 + 全相位
+            token 组，日常镜像 cmdline 逐字节 R28d 原样；装载器 v7 / ramdisk
+            / DTB = R28d 原字节（SHA 硬校验）。
+
+            logdump 按头行 "L bytes follow" 截断，且只判自有区（写边界 +
+            指针计数）——P3 纪律；本轮拒绝现场多次 FLUSH，每次 FLUSH 自有区
+            独立截取判读。
+
+            ⚠️ 含 Apple 版权内容，仅供个人研究；下载完成后请尽快删除本 Release。
+          fail_on_unmatched_files: true
+          files: |
+            release/raphael-xnu-r31-flash.img
+            release/raphael-xnu-r31-gpu-flash.img
+            release/raphael-r31-flashboot.apfs
+            release/r31-md1-root.apfs
+            release/SHA256SUMS
+            release/README.txt
+            release/toolchain-versions.txt
+      - name: "直链汇总（跑完看这里，复制即用）"
+        run: |
+          set -eu
+          echo "════════════ 全部下载直链 ════════════"
+          for f in "$REL"/raphael-xnu-r31-flash.img "$REL"/raphael-xnu-r31-gpu-flash.img \
+                   "$REL"/raphael-r31-flashboot.apfs "$REL"/r31-md1-root.apfs \
+                   "$REL"/SHA256SUMS "$REL"/README.txt "$REL"/toolchain-versions.txt; do
+            echo "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/$(basename "$f")"
+          done
