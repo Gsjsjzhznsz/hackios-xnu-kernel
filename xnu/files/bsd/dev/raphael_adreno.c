@@ -1910,9 +1910,11 @@ zap_chain_has(const uint8_t *buf, uint64_t len, const char *needle)
         return false;
 }
 
-/* The zap shader's metadata in a page of ours, as TrustZone wants it; where that page is in physical memory. */
+/* The zap shader's metadata in a page of ours, as TrustZone wants it; where that page is in physical memory.
+ * R28m: no caller any more -- R28m builds by zap_header_m2 above -- but the function and its matrix
+ * narrative stay in the record (the R21/R22 forms it built are the rounds' own history). */
 static bool
-zap_header(uint64_t *phys, bool whole)
+zap_header(uint64_t *phys, bool whole) __unused
 {
         const uint8_t *header;
         vm_offset_t page = 0;
@@ -2024,6 +2026,252 @@ zap_header(uint64_t *phys, bool whole)
         return true;
 }
 
+/*
+ * R28m (M2, the T3-batch3 contract build): the same file, but no longer handed
+ * over blindly.  The batch3 autopsy of hyp.img found the seven checks the QHEE
+ * runs on this page before it ever forwards it (PIL_parseMetadata, 0x857258c4):
+ * the ELF magic, the class (1 or 2), the canonical header fields (e_version 1,
+ * ehsize 52, phentsize 32), the whole phdr table read through a constructor, a
+ * TOCTOU double-read that must see the same bytes twice, the hash segment
+ * marked at p_flags bit 24 (0x02000000), and the (ptr,len) it hands its own
+ * conduit.  EVERY downstream failure -- whatever TrustZone says -- comes back
+ * wrapped in 0x300045 (pil_init_image_to_tz, 0x85727050); the true code is
+ * swallowed into the hypervisor's log ring.  The whole-file form passed all
+ * seven checks (the zero-page probes' RAW 0x30000A says the subsys objects are
+ * registered and the parse finished) -- so R28m's variable is not "does the
+ * parse pass" but "is the page EXACTLY what the file's own headers describe".
+ * This build rebuilds the page from the headers instead of copying the file:
+ * every segment memcpy'd to its own declared p_offset, the ELF header
+ * rewritten with the canonical fields the parser demands (e_version, the
+ * sizes, the counts; the section fields zeroed -- the file has no sections),
+ * the hash segment's mark REQUIRED in place, and the byte-difference count
+ * between the rebuilt header and the file's own printed, so the round's log
+ * can prove what moved (an expected answer is zero differences: the file is
+ * already canonical, and the wall is then proven to live in the hash segment's
+ * content -- N3's domain).  The identity fields (e_type, e_machine, e_entry,
+ * e_flags, the osabi bytes) ride the file's own values verbatim.
+ */
+static bool
+zap_header_m2(uint64_t *phys, uint64_t *size_out)
+{
+        const uint8_t *file;
+        vm_offset_t page = 0;
+        uint64_t size = 0;
+        uint32_t phnum, phoff, i, diffs = 0, hash_at = 0, hash_bytes = 0;
+        bool hash_seen = false;
+
+        file = image_file("fw", "a640_zap.mbn", &size);
+        if (file == NULL) {
+                return false;
+        }
+        if (size > PAGE_SIZE) {
+                printf("adreno: %u: M2: the file is %llu bytes, over the one page\n", step,
+                    (unsigned long long)size);
+                return false;
+        }
+        /* the QHEE's own checks, declared against this file before anything moves */
+        phnum = size >= 46 ? (uint32_t)(file[44] | file[45] << 8) : 0;
+        memcpy(&phoff, file + 28, sizeof(phoff));
+        if (memcmp(file, "\177ELF", 4) != 0 || size < 52 || file[4] != 1 || file[5] != 1) {
+                printf("adreno: %u: M2: not a 32-bit little-endian ELF (%02x %02x %02x %02x, class %u, data %u)\n",
+                    step, file[0], file[1], file[2], file[3], size > 4 ? file[4] : 0, size > 5 ? file[5] : 0);
+                return false;
+        }
+        {
+                uint32_t e_version;
+                uint16_t ehsize, phentsize;
+
+                memcpy(&e_version, file + 20, sizeof(e_version));
+                memcpy(&ehsize, file + 40, sizeof(ehsize));
+                memcpy(&phentsize, file + 42, sizeof(phentsize));
+                if (e_version != 1 || ehsize != 52 || phentsize != 32 || phoff != 52 || phnum < 2 || phnum > 16) {
+                        printf("adreno: %u: M2: the header is not the canonical shape the QHEE demands "
+                            "(e_version %u, ehsize %u, phentsize %u, phoff %u, phnum %u)\n", step,
+                            e_version, ehsize, phentsize, phoff, phnum);
+                        return false;
+                }
+        }
+        if (kmem_alloc(kernel_map, &page, PAGE_SIZE, KMA_KOBJECT | KMA_ZERO | KMA_DATA,
+            VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+                printf("adreno: %u: M2: no memory\n", step);
+                return false;
+        }
+        /* every segment where its own p_offset says -- the contract's whole point */
+        for (i = 0; i < phnum; i++) {
+                uint32_t at = phoff + 32 * i, type, flags, off, filesz;
+                bool is_hash;
+
+                memcpy(&type, file + at, sizeof(type));
+                memcpy(&off, file + at + 4, sizeof(off));
+                memcpy(&filesz, file + at + 16, sizeof(filesz));
+                memcpy(&flags, file + at + 24, sizeof(flags));
+                is_hash = (flags & 7u) == 2u || (flags & (7u << 24)) == (2u << 24);
+                if (is_hash) {
+                        hash_seen = true;
+                        hash_at = off;
+                        hash_bytes = filesz;
+                }
+                printf("adreno: %u: M2: seg %u: type %u flags %#08x filesz %#x at p_offset %#x%s\n", step,
+                    i, type, flags, filesz, off, is_hash ? "  <- the hashes (the mark is in place)" : "");
+                if (filesz == 0) {
+                        continue;
+                }
+                if ((uint64_t)off + filesz > size) {
+                        printf("adreno: %u: M2: seg %u declares %#x bytes at %#x, past the file's %llu -- refused\n",
+                            step, i, filesz, off, (unsigned long long)size);
+                        return false;
+                }
+                memcpy((void *)(page + off), file + off, filesz);
+        }
+        if (!hash_seen) {
+                printf("adreno: %u: M2: NO hash segment (no p_flags mark 0x02000000) -- the page would fail the "
+                    "QHEE's own check; refused\n", step);
+                return false;
+        }
+        /* the header, rewritten canonical -- the identity fields ride the file's own */
+        {
+                uint8_t ehdr[52];
+                uint32_t j;
+
+                memcpy(ehdr, file, sizeof(ehdr));
+                ehdr[4] = 1; ehdr[5] = 1; ehdr[6] = 1;                  /* class, data, version */
+                ehdr[20] = 1; ehdr[21] = 0; ehdr[22] = 0; ehdr[23] = 0;         /* e_version 1 */
+                ehdr[28] = 52; ehdr[29] = 0; ehdr[30] = 0; ehdr[31] = 0;        /* e_phoff 52 */
+                ehdr[32] = 0; ehdr[33] = 0; ehdr[34] = 0; ehdr[35] = 0;         /* e_shoff 0: no sections */
+                ehdr[40] = 52; ehdr[41] = 0;                            /* e_ehsize 52 */
+                ehdr[42] = 32; ehdr[43] = 0;                            /* e_phentsize 32 */
+                ehdr[44] = phnum & 0xff; ehdr[45] = (phnum >> 8) & 0xff;        /* e_phnum, as the file says */
+                ehdr[46] = 0; ehdr[47] = 0; ehdr[48] = 0; ehdr[49] = 0;         /* e_shentsize 0 */
+                ehdr[50] = 0; ehdr[51] = 0;                             /* e_shnum, e_shstrndx 0 */
+                for (j = 0; j < sizeof(ehdr); j++) {
+                        if (ehdr[j] != file[j]) {
+                                diffs++;
+                        }
+                }
+                printf("adreno: %u: M2: the header rewritten canonical: %u of 52 bytes differ from the file's own "
+                    "(zero expected -- the file is already the shape; nonzero means M2 moved real bytes)\n", step, diffs);
+                memcpy((void *)page, ehdr, sizeof(ehdr));
+        }
+        /* the file's own verdict, as every round since R23: the certificates the signature
+         * check runs against name their maker inside the hashes */
+        {
+                const uint8_t *hashes = file + hash_at;
+                bool test_signed = zap_chain_has(hashes, hash_bytes, "Generated Test") ||
+                                   zap_chain_has(hashes, hash_bytes, "General Use Test Key");
+                bool xiaomi_chain = zap_chain_has(hashes, hash_bytes, "Xiaomi Attestation CA") ||
+                                    zap_chain_has(hashes, hash_bytes, "Xiaomi Root CA");
+
+                printf("adreno: %u: M2: THE SIGNATURE CHAIN SAYS: %s\n", step, test_signed ?
+                    "A TEST KEY (the R23 verdict)" : xiaomi_chain ?
+                    "THE PHONE'S OWN PRODUCTION CHAIN (\"Xiaomi Attestation CA\"/\"Xiaomi Root CA\") -- "
+                    "TrustZone should take it" : "no known marks -- judge by the names printed above");
+        }
+        printf("adreno: %u: M2: the page is rebuilt: %llu bytes of file at their declared p_offsets, the rest zeroes; "
+            "the file's last bytes are %02x %02x %02x %02x\n", step, (unsigned long long)size, file[size - 4],
+            file[size - 3], file[size - 2], file[size - 1]);
+        to_memory(page, PAGE_SIZE);             /* TrustZone reads memory, not this processor's cache */
+        *phys = kvtophys(page);
+        if (size_out != NULL) {
+                *size_out = size;
+        }
+        return true;
+}
+
+/*
+ * R28m (N3, the white-box probe): the swallowed true code lives in the QHEE's
+ * own log ring.  The batch3 autopsy of hyp.img found the ring and its writer:
+ * at init the hypervisor publishes {the ring's address, its size} as two words
+ * at physical 0x146bfb30 (movk 0x146b / movz 0xfb30 -- 0x857152e8), the ring
+ * itself at 0x858e0000, 0x2000 bytes: a head of 0x200 whose first eight bytes
+ * are the magic 0x000000086879706d ("mpyh" and the 8), a u16 round counter at
+ * +0xc, the u16 write offset inside the 0x1e00-byte data span at +0xe, the
+ * span width 0x1e00 at +0x10, and the data base (ring+0x200) at +0x78.
+ * putchar (0x85714fe4) writes every log byte at [ring+0x78] + [ring+0xe],
+ * wrapping +0xe modulo the width and counting rounds at +0xc.  QHEE maps its
+ * DDR identity (its e_entry 0x85710000 is where XBL drops it, unmoved), so the
+ * ring's address is its physical address; the probe proves EACH level before
+ * it leans on it -- the registry read first, then the magic -- and dumps the
+ * whole ring raw, so the round's log carries whatever the hypervisor swallowed
+ * after the INIT refusal: the true code, or the proof it is not in the ring,
+ * is arithmetic afterwards.  adreno_hyplog=<address> reads that address
+ * directly instead (a hand override for a registry that moved); if the probe
+ * itself wedges the phone, that too is evidence (the registry or the ring is
+ * not non-secure-readable from EL1) -- pre-registered in the WORKLOG.
+ */
+static void
+hyp_log_dump(void)
+{
+        volatile uint32_t *reg;
+        volatile uint8_t *ring;
+        uint32_t forced = 0, ring_va, ring_size;
+
+        PE_parse_boot_argn("adreno_hyplog", &forced, sizeof(forced));
+        if (forced) {
+                ring_va = forced;
+                ring_size = 0x2000;
+                printf("adreno: %u: HYPLOG: the ring address forced by the boot arg: %#x\n", step, ring_va);
+        } else {
+                reg = (volatile uint32_t *)ml_io_map(0x146bfb30u, 0x10);
+                if (reg == (volatile uint32_t *)0) {
+                        printf("adreno: %u: HYPLOG: the registry (phys 0x146bfb30) did not map\n", step);
+                        return;
+                }
+                ring_va = reg[0];
+                ring_size = reg[1];
+                printf("adreno: %u: HYPLOG: the registry at phys 0x146bfb30: ring %#x, size %#x\n", step,
+                    ring_va, ring_size);
+                if (ring_size != 0x2000) {
+                        printf("adreno: %u: HYPLOG: the size is not the known 0x2000 -- trying anyway, the head decides\n",
+                            step);
+                }
+        }
+        if (ring_va == 0 || (ring_va & 3u) != 0 || ring_size < 0x800 || ring_size > 0x10000) {
+                printf("adreno: %u: HYPLOG: the ring address/size is not sane (%#x, %#x) -- no dump\n", step,
+                    ring_va, ring_size);
+                return;
+        }
+        ring = (volatile uint8_t *)ml_io_map(ring_va, ring_size);
+        if (ring == (volatile uint8_t *)0) {
+                printf("adreno: %u: HYPLOG: the ring (%#x) did not map\n", step, ring_va);
+                return;
+        }
+        {
+                uint64_t magic = 0;
+                uint32_t j;
+
+                for (j = 0; j < 8; j++) {
+                        magic |= (uint64_t)ring[j] << (8 * j);
+                }
+                printf("adreno: %u: HYPLOG: the ring's head: magic %016llx (%s), rounds %u, write offset %u, width %u\n",
+                    step, (unsigned long long)magic,
+                    magic == 0x000000086879706dull ? "mpyh, the QHEE log ring" : "NOT the QHEE log ring",
+                    ring[0xc] | ring[0xd] << 8, ring[0xe] | ring[0xf] << 8,
+                    ring[0x10] | ring[0x11] << 8 | ring[0x12] << 16 | ring[0x13] << 24);
+                if (magic != 0x000000086879706dull) {
+                        printf("adreno: %u: HYPLOG: the magic does not match -- the address is not the ring (the QHEE "
+                            "identity map broken?); the head only:\n", step);
+                        for (j = 0; j < 0x80; j += 32) {
+                                printf("adreno: HYPLOG head +%02x: ", j);
+                                for (uint32_t k = 0; k < 32; k++) {
+                                        printf("%02x", ring[j + k]);
+                                }
+                                printf("\n");
+                        }
+                        return;
+                }
+        }
+        printf("adreno: %u: HYPLOG: the ring, all %u bytes, rows of 32; the write head is at +%u, so the newest "
+            "bytes sit just behind it (the span wraps)\n", step, ring_size, ring[0xe] | ring[0xf] << 8);
+        for (uint32_t at = 0; at < ring_size; at += 32) {
+                printf("adreno: HYPLOG +%04x: ", at);
+                for (uint32_t j = 0; j < 32; j++) {
+                        printf("%02x", ring[at + j]);
+                }
+                printf("\n");
+        }
+        printf("adreno: %u: HYPLOG: the ring is on the record\n", step);
+}
+
 static bool
 step_zap_signature(void)
 {
@@ -2031,7 +2279,7 @@ step_zap_signature(void)
         int32_t result;
 
         announce("find the zap shader, fw/a640_zap.mbn, in the small image that came with the kernel");
-        if (!zap_header(&header, true)) {
+        if (!zap_header_m2(&header, NULL)) {
                 return false;
         }
         announce("hand the header to TrustZone to check its signature (image 13); a call that may be preempted, as Linux's is");
@@ -2042,6 +2290,8 @@ step_zap_signature(void)
                 return true;
         }
         printf("adreno: %u: TrustZone does not take it: the call returns %d, its answer is %#llx\n", step, result, answer);
+        hyp_log_dump();
+        put_the_log_away("the QHEE log ring (N3) is on the record above");
         return false;
 }
 
@@ -3660,8 +3910,8 @@ step_zap_load(void)
             "attempt -- the whole .mbn over a call that may be preempted, both working callers' form -- and on a refusal the "
             "controls: zeroes as the metadata, for the GPU's id and the audio's)");
         printf("adreno: %u: one attempt, the form both working callers use (the R22 matrix proved the code does not move "
-            "with the layout, the form or the page)\n", step);
-        if (!zap_header(&header, true)) {
+            "with the layout, the form or the page); R28m builds the page by the contract, not by blind copy\n", step);
+        if (!zap_header_m2(&header, &whole)) {
                 return false;
         }
         /*
@@ -3787,6 +4037,14 @@ refused:
          * to the storage before the controls run on.
          */
         put_the_log_away("the refusal and its code are on the record above");
+        /*
+         * N3 (R28m): the QHEE log ring, NOW -- before the give-up and the controls push
+         * their own messages over the swallowed code.  Whatever the ring holds after the
+         * refusal is the round's best look at the true error the wrapper rewrote to
+         * 0x300045; its dump goes to the storage before the give-up is asked.
+         */
+        hyp_log_dump();
+        put_the_log_away("the QHEE log ring (N3) is on the record above; the give-up follows");
         /*
          * R28j: the zap's give-up, right after its own refusal -- the adsp's shape, so the
          * round's record is four calls in one boot: the adsp's attempt, the adsp's give-up,
@@ -5339,7 +5597,7 @@ redwood_adreno_init(void)
         }
 
         printf("adreno: steps up to %u, without those in mask %#x; step %u is the new one and waits %u ms %s "
-            "(R28l: the kernel generation line -- one kernel, both images)\n", last_step,
+            "(R28m: the kernel generation line -- one kernel, both images)\n", last_step,
             skip_steps, newest_step, pause_ms, fine ? "before every access" : "after each announcement");
         /*
          * R28l: the phase bisection.  The R28k main image (the adreno phase skipped
@@ -5357,9 +5615,11 @@ redwood_adreno_init(void)
          * gpu_block_stop() is flag-driven: with nothing started every teardown branch
          * skips itself, so a truncated run ends exactly as cleanly as it began.
          */
-        printf("adreno: R28l: the phase bisection -- the lsd SIGBUS trigger face is inside the adreno phase "
-            "(the R28k main image ran clean, the GPU image storms); the read-only steps 1-9 run this boot, "
-            "the write phase (the SMMU context 13, the GMU firmware and start, the zap, the 3D core) waits\n");
+        printf("adreno: R28m: the M2 contract build + the N3 white-box probe -- the metadata page is rebuilt from the "
+            "file's own headers (every segment at its declared p_offset, the canonical header fields, the hash mark "
+            "required) and the QHEE log ring is dumped at the refusal: the swallowed true code, or the proof it is "
+            "not in the ring, on the record this boot (the R28l phase bisection's verdict -- the trigger face is the "
+            "adreno phase -- rides as prior; this GPU image runs ALL steps, the zap's step 19 included)\n");
         /*
          * R27: the flush channel's own test, before any step runs.  The loader writes the
          * whole log (its side and this ring) to the logdump partition and answers with the
@@ -5369,7 +5629,7 @@ redwood_adreno_init(void)
          * absent too, meaning the flush was not even asked for) says the channel itself
          * is what R26 never proved.
          */
-        put_the_log_away("step 1's first line: the flush channel's own test (R28l: the kernel generation line)");
+        put_the_log_away("step 1's first line: the flush channel's own test (R28m: the kernel generation line)");
         for (step = 1; step <= last_step; step++) {
                 if (skip_steps & 1u << step) {
                         continue;

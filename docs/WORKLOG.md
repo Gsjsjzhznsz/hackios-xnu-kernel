@@ -1123,3 +1123,27 @@ r28l flashboot → oem run；**等 ~2-3 分钟过风暴首发窗再抓 logdump**
 **M2 布局契约（从 hyp 检查直接导出，R28m M2 按此打包）**：①缓冲区必须 \x7fELF 开头（整文件 ELF 是 EL2 硬门槛，裸哈希段/裸元数据方案步骤 2 即死 0x30000A）；②EI_CLASS/e_version/e_ehsize/e_phentsize 规范值；③必须存在 p_flags 高三位=0x2 的哈希段 phdr；④检查窗口内缓冲区逐字节稳定（TOCTOU 双读一致，0x30000C 红线）；⑤哈希段内容（v6 0x34+0x20，原厂链）hyp 不验、交 TZ——**认证变量全部集中在哈希段内容，ELF 外壳只需结构正确**；⑥hyp 把 M2 自由度压缩到"哈希段内容"单维度，与 batch1 缺格矩阵正交对齐：打包形态由 hyp 锁死为整文件 ELF，原厂链的正确载体 = ELF 内哈希段。
 
 **N 预注册**：R28m M2 前提收窄按上述契约执行；M2 仍 0x300045 ⇒ TZ 对哈希段内容的认证拒绝实锤（证书链/签名结构层），secapp 反汇编（tz.mbn dd 或官方包）仍是终极路径；N3（并行支线）：QHEE 日志环提取可读出被吞的 TZ 真错码。artifacts：download/t3-batch3-artifacts/（census、分发表 37 项、直通清单 31 项、PIL_parseMetadata/api_ns/conduit 全文反汇编）；脚本：hyp_parse/hyp_census/hyp_disasm1-5/hyp_artifacts（普查器换 SRC 即可打下一镜像）。
+
+## R28l 事故 + N3 静态侦察 + R28m 落地（2026-10-27）
+
+**R28l 事故（run 40331159223 = build failure，从未产出镜像）**：R28l 的相位二分**从未执行**（无镜像可刷）。死因 = r28l-flash-build.sh **自己的收尾断言**：`assert gpu == base + ' adreno=9 adreno_skip=7168 ...'` 拿 daily 底板 cmdline（无 gpu=1）做基准，而 GPU 底板自带 gpu=1 ⇒ 期望串漏 `gpu=1`。**内核本身编译干净**：日志中 222 处 "exported name not in import list"（IORPC/UAT 符号族）在 R28k **成功**日志（run 40318421748）里逐字同样在场 = 良性 symbolset 警告，与失败无关；失败点在打包 step 的收尾对照段。R28m 修断言（`gpu == base + ' gpu=1 adreno=22 adreno_pause=0 adreno_watch=0'`）并取代该轮（全相位，相位二分的历史使命由 M1 判定附带结案）。R28l 内核 sha 无席位（无产物）。
+
+**N3-1 静态侦察（hyp.img 日志环全解，判据全部落盘）**：
+- 日志函数 = **0x857150d4**(level, fmt, args...)：栈哨兵 → 0x85715164（ring 初始化检查 0x858A5C90 旗标 + 0x858A5C88 指针）→ printf 核心 0x857146f4（% 解析器，回调 = 0x85715054）→ putchar 0x85714FE4（**环写入点**）；UART 侧 = 回调内 '\n'→'\r\n' 翻译 + bl 0x85714FE4 两发 CRLF。
+- **环初始化代码 @0x857152a8**（"HYP Timestamp Log Init"）：`mov w9,#0xfb30; movk w9,#0x146b,lsl#16` = 登记表**物理地址 0x146BFB30**；`stp w8,w10,[x9]` 写入 {ring 基址 0x858E0000, 尺寸 0x2000}；magic `0x000000086879706D`（字节 "6D 70 79 68 08 00" = "mpyh"+8）写 [+0]、0x200 写 [+8]（头域）、0x1E00 写 [+0x10]（数据区宽 = 0x2000−0x200 自洽）、ring+0x200 写 [+0x78]（数据基址）。
+- **putchar 环写机制**：`x9=[ring+0x78]`（数据基址），`x10=[ring+0xE]`（u16 行内偏移），`strb w0,[x9,x10]`；`[+0xE]+1` 对 `[+0x10]=0x1E00` 取模回绕；回绕到 0 时 `[+0xC]`（u16 轮次计数）+1。⇒ 数据区 = ring+0x200 起 0x1E00 字节纯环形，最新内容以 [+0xE] 为界。
+- 全镜像 **893** 个 bl 0x857150d4 调用点；Stargate 管理区（0x85718000-0x8571B000）日志串全景：`hyp_manager_tzapp_send: SMC Call to qcom.tz.mssecapp Failed 0x%x` / `SK Command to qcom.tz.mssecapp Failed 0x%x`（**真错码 0x%x 直打日志环的路径存在**）、`skAction: HYP_IMG_AUTHENTICATE/HYP_IMG_LAUNCH`、`hyp_manager_handle_auth/launch` 族、`HYP_DIAG`（hyp 自带 minidump 登记通道）、`ADSP Table` 族。PIL 侧包装器日志只打包装码（w19=0x300045 覆盖 w0 原始值后才打 "[%lx]"）——真码是否到环由 Stargate 应答层决定，**环 dump 是唯一裁决**（预注册 N-a/N-b 两岔）。
+- 恒等映射佐证：登记表把 VA 值 0x858E0000 写给外部物理直读者（XBL/crash handler 官方通道）⇒ QHEE VA=PA；真机由探针两级验证（登记表→magic）兜底。
+
+**R28m 内核补丁（raphael_adreno.c，+236 行）**：
+- **zap_header_m2(phys, size_out)**（M2 契约打包）：七步契约逐条前置校验（ELF 魔数/EI_CLASS=1/EI_DATA=1/e_version=1/ehsize=52/phentsize=32/phoff=52/phnum∈[2,16]）→ 逐段 memcpy 回声明 p_offset（段 span 越界拒打）→ **哈希段 0x02000000 旗标强制在位**（缺席拒打）→ 规范头重写（e_version/e_phoff/e_ehsize/e_phentsize/e_phnum/e_sh*=0；身份字段 e_type/e_machine/e_entry/e_flags/osabi 保留源值）+ **重写差异数打日志**（预期零差异 = 文件本已规范 ⇒ 墙铁定在哈希段内容）→ R23 链判词延续 → to_memory + kvtophys。
+- **hyp_log_dump()**（N3 探针）：adreno_hyplog boot-arg（非零 = 直接指环）→ 默认两级验证（ml_io_map(0x146bfb30) 读 {ring,size} → magic "mpyh" 校验）→ 全环 0x2000 raw hex（32B/行）入内核日志。插入点：**refused: 路径 put_the_log_away 之后、give-up 之前**（give-up 与零页对照都会推环）+ step_zap_signature 失败路径；dump 后立即 put_the_log_away。
+- R28m 代数戳 ×2（generation line / step-1 flush 自测）+ M2+N3 主目标宣告 ×1（R28l 相位判词以历史引用在场）；R28k run-goes-on 措辞原样（本轮 step 19 路径**可达**）；旧 zap_header 整函数保留（__unused 注解，矩阵叙事存档）；调用点两处换 zap_header_m2（step_zap_signature / step_zap_load，后者 whole 由 m2 回填，E1 mode=3 的 size 参数语义不变）。
+- 静态自检：括号平衡 0；二进制 marker 预测（剔注释后）全对账：R28m 戳 ×2、M2+N3 宣告 ×1、M2 标记 ×3、HYPLOG 标记 ×2、adreno_hyplog ×1（PE_parse 串）、"the QHEE log ring (N3)" ×2、R28l/R28k 代数戳 ×0、R28j 措辞全保留。
+
+**R28m 三件套（R28l 派生 + 外科修正）**：
+- tools/r28m-flash-build.sh：GPU tokens = `adreno=22 adreno_pause=0 adreno_watch=0`（无 skip——step 19 必须跑）；**R28l 死因断言修复**（gpu=1 进期望串）；内核 gate 加 M2×3 + HYPLOG×2 + adreno_hyplog 标记、R28l 两标记进退役反查；三块内嵌 python 语法全过。
+- tools/r28m-kernel-id.py：R28m 判据 = 代数戳 ×2 + M2+N3 宣告 + M2 三标记 + HYPLOG 三标记 + adreno_hyplog ×1 + R28k run-goes-on 在场 + R28k/R28l 代数戳缺席；KNOWN 表 R28l 无席位（注释死因）；**对真 R28k 镜像回归通过**（sha 916d7719 正确回判 R28k，cmdline/ramdisk 判词无恙）。
+- .github/workflows/r28m-springboard.yml：缓存键全新（r28m-theos-v19L2-v1 / r28m-xnu-deps-v1——R28l 环境嫌疑一并清除）；③诊断/门禁 R28m 化（M2/N3 标记应计数 + R28l 退役反查 + sha 断言注明 R28l 无席位）；⑤ 打包 step 断言对齐（adreno=22、无 skip、gpu=1 计数）；⑥ README/release body = **M/N 判读树**全文（P0-P3 探针自检 → M1 墙倒 / M2 → N-a 真码分诊 / N-b 真码在 EL3/TZ ⇒ secapp 终极 / N-c 非恒等 ⇒ adreno_hyplog 手动 / N-d wedge 即证据）；YAML 解析通过（11 steps）。
+
+**预注册（先于刷机立字）**：R28m GPU 镜像全相位单变量 = M2 打包 + N3 探针；T2 对照照旧先跑（ACCEPTED 0 = 链路无罪基础判词）；lsd 风暴若现 = R28l 相位二分的写相位判定附带入账（全相位 boot 的自然实验）。设备侧流程：`sh run_ios.sh flash r28m gpu -w 180`（观察 180s 过风暴首发窗）→ logdump 按 P3 截断 → 判读以自有区为准。
