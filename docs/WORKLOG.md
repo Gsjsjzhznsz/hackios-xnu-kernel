@@ -1230,3 +1230,19 @@ r28l flashboot → oem run；**等 ~2-3 分钟过风暴首发窗再抓 logdump**
 - F1 = step 12 "TRUSTZONE ACCEPTS THE ZAP SHADER'S SIGNATURE FROM THIS KERNEL" ⇒ 墙倒；step 19 走 MEM_SETUP(0x98f15000/0x1000) → 写码 → AUTH_AND_RESET ⇒ "TRUSTZONE HAS AUTHENTICATED AND STARTED THE ZAP SHADER" ⇒ step 20/21/22 全相位（对照 fork 的 step 20 3D 核心序列）。
 - F2 = step 12 仍 0x45 ⇒ fork 差异不止元数据 ⇒ 读 R30 大扫（SCMDMP/TZDIAG）按 S 表分诊真码（0x30001B/0x30001D±n/0x30000A..E/0x300042-49/小值族）。
 - F3 = did not map / wedge = 证据。设备侧流程：`sh run_ios.sh flash r31 gpu -w 180`。
+
+## R31 CI 取证与门禁表退役（2026-10-27，第三轮 run 的死因与修复）
+
+**三轮 run 链**：40501869825（efbd832，诊断块 `\"` 转义引号 → 撇号吞噬 → line 160 语法错误）→ 40504377363（33d302a，门禁抓到探针起点行仍是 R30 戳 → 内核对齐 9054e4f）→ 40505873397（9054e4f，**新死因**：门禁断言 `源码构建的内核缺 R23 单一规范尝试`——内核本体已产出 16,199,776 B，make 的 check_all_exports Error-1 与 R30 SUCCESS 日志同族（222 警告），慢性容忍态不是本轮伤情）。
+
+**验尸要点（assert 循环只教一个错）**：want 表 assert 循环死于**第一个**缺失 marker，其后条目全部未证。离线全表审计（scripts/r31_marker_audit2.py，marker-vs-源码树）三层过滤：
+- 单文件审计 17 缺 → 全树审计 9 缺 → **真缺失 = 4**（全部 KILLED-BY-R31-DIFF，全部有意退役）；
+- 5 条假阴性解释：`the zap attempt follows in this same boot` 与 `no zap shader can be asked for` = 跨行字符串拼接（源码 grep 不到、二进制完整在）；`\x9f\x4e\x00\x71` 与 `\x08\x01\xa0\x52` = 指令编码 marker（门禁查二进制机器码，源码无此文本属正常）；`whether it "supports" the GPU's image` = C 源 `\"` 转义形态（4449 行真实在场）；
+- gone 残留 3 条 = 注释/未编译文件（raphael_adreno.c 两处注释 + redwood_adreno.c 未参与 raphael 内核编译），不进二进制，gone 断言不受累。
+- **4 条退役入 gone 表（110 want / 41 gone）**：`one attempt, the form both working callers use`（R31 宣告改写为 fork-proven form）；`the place is a fresh page of ours`（落位改 dt pil_gpu_region 0x98f15000，fork 实证）；`dt's pil_gpu_region is referenced by nothing`（fork 证明该区正是 TZ 要的落位，判词语境消失）；`no memory for the zap image`（kmem_alloc 新页路径退役，分配失败措辞由 `no memory for the packed metadata` 承接）。每条 gone 的 what 注明退役理由与继承者。
+
+**修复验证链全绿**：YAML 解析 11 steps；全树重复键扫描过；3 个 PY heredoc 编译过（门禁 221 行含两表 literal_eval 对账 want=110/gone=41、无交集）；6/6 run 块 bash -n 过；`assert d.count(fw)==1` 计数断言只涉 adsp.mdt 嵌入与退役 marker 无关；三件套另两件（flash-build/kernel-id）无该 4 串引用。
+
+**工具史新课（派生表的盲区）**：R31 三件套派生时 want 表从 R28m 原样继承，而内核补丁改写了宣告与落位措辞——**改内核字符串的 commit 必须在 push 前对门禁全表跑一次 marker-vs-源码审计**（assert 首错即停的循环会让 CI 一轮只教一个错，四条缺陷要烧四轮才能暴露）。审计脚本（scripts/r31_marker_audit2.py：全树比对 + 拼接/转义/指令编码假阴性识别 + diff 归因）成为本轮标准工具。
+
+**设备侧计划不变**：F 判读树照旧（F1 = step 12 打印 TRUSTZONE ACCEPTS ⇒ 墙倒；F2 = 仍 0x45 ⇒ R30 大扫按 S 表分诊真码；F3 = did not map/wedge = 证据）。流程：`sh run_ios.sh flash r31 gpu -w 180`。
