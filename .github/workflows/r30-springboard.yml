@@ -666,8 +666,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.release_tag }}
-          name: "R30 · 纯血 hackios SpringBoard · M2 契约打包 + N3 白盒探针（GPU 镜像全相位 adreno=22，QHEE 日志环现场落盘）"
-          body: |
+          name: "R30 · 纯血 hackios SpringBoard · 被吞真码回收（GPU 镜像全相位 adreno=22，拒绝现场逐区 dump SCM 队列/句柄缓存/64KB 状态区/TZ DIAG）"
           body: |
             raphael (K20 Pro) R30 交付包：**被吞真码回收——GPU 镜像全相位**。
 
