@@ -2457,7 +2457,15 @@ zap_metadata_packed(uint64_t *phys, uint64_t *msize)
         const uint8_t *file;
         vm_offset_t page = 0;
         uint64_t size = 0, packed;
-        uint32_t phoff, phentsize, phnum, i, hash_index = 0, hash_off = 0, hash_len = 0, fixed_off;
+        uint32_t phoff, i, hash_index = 0, hash_off = 0, hash_len = 0, fixed_off;
+        /* R31b: phentsize (at 42) and phnum (at 44) are BOTH 16-bit header fields. The
+         * first cut declared them u32 and memcpy'd 4 bytes each: the device read phentsize
+         * as 0x00030020 (196640 -- phnum 3 riding its high half) and the canonical check
+         * shot the step down before TrustZone ever saw one byte, so the fork-proven form
+         * went untested. The same class of wound the adsp parse's own comment records
+         * (a 4-byte read of a 16-bit field, 15 segments read as 0x28000F). Read each field
+         * at its true width. phnum only escaped by luck: the file's e_shentsize is 0. */
+        uint16_t phentsize, phnum;
 
         file = image_file("fw", "a640_zap.mbn", &size);
         if (file == NULL) {
