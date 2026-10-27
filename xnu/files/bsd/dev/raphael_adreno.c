@@ -2344,13 +2344,19 @@ scm_state_dump(void)
         volatile const uint32_t *reg;
         volatile const uint8_t *p;
         int cpu = cpu_number();
-        uint32_t sweep = 1, base;
+        /* R31d: the gate's polarity was INVERTED -- `sweep = 1` here made the private-state
+         * regions run on EVERY default boot (PE_parse_boot_argn only overwrites the variable
+         * when the boot arg is present, and the shipped cmdline never carries one), so the
+         * device wedged in the first QUE row again and the R31c "fix" booted exactly like
+         * R31b: black screen, on the record again.  The default is OFF; the dedicated
+         * evidence round passes the sweep switch (=1) and accepts the wedge. */
+        uint32_t sweep = 0, base;
 
         if (cpu < 0 || cpu > 7) {
                 cpu = 0;
         }
         PE_parse_boot_argn("adreno_scmsweep", &sweep, sizeof(sweep));
-        printf("adreno: %u: SCMDMP: R31 begins: the swallowed-code recovery sweep (the R30 machinery, riding); the current cpu is %d; the 64 KB sweep "
+        printf("adreno: %u: SCMDMP: R32 begins: the swallowed-code recovery sweep (the R30 machinery, riding); the current cpu is %d; the 64 KB sweep "
             "is %s\n", step, cpu, sweep ? "on" : "off (adreno_scmsweep=0)");
         /* R31c: TZREG/TZDIAG first -- the highest value (sec_img_auth's own fuse and
          * certificate lines) at the lowest risk (the TZ's diag is the hypervisor's OWN
@@ -2453,23 +2459,31 @@ scm_state_dump(void)
 }
 
 /*
- * R31 (the fork-proven form): the metadata TrustZone takes is the PACKED one -- the ELF header,
- * the program headers, and the hash section right behind them, NOTHING else (the working port of
- * this very phone proves the form: its a640_zap.mdt is exactly header + table + hashes, checked
- * 52 + 32*segments + hashes == size, and the same PAS_INIT_IMAGE over it is ACCEPTED through the
- * same XBL -> QHEE trap path this kernel runs under).  Our stock a640_zap.mbn is the MERGED
- * production form: the same ELF header and table, then a 3948-byte zero gap, the hash section at
- * p_offset 0x1000 (the v6 metadata, the Xiaomi chain), and the CODE at 0x3000.  Every earlier
- * round sent either a truncated page (R21: no hash section at all) or the whole file (R24+/M2:
- * gap and code included) -- both refused with 0x45.  The packed form is built here from the
- * stock file's own bytes: the header and the table VERBATIM, the hash section appended right
- * behind the table, and the ONE edit -- the hash segment's p_offset is rewritten from the merged
- * file's 0x1000 to where the blob now sits (the vendor .mdt's own shape, self-consistent; the
- * v6 signature covers the metadata blob, not the program headers).  The code segment is not in
- * this buffer at all: step 19 writes it to the place from the file's own PT_LOAD, as the fork
- * does from its .b02.  zap_header_m2 above stays as the archive (the dead-strip lesson: used,
- * unused) -- its M2 form is what every round R28m-and-before sent, and the record of what that
- * form is, is why the packed one is now the attempt.
+ * R32 (the fork-exact form, third and smallest cut): the metadata TrustZone takes is the
+ * VENDOR SPLIT FORM's .mdt, packed by the vendor's OWN rule -- and the rule is now proven
+ * byte-for-byte against a real vendor pair of this very SoC (the POCO X3 Pro's vendor tree,
+ * same SM8150, same A640, same zap: its a640_zap.elf and this phone's .mbn are byte-identical
+ * in the ELF header, the whole phdr table AND the 0x7b0 code segment; they differ ONLY inside
+ * the v6 blob, where each device's own certificate chain lives; and its a640_zap.mdt equals
+ * [the .elf's header + phdr table VERBATIM] + [the .elf's blob @0x1000], 6860 bytes, nothing
+ * else).  The anatomy that proof pins down:
+ *
+ *   .mdt = [ELF header 52][phdr table 96, EVERY field verbatim -- the hash segment's
+ *           p_offset STAYS 0x1000, the merged stream's own value][v6 blob 0x1a38, right
+ *           behind the table at 0x94].
+ *
+ * The phdr's p_offset is NOT where the blob sits, and that is fine: the v6 reader takes the
+ * metadata from right behind the header pair (phdr[0].p_filesz = 0x94 -- the T3-batch2 F6
+ * reader, now proven by the vendor's own file), and the p_offset field itself is covered
+ * bytes: R31's ONE edit -- rewriting it 0x1000 -> 0x94 "for self-consistency" -- moved bytes
+ * the signature chain vouches for, and the device refused the form with the same -0x300045
+ * it had refused the truncated page (R21) and the whole file (M2) with.  The fork's own code
+ * carries no p_offset logic at all: it passes the vendor .mdt VERBATIM.  So the builder here
+ * now makes exactly the vendor's pack: the table untouched, the blob moved to 0x94, nothing
+ * else.  The code segment is not in this buffer at all: step 19 writes it to the place from
+ * the file's own PT_LOAD, as the fork does from its .b02.  zap_header_m2 above stays as the
+ * archive (the dead-strip lesson: used, unused) -- its M2 form is what every round
+ * R28m-and-before sent.
  */
 static bool
 zap_metadata_packed(uint64_t *phys, uint64_t *msize)
@@ -2477,7 +2491,7 @@ zap_metadata_packed(uint64_t *phys, uint64_t *msize)
         const uint8_t *file;
         vm_offset_t page = 0;
         uint64_t size = 0, packed;
-        uint32_t phoff, i, hash_index = 0, hash_off = 0, hash_len = 0, fixed_off;
+        uint32_t phoff, i, hash_off = 0, hash_len = 0, fixed_off;
         /* R31b: phentsize (at 42) and phnum (at 44) are BOTH 16-bit header fields. The
          * first cut declared them u32 and memcpy'd 4 bytes each: the device read phentsize
          * as 0x00030020 (196640 -- phnum 3 riding its high half) and the canonical check
@@ -2511,7 +2525,6 @@ zap_metadata_packed(uint64_t *phys, uint64_t *msize)
                 memcpy(&off, file + at + 4, sizeof(off));
                 memcpy(&len, file + at + 16, sizeof(len));
                 if ((flags & (7u << 24)) == (2u << 24)) {
-                        hash_index = i;
                         hash_off = off;
                         hash_len = len;
                         break;
@@ -2533,18 +2546,18 @@ zap_metadata_packed(uint64_t *phys, uint64_t *msize)
                 printf("adreno: %u: no memory for the packed metadata\n", step);
                 return false;
         }
-        memcpy((void *)page, file, 52 + 32 * phnum);            /* the ELF header and the table, verbatim */
-        fixed_off = 52 + 32 * phnum;                            /* where the blob sits now */
-        memcpy((void *)page + phoff + 32 * hash_index + 4, &fixed_off, sizeof(fixed_off));
+        memcpy((void *)page, file, 52 + 32 * phnum);            /* the ELF header and the table, VERBATIM -- R32: no edit of any field */
+        fixed_off = 52 + 32 * phnum;                            /* where the blob sits in the vendor .mdt (right behind the table) */
         memcpy((void *)page + fixed_off, file + hash_off, hash_len);
         to_memory(page, PAGE_SIZE);                             /* TrustZone reads memory, not this cache */
         *phys = kvtophys(page);
         if (msize != NULL) {
                 *msize = packed;
         }
-        printf("adreno: %u: R31: the packed metadata is built: the header and the %u-entry table verbatim, "
-            "the hash segment's p_offset rewritten %#x -> %#x (the vendor .mdt's own shape), the blob %#x bytes "
-            "appended, %llu bytes total; the code is NOT in this buffer\n", step, phnum, hash_off, fixed_off,
+        printf("adreno: %u: R32: the vendor .mdt is built: the header and the %u-entry table VERBATIM (the hash "
+            "segment's p_offset rides untouched at %#x, the vendor's own value -- R31's rewrite of it to %#x moved "
+            "signature-covered bytes and the device refused the form), the blob %#x bytes right behind the table, "
+            "%llu bytes total; the code is NOT in this buffer\n", step, phnum, hash_off, fixed_off,
             hash_len, (unsigned long long)packed);
         return true;
 }
@@ -4191,10 +4204,10 @@ step_zap_load(void)
                 return false;
         }
         announce("hand the zap shader's metadata to TrustZone, tell it where the image goes, put the image there, and ask "
-            "TrustZone to authenticate and run it (R31: the fork-proven packed metadata -- the vendor .mdt's shape, "
-            "the code NOT among it -- one attempt over a call that may be preempted; on a refusal the controls: zeroes "
+            "TrustZone to authenticate and run it (R32: the fork-exact vendor .mdt -- the table verbatim, p_offset "
+            "untouched, the blob right behind it, the code NOT among it -- one attempt over a call that may be preempted; on a refusal the controls: zeroes "
             "as the metadata, for the GPU's id and the audio's, and the QHEE ring and the R30 sweep before the give-up)");
-        printf("adreno: %u: one attempt, the fork-proven form (R31: the packed metadata below; the R22 matrix's forms "
+        printf("adreno: %u: one attempt, the fork-exact form (R32: the vendor .mdt below; the R22 matrix's forms "
             "are the archive); the code goes to the place from the file's own PT_LOAD, as the fork does from its .b02\n", step);
         if (!zap_metadata_packed(&header, &whole)) {
                 return false;
@@ -4280,8 +4293,8 @@ step_zap_load(void)
                 } else {
                         zap_place = 0x98f15000u;
                         zap_memory = (volatile uint8_t *)ml_io_map_wcomb(zap_place, ZAP_MEMORY_SIZE);
-                        printf("adreno: %u: the place is the dt's own pil_gpu_region, physical %#llx (R31: the fork-proven "
-                            "place; adreno_zapmem=<phys> still overrides)\n", step, zap_place);
+                        printf("adreno: %u: the place is the dt's own pil_gpu_region, physical %#llx (the fork-proven "
+                            "place, riding from R31; adreno_zapmem=<phys> still overrides)\n", step, zap_place);
                 }
         }
         put_the_log_away("the place is handed over next (MEM_SETUP)");
@@ -5888,7 +5901,7 @@ redwood_adreno_init(void)
         }
 
         printf("adreno: steps up to %u, without those in mask %#x; step %u is the new one and waits %u ms %s "
-            "(R31: the kernel generation line -- one kernel, both images)\n", last_step,
+            "(R32: the kernel generation line -- one kernel, both images)\n", last_step,
             skip_steps, newest_step, pause_ms, fine ? "before every access" : "after each announcement");
         /*
          * R28l: the phase bisection.  The R28k main image (the adreno phase skipped
@@ -5906,13 +5919,16 @@ redwood_adreno_init(void)
          * gpu_block_stop() is flag-driven: with nothing started every teardown branch
          * skips itself, so a truncated run ends exactly as cleanly as it began.
          */
-        printf("adreno: R31: the fork-proven form -- the same phone's working port proves the metadata TrustZone takes is "
-            "the PACKED one (the vendor .mdt's shape: the ELF header, the program headers, the hash section right "
-            "behind them, the code NOT among them), so this kernel builds exactly that from the stock .mbn's own bytes "
-            "(the hash segment's p_offset rewritten to where the blob now sits), writes the code to the dt's own "
-            "pil_gpu_region at 0x98f15000, and on any refusal the QHEE ring and the R30 state sweep (the SCM queue, "
-            "the handle cache, the 64 KB region, the TZ DIAG) go on the record before the give-up; the M2 form is the "
-            "archive, the N3 ring dump and the R30 sweep ride verbatim\n");
+        printf("adreno: R32: the fork-exact form -- a real vendor pair of this very SoC (the POCO X3 Pro's tree, same\n"
+            "SM8150, same A640, same zap: its .elf and our .mbn are byte-identical in the header, the whole table and\n"
+            "the code, differing only inside the v6 blob's own certificate chain) proves the vendor .mdt's OWN pack:\n"
+            "the ELF header and the program table VERBATIM -- the hash segment's p_offset stays 0x1000, the merged\n"
+            "stream's value; R31's rewrite of it to 0x94 moved signature-covered bytes and the device refused that\n"
+            "form like every earlier one -- the blob rides right behind the table at 0x94, the code NOT among it; this\n"
+            "kernel builds exactly that from the stock .mbn's own bytes, writes the code to the dt's own pil_gpu_region\n"
+            "at 0x98f15000, and on any refusal the QHEE ring and the R30 state sweep (the SCM queue, the handle cache,\n"
+            "the 64 KB region, the TZ DIAG) go on the record before the give-up; the M2 form is the archive, the N3\n"
+            "ring dump and the R30 sweep ride verbatim\n");
         /*
          * R27: the flush channel's own test, before any step runs.  The loader writes the
          * whole log (its side and this ring) to the logdump partition and answers with the
@@ -5922,7 +5938,7 @@ redwood_adreno_init(void)
          * absent too, meaning the flush was not even asked for) says the channel itself
          * is what R26 never proved.
          */
-        put_the_log_away("step 1's first line: the flush channel's own test (R31: the kernel generation line)");
+        put_the_log_away("step 1's first line: the flush channel's own test (R32: the kernel generation line)");
         for (step = 1; step <= last_step; step++) {
                 if (skip_steps & 1u << step) {
                         continue;

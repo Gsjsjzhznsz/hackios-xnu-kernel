@@ -1,6 +1,6 @@
-# raphael's GPU firmware (fw/a640_gmu.bin, fw/a630_sqe.fw, fw/a640_zap.mbn, fw/adsp.mbn)
+# raphael's GPU firmware (fw/a640_gmu.bin, fw/a630_sqe.fw, fw/a640_zap.mbn, fw/a640_zap.mdt, fw/adsp.mbn)
 
-The four files bsd/dev/raphael_adreno.c looks for in `fw/` of the small image
+The five files bsd/dev/raphael_adreno.c looks for or documents in `fw/` of the small image
 (md1, made by userland/build.sh from `../fw-gpu/` -- this directory, copied
 there by the build workflow or by hand: `cp fw-gpu-raphael/* fw-gpu/`; the
 R28g rounds put it there by rebuilding the volume from the one the images
@@ -26,6 +26,19 @@ chipid 0x06040001 (the Adreno 640 of raphael's SM8150) lead:
                   test-signed one of linux-firmware rides along as
                   a640_zap.mbn.testkey-r13 (the anchor the R24 volume swap
                   found).
+  a640_zap.mdt     NOT a flashed file: the R32 REFERENCE artifact -- the vendor
+                  split form's .mdt, derived here from this directory's own
+                  a640_zap.mbn by the vendor's packing rule: [ELF header 52 +
+                  phdr table 96, VERBATIM -- the hash segment's p_offset stays
+                  0x1000] + [the v6 blob 0x1a38, right behind the table at
+                  0x94] = 6,860 B.  The rule is proven byte-for-byte against
+                  the POCO X3 Pro's vendor pair (vayu, same SM8150 + A640:
+                  its a640_zap.elf == our .mbn in header/table/code; its
+                  a640_zap.mdt == exactly that construction), and the kernel's
+                  zap_metadata_packed builds the same bytes in memory (R32:
+                  the p_offset rewrite is gone -- it moved signature-covered
+                  bytes and the device refused the form).  sha256
+                  2a3fc1d598483a61cd96f9467465fc56ced87783588a091eab39af019c479760.
   adsp.mbn       the ADSP's own .mdt, this phone's NON-HLOS (modem) image's
                   FAT16 image/ADSP.MDT (7,820 B: an ELF32 of 15 segments, the
                   hash segment 0x1c78 at 0x1000, the certificates between the
