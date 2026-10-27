@@ -1,0 +1,453 @@
+name: R34 · SpringBoard 一键流水线（GL 测试轮：Mesa freedreno over RedwoodGPU——libOSMesa.8.dylib + gl_test + u2f_test 进 md1 卷，etc/rc.jobs = rc.jobs.gltest；内核 = R33 字节 verbatim（唯一变量 = 卷的 GL 增量）；底板 = r33 release · R32 实机墙倒 + R33 常驻落地之后，GL 用户态的首上机轮）
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_repo:
+        description: "hackios 内核树 fork（含 xnu/ + tools/r34-*）"
+        required: true
+        default: "Gsjsjzhznsz/hackios-xnu-kernel"
+      release_tag:
+        description: "Release tag（直链的一部分）"
+        required: true
+        default: "r34-springboard"
+      base_image:
+        description: "r33 日常镜像直链（R34 日常镜像 = 它逐字节原样：本轮的控制组）"
+        required: false
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r33-springboard/raphael-xnu-r33-flash.img"
+      base_gpu_image:
+        description: "r33 GPU 镜像直链（外科手术的底板：唯一变量 = ramdisk 条目换成 GL 卷）"
+        required: false
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r33-springboard/raphael-xnu-r33-gpu-flash.img"
+      base_flashboot:
+        description: "r33 启动卷直链（= R13 谱系，真机验证过，原样转发）"
+        required: false
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r33-springboard/raphael-r33-flashboot.apfs"
+      base_root:
+        description: "r33 小卷 md1 直链（卷构建的底料：GL 增量从这些字节上长出来）"
+        required: false
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r33-springboard/r33-md1-root.apfs"
+permissions:
+  contents: write
+concurrency:
+  group: r34-springboard
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 200
+    env:
+      REL: ${{ github.workspace }}/release
+      THEOS: /home/runner/theos     # (literal: GitHub Actions' env: block expands nothing)
+      CCACHE_DIR: ${{ github.workspace }}/hackios/.ccache
+    outputs:
+      volume_sha: ${{ steps.volume.outputs.volume_sha }}
+    steps:
+      # ---------------------------------------------------------------
+      - name: "①/⑦ 磁盘准备与依赖（内核工具链 + GL 构建件 meson/ninja/llvm）"
+        run: |
+          set -eu
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+                       /usr/local/share/boost /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential python3-dev clang lld ccache \
+                       flex bison m4 perl python3 autoconf automake libtinfo6 xz-utils uuid-dev 7zip \
+                       meson ninja-build llvm >/dev/null
+          command -v clang && command -v ccache && command -v 7z && command -v meson && command -v ninja
+          # dsymutil：Ubuntu 的 apt clang 不往 /usr/bin 放它（R11 run 39973048286 的教训）
+          DS=$(command -v dsymutil || clang --print-prog-name=dsymutil 2>/dev/null || true)
+          [ -x "$DS" ] || DS=$(ls /usr/lib/llvm-*/bin/dsymutil 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$DS" ] && [ -x "$DS" ]; then
+            sudo ln -sf "$DS" /usr/bin/dsymutil
+          else
+            printf '#!/bin/sh\nexit 0\n' | sudo tee /usr/bin/dsymutil >/dev/null && sudo chmod +x /usr/bin/dsymutil
+          fi
+          # llvm-ar：Mesa 的构建件（mk-mesa.sh 的清单）
+          AR=$(ls /usr/lib/llvm-*/bin/llvm-ar 2>/dev/null | sort -V | tail -1 || true)
+          [ -n "$AR" ] && sudo ln -sf "$(readlink -f "$AR")" /usr/local/bin/llvm-ar
+          command -v llvm-ar
+          mkdir -p "$REL"
+          {
+            echo "R28i toolchain audit (recorded $(date -u +%FT%TZ))"
+            echo "--- runner image ---"
+            cat /etc/os-release | grep -E '^(PRETTY_NAME|VERSION)=' || true
+            echo "--- apt clang (the kernel's host compiler) ---"
+            clang --version | head -2
+            lld --version 2>/dev/null || true
+            echo "--- apt meson/ninja/llvm-ar (the GL build's pieces) ---"
+            meson --version; ninja --version; llvm-ar --version | head -1
+          } | tee "$REL/toolchain-versions.txt"
+          df -h /
+
+      # ---------------------------------------------------------------
+      - name: "②/⑦ 取树 + 取 r33 资产（本轮底板；SHA 对官方 SHA256SUMS 硬校验）"
+        run: |
+          set -eu
+          git clone --depth 1 "https://github.com/${{ inputs.kernel_repo }}.git" hackios
+          cd hackios
+          echo "→ 内核树 @ $(git log -1 --format='%h %s')"
+          ls -lh xnu/files/bsd/dev/raphael_adreno.c tools/r34_volume_build.py tools/r34_flash_build.py \
+                tools/r34_gl_build.sh tools/r34-kernel-id.py tools/r33-kernel-id.py
+          # r33 的四件资产：两张镜像是外科手术的底板（内核条目 = R33 420f4b71…，GPU 底板的
+          # cmdline 已带 adreno_keep=1），启动卷原样转发，小卷 = 卷构建的底料。
+          mkdir -p base
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o base/raphael-xnu-r33-flash.img  "${{ inputs.base_image }}"
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o base/raphael-xnu-r33-gpu-flash.img "${{ inputs.base_gpu_image }}"
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o base/raphael-r33-flashboot.apfs "${{ inputs.base_flashboot }}"
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o base/r33-md1-root.apfs "${{ inputs.base_root }}"
+          sha256sum base/* | tee base/SHA256SUMS.r33base
+          # 硬校验：四件资产必须是 r33 release 的官方字节（r33-springboard 的 SHA256SUMS）
+          python3 - base/ <<'PY'
+          import hashlib, sys
+          want = {
+              'raphael-xnu-r33-flash.img':    'b0f9f6df4ea13ad9d45048e7ff15e33d7b2fcb67204d01964b1014517ca8a60b',
+              'raphael-xnu-r33-gpu-flash.img':'7011682776676e33bf8d8e5122f38a3bdf68d2db5d9d279f804728e26c8a91e4',
+              'raphael-r33-flashboot.apfs':   '14485e7c5ce125ef516168445c2500ac04ca5e40a908c2aef516b2d92c24ba0c',
+              'r33-md1-root.apfs':            '372c7fcb7730726a8fb806eec7251e0e75a4188f64db6fbaedcf5b7663672dd4',
+          }
+          for name, sha in want.items():
+              got = hashlib.sha256(open(sys.argv[1] + name, 'rb').read()).hexdigest()
+              assert got == sha, f'{name}: {got} != the r33 release sha {sha}'
+          print('底板四件全部等于 r33 release 的官方字节（r33-springboard SHA256SUMS）')
+          PY
+          # 底板谱系三查（r33-kernel-id 还在本树）：v7 装载器 + R33 内核 + R13 谱系小卷
+          python3 tools/r33-kernel-id.py base/raphael-xnu-r33-flash.img base/raphael-xnu-r33-gpu-flash.img | tee base-id.txt
+          grep -q "ec15106da4bad290" base-id.txt || { echo "::error::r33 底板镜像的 loader 不是设备验证过的 v7（ec15106d…）"; exit 1; }
+          grep -Ec "loader  sha256" base-id.txt | grep -qx 2 || { echo "::error::两张 r33 底板镜像都要读到 loader 条目"; exit 1; }
+          grep -q "VERDICT: the kernel entry is R33" base-id.txt || { echo "::error::底板镜像的内核不是 R33"; exit 1; }
+          grep -q "VERDICT: the ramdisk entry is R13..R32 VERBATIM" base-id.txt || { echo "::error::底板镜像的小卷不是 R13 谱系"; exit 1; }
+          grep -q "WITH the full-step tokens AND the resident" base-id.txt || { echo "::error::GPU 底板的 cmdline 缺 resident 开关"; exit 1; }
+          # 两张底板镜像的 ramdisk 条目必须就是 r33-md1-root.apfs 的字节（卷构建的底料对照物）
+          python3 - base/ <<'PY'
+          import gzip, struct, sys
+          def ramdisk_of(path):
+              img = open(path, 'rb').read()
+              blob = gzip.decompress(img[4096:4096 + struct.unpack('<I', img[8:12])[0]])
+              x = blob.find(b'XNUP')
+              size = struct.unpack('<I', blob[x+4:x+8])[0]
+              i, out = x + 8, {}
+              while i + 24 <= x + 8 + size and blob[i] != 0:
+                  name = blob[i:i+16].rstrip(b'\0').decode()
+                  esize = struct.unpack('<I', blob[i+16:i+20])[0]
+                  out[name] = blob[i+24:i+24+esize]
+                  i += 24 + ((esize + 15) & ~15)
+              return out['ramdisk']
+          base = open(sys.argv[1] + 'r33-md1-root.apfs', 'rb').read()
+          for n in ('raphael-xnu-r33-flash.img', 'raphael-xnu-r33-gpu-flash.img'):
+              r = ramdisk_of(sys.argv[1] + '/' + n)
+              assert r == base, f'{n}: ramdisk 条目与 r33-md1-root.apfs 不一致'
+          print('底板两镜像的 ramdisk 条目 == r33-md1-root.apfs，逐字节')
+          PY
+
+      # ---------------------------------------------------------------
+      # R28i 工具链纪律（R34 原样继承）：缓存键全新、无 restore 链，重建确定性。
+      - name: "②c/⑦ 缓存：theos（工具链 + iPhoneOS16.5.sdk；R34 全新键、无 restore 链）"
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/theos
+          key: r34-theos-v19L2-v1
+      - name: "②d/⑦ 缓存：xnu-deps（Apple 开源件 + host 工具 + SDK 链接树；R34 全新键、无 restore 链）"
+        uses: actions/cache@v4
+        with:
+          path: hackios/xnu-deps
+          key: r34-xnu-deps-v1
+      - name: "②e/⑦ ccache（R34 clean build——零回填，只存不用）"
+        uses: actions/cache@v4
+        with:
+          path: hackios/.ccache
+          key: r34-ccache-${{ github.run_id }}
+
+      # ---------------------------------------------------------------
+      # ③ 内核构建：R34 改的是卷，不是内核——本轮的构建是一次可复现性证明：同一棵树、
+      # 同一个钉死的工具链，必须重新产出 R33 的字节（420f4b71…）。差一个字节都是
+      # 环境漂移或误改内核，必须查清，不许带着疑点上机。
+      - name: "③/⑦ 内核源码构建 + R33 字节复现门禁（theos v19.0.0-L2 + xnu/apply.sh + xnu-deps + clean ccache + make；sha 必须 == 420f4b71…）"
+        run: |
+          set -eu
+          if [ ! -x "$THEOS/toolchain/linux/iphone/bin/ld64" ]; then
+            rm -rf "$THEOS"
+            git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
+            mkdir -p "$THEOS/toolchain"
+            curl -fL --retry 3 --retry-delay 5 -sS https://github.com/L1ghtmann/llvm-project/releases/download/main-update_3-eabca92/iOSToolchain-x86_64.tar.xz | tar -xJ -C "$THEOS/toolchain/"
+          fi
+          "$THEOS/toolchain/linux/iphone/bin/ld64" --version | tee -a "$REL/toolchain-versions.txt" || true
+          if [ ! -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include" ]; then
+            rm -rf "$THEOS/sdks/iPhoneOS16.5.sdk" /tmp/theos-sdks
+            git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/theos-sdks
+            git -C /tmp/theos-sdks sparse-checkout set iPhoneOS16.5.sdk
+            mkdir -p "$THEOS/sdks"
+            mv /tmp/theos-sdks/iPhoneOS16.5.sdk "$THEOS/sdks/"
+            rm -rf /tmp/theos-sdks
+          fi
+          test -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include" || { echo "::error::iPhoneOS16.5.sdk 就位失败"; exit 1; }
+          df -h /
+          cd hackios
+          xnu/apply.sh
+          XNU_HOST_CLANG="$THEOS/toolchain/linux/iphone/bin/clang"
+          export XNU_HOST_CLANG
+          test -x "$XNU_HOST_CLANG" || { echo "::error::theos 工具链 clang 缺位"; exit 1; }
+          "$XNU_HOST_CLANG" --version | tee -a "$REL/toolchain-versions.txt"
+          grep -q "eabca92" "$REL/toolchain-versions.txt" || { echo "::error::内核编译器不是钉死的 theos clang"; exit 1; }
+          bash xnu-deps/setup.sh || { echo "::error::setup.sh 失败"; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
+          export XNU_CCACHE=1 CCACHE_COMPILERCHECK=content XNU_WRAPPER_LOG="$PWD/xnu-clang-args.log"
+          : > "$XNU_WRAPPER_LOG"
+          ccache -C >/dev/null 2>&1 || true
+          ccache -M 2G >/dev/null 2>&1 || true
+          ./xnu-build.sh -j4 -k || echo "（make 退出码 $?——上游文档：链接后的检查，内核若已产出即成功）"
+          K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
+          ls -la "$K" || { echo "::error::内核没有产出"; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
+          # --- R34 门禁一：R33 标记快检（树没被误改的第一道网）
+          echo "→ 诊断：R33 标记快检（R34 不动内核，措辞应与 R33 发布件全同）"
+          echo "    R33 generation line = $(strings -a "$K" | grep -cF 'R33: the kernel generation line')（应 2）"
+          echo "    R33 resident round = $(strings -a "$K" | grep -cF 'R33: the resident round')（应 1）"
+          echo "    R33 keep switch = $(strings -a "$K" | grep -cF 'THE GPU STAYS ON for the system to draw with')（应 1）"
+          echo "    R33 SCMDMP begin = $(strings -a "$K" | grep -cF 'SCMDMP: R33 begins')（应 1）"
+          echo "    R32/R31 旧戳（应 0）= $(strings -a "$K" | grep -cE 'R32: the kernel generation line|R31: the kernel generation line')（应 0）"
+          # --- R34 门禁二：字节复现——R33 的树必须产出 R33 的字节
+          KSHA=$(sha256sum "$K" | cut -d' ' -f1)
+          echo "rebuilt kernel sha256: $KSHA" | tee -a "$REL/toolchain-versions.txt"
+          if [ "$KSHA" = "420f4b717b5dd0fe2f0b236bdbf2c686da6a2dd0169b3c9985de8e600e1e3560" ]; then
+            echo "✅ 可复现性证明成立：同一棵树、同一个钉死的工具链，R33 的字节逐位重现（420f4b71…）"
+          else
+            echo "::error::重建内核 sha $KSHA != R33 发布字节 420f4b71…——环境漂移或内核源被误改；先查清，不许带疑点上机"
+            exit 1
+          fi
+          echo "→ ccache 收官统计："; ccache -s 2>/dev/null | head -8 || true
+
+      - name: "诊断产物（wrapper argv 日志，失败也上传）"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: t2-diag
+          path: |
+            hackios/xnu-clang-args.log
+          if-no-files-found: ignore
+
+      # ---------------------------------------------------------------
+      - name: "④/⑦ GL 构建（userland pin aba1e81 + Mesa 25.0.7 softpipe,freedreno → libOSMesa.8.dylib + gl_test + u2f_test）"
+        run: |
+          set -eu
+          cd hackios
+          bash tools/r34_gl_build.sh 2>&1 | tee "$REL/r34-gl-build.log"
+          test -f r34-gl/libOSMesa.8.dylib || { echo "::error::GL 构建没有产出 libOSMesa.8.dylib"; exit 1; }
+          test -f r34-gl/gl_test || { echo "::error::GL 构建没有产出 gl_test"; exit 1; }
+          test -f r34-gl/u2f_test || { echo "::error::GL 构建没有产出 u2f_test"; exit 1; }
+          # 产出必须是 arm64 Mach-O（xnu-clang 的目标；误落 ELF 说明工具链没走对）
+          python3 - r34-gl <<'PY'
+          import sys
+          for n in ('gl_test', 'u2f_test', 'libOSMesa.8.dylib'):
+              b = open(sys.argv[1] + '/' + n, 'rb').read(16)
+              assert b[:4] in (b'\xcf\xfa\xed\xfe', b'\xca\xfe\xba\xbe', b'\xfe\xed\xfa\xcf'), \
+                  n + ': not a Mach-O (magic ' + b[:4].hex() + ')'
+          print('GL 三件都是 Mach-O（arm64）')
+          PY
+          df -h /
+
+      # ---------------------------------------------------------------
+      - name: "⑤/⑦ 卷构建（R13 谱系底料 + GL 增量：selftest 往返 + 79 文件逐字节 + 3 增量 + rc.jobs 换装）"
+        id: volume
+        run: |
+          set -eu
+          cd hackios
+          python3 tools/r34_volume_build.py \
+              --base base/r33-md1-root.apfs \
+              --apfs-dir tools/apfs \
+              --rc-jobs userland/rc.jobs.gltest \
+              --gl-dir r34-gl \
+              --out "$REL/r34-md1-root.apfs" \
+              --manifest "$REL/r34-volume-manifest.json" \
+              --slack 512 2>&1 | tee "$REL/r34-volume-build.log"
+          VSHA=$(python3 -c "import json;print(json.load(open('$REL/r34-volume-manifest.json'))['volume']['sha256'])")
+          echo "volume_sha=$VSHA" >> "$GITHUB_OUTPUT"
+          echo "→ R34 GL 卷 sha256: $VSHA"
+          test "$(stat -c %s "$REL/r34-md1-root.apfs")" -lt 33554432 || { echo "::error::GL 卷超过 32 MB（payload 预算告急）"; exit 1; }
+
+      # ---------------------------------------------------------------
+      - name: "⑥/⑦ 打 r34 双启动镜像（外科手术：底板 = r33 release；日常镜像逐字节原样，GPU 镜像只换 ramdisk 条目 = GL 卷；装载器 v7 / kernel R33 / cmdline / DTB = r33 原字节）"
+        run: |
+          set -eu
+          cd hackios
+          python3 tools/r34_flash_build.py \
+              --daily base/raphael-xnu-r33-flash.img \
+              --gpu base/raphael-xnu-r33-gpu-flash.img \
+              --volume "$REL/r34-md1-root.apfs" \
+              --volume-sha "${{ steps.volume.outputs.volume_sha }}" \
+              --out-daily "$REL/raphael-xnu-r34-flash.img" \
+              --out-gpu "$REL/raphael-xnu-r34-gpu-flash.img" 2>&1 | tee "$REL/r34-flash-build.log"
+          # 启动卷：r33 的官方字节（= R13 谱系，真机验证过），名字换成本轮（不刷也不影响 boot）
+          cp base/raphael-r33-flashboot.apfs "$REL/raphael-r34-flashboot.apfs"
+          # 对打包后的双镜像离线复证
+          python3 tools/r34-kernel-id.py \
+                  "$REL/raphael-xnu-r34-flash.img" "$REL/raphael-xnu-r34-gpu-flash.img" \
+                  --expect-volume-sha "${{ steps.volume.outputs.volume_sha }}" | tee r34-kernel-id.txt
+          grep -c "VERDICT: the kernel entry is R34" r34-kernel-id.txt | grep -qx 2 || { echo "::error::双镜像必须双双判 R34 内核（= R33 字节 verbatim）"; exit 1; }
+          grep -c "ec15106da4bad290" r34-kernel-id.txt | grep -qx 2 || { echo "::error::双镜像的 loader 必须是设备验证过的 v7"; exit 1; }
+          grep -c "VERDICT: the ramdisk entry is R13..R33 VERBATIM" r34-kernel-id.txt | grep -qx 1 || { echo "::error::日常镜像的小卷必须仍是 R13 谱系（本轮控制组）"; exit 1; }
+          grep -c "VERDICT: the ramdisk entry is the R34 GL-test volume" r34-kernel-id.txt | grep -qx 1 || { echo "::error::GPU 镜像的小卷必须是 R34 GL 卷"; exit 1; }
+          grep -c "libOSMesa.8.dylib=2" r34-kernel-id.txt | grep -qx 1 || { echo "::error::GL 卷的名字表指纹缺 libOSMesa.8.dylib"; exit 1; }
+          test "$(grep 'cmdline       :' r34-kernel-id.txt | grep -c 'gpu=1')" = 1 || { echo "::error::必须恰好 GPU 镜像带 gpu=1"; exit 1; }
+          test "$(grep 'cmdline       :' r34-kernel-id.txt | grep -c 'adreno_keep=1')" = 1 || { echo "::error::必须恰好 GPU 镜像带 adreno_keep=1（R33 的 resident 开关原样）"; exit 1; }
+          echo "（cmdline 检查过：本轮零 token 改动——R34 的唯一变量就是卷）"
+          ls -lh "$REL"
+          df -h .
+
+      # ---------------------------------------------------------------
+      - name: "⑦/⑦ SHA256 + README + 发布（R34：I 判读树（GL 测试轮：freedreno 三角上屏 = GL 全栈首判）+ R33 常驻入账，只有 boot 资产）"
+        run: |
+          set -eu
+          cd "$REL"
+          : > SHA256SUMS
+          for f in raphael-xnu-r34-flash.img raphael-xnu-r34-gpu-flash.img \
+                   raphael-r34-flashboot.apfs r34-md1-root.apfs; do
+            sha256sum "$f" >> SHA256SUMS
+          done
+          REPO="${{ github.repository }}"
+          TAG="${{ inputs.release_tag }}"
+          cat > README.txt <<EOF
+          ============================================================
+           R34 · 纯血 hackios SpringBoard 交付包（raphael / K20 Pro）
+           —— GL 测试轮：Mesa freedreno over RedwoodGPU
+              （内核 = R33 字节 verbatim；唯一变量 = md1 卷的 GL 增量）
+          ============================================================
+          ⚠️⚠️⚠️ 启动卷只 stage 一个文件：raphael-r34-flashboot.apfs ⚠️⚠️⚠️
+            （R14 事故纪律不变：md1 备份不要 stage，flash.img 已内嵌全量小卷）
+          主镜像   : raphael-xnu-r34-flash.img（= r33 逐字节原样：本轮控制组）
+          GPU 镜像 : raphael-xnu-r34-gpu-flash.img（gpu=1 adreno=22
+                      adreno_pause=0 adreno_watch=0 adreno_keep=1 =
+                      R33 的 token 组原样；唯一变量 = md1 卷：
+                      + lib/libOSMesa.8.dylib（Mesa 25.0.7，softpipe+freedreno）
+                      + bin/gl_test + bin/u2f_test
+                      etc/rc.jobs → rc.jobs.gltest（rwtouch wait 14; gl_test 8）
+                      其余 79 文件 = R13 谱系逐字节原样）
+          启动卷   : raphael-r34-flashboot.apfs（= r33 官方字节，原样转发）
+          小卷 md1 : r34-md1-root.apfs（本轮新卷；逐文件清单见
+                      r34-volume-manifest.json）
+          【R33 的设备判决（用户 logdump 入账，本轮的地基）】
+            H1 成立：steps 1..22 全过，"THE GPU STAYS ON for the system
+            to draw with: the service RedwoodGPU"，GPU 585 MHz 常驻，
+            温度/频率在案；SpringBoard 软件渲染（GL 用户态缺席 =
+            injector 的 access("/redwood/lib/libredwood-gl.dylib") 门
+            挡住）——这正是本轮要验的东西的前置。
+          【R34 改了什么（以及刻意不改什么）】
+            内核：一字节未动（R33 的 420f4b71… verbatim；CI 用同一棵
+            树 + 钉死的工具链重建出同一份字节 = 可复现性门禁）。
+            cmdline：一个 token 未动（R33 的组原样）。
+            卷：userland/build.sh GL=test 的产出，用"提取 R13 卷 +
+            mkapfs 重建"的方式注入（mkjobs.py --root-volume 需要
+            rootfs.slt——只有装机者的机器上有；R13 卷里已经烤好的
+            job 列表原样保留）。
+            gl_test 是什么：userland/src/gl_test.c——一个三角，经
+            OSMesaCreateContextAttribs → Mesa gallium → freedreno
+            （FD640）→ 内核 RedwoodGPU 服务（tools/mesa/redwood-drm
+            顶替 libdrm 走 IOKit）提交，读回像素，放到面板上。窗口
+            服务器本轮刻意保持软件渲染（GL=1 是下一轮）——单变量纪律。
+          【本轮判读树（I：GL 全栈首判）】
+            刷 GPU 镜像，等 boot 走完（应与 R33 全同：steps 1..22 +
+            STAYS-ON 行 + UI 软件渲染），再等 demo job 的两行：
+              rwtouch wait 14（锁屏稳定后）
+              gl_test 8（画三角 + 上屏 8 秒）
+            自检（任一不满足 ⇒ 本票作废）：
+              P0  R33 的全相位行照旧（step 12/19/21/22 + STAYS-ON）
+              P1  系统照常起（SpringBoard 软件渲染，触摸活着）
+            判决分支：
+              I1  "gl_test: <vendor>; freedreno …; OpenGL ES 3.x" +
+                  "gl_test: N x N drawn in X ms, read back in Y ms;
+                  error 0x0" + 像素行 + "the picture is on the panel"
+                  ⇒ GL 全栈（Mesa→freedreno→RedwoodGPU）真机打通，
+                  面板上看到 8 秒三角 ⇒ 下一轮 GL=1（窗口服务器
+                  GLES，UI 真加速）
+              I2  renderer 报 softpipe 而不是 freedreno ⇒ 栈活了、
+                  画是 CPU 画的：freedreno-KMD 没接到 RedwoodGPU
+                  （查 redwood-drm 的服务连接/环境变量 OSMESA_SOFTWARE）
+              I3  "gl_test: no OpenGL ES context" / "a shader does
+                  not compile" / "the program does not link" ⇒
+                  按码分诊（上下文创建 / ir3 编译器 / 链接）
+              I4  "gl_test: no GPU service in this kernel to put the
+                  picture on the panel with" ⇒ 画已成、上屏路径缺
+                  （RedwoodImage 服务）——GL 本身已判活
+              I5  gl_test 挂死 / 风暴 / 系统死 ⇒ 单文件回滚：刷回
+                  r33 GPU 镜像（本轮卷的 GL 增量随镜像整体回退）
+          【logdump 读取纪律（P3：不变）】
+            分区每次整写都以头行开始；拉取后按头行截断；自有区判读
+            双保险（写边界 + 指针计数）。设备端一键：sh run_ios.sh
+            flash r34 gpu -w 180（或 logdump）。
+          【离线复验】
+            python3 tools/r34-kernel-id.py <image> --expect-volume-sha <r34-md1 sha>
+            （代数 grep：kernel entry is R34 ×2；loader v7 ×2；日常镜像
+             ramdisk = R13..R33 VERBATIM ×1；GPU 镜像 = R34 GL-test
+             volume ×1；cmdline 数据行 gpu=1 ×1、adreno_keep=1 ×1）
+          【工具链审计】
+            toolchain-versions.txt：每层编译器/构建件完整版本号 +
+            具名 tag（R28i 纪律，R34 原样继承；缓存键全新）。
+          【手机端（Termux / bootloader）】
+            fastboot boot  raphael-xnu-r34-gpu-flash.img   # R34 轮（GL 卷）
+            fastboot oem  ramdisk
+            fastboot stage raphael-r34-flashboot.apfs
+            fastboot oem  run      # 等系统起完（~1 分钟）再等 gl_test 的
+                                   # 三角 + 判决行（rwtouch wait 14 之后）
+            # 设备端一键：sh run_ios.sh flash r34 gpu -w 180
+            # 控制组：主镜像 = r33 逐字节原样，无需重刷
+          直链：
+            https://github.com/\${REPO}/releases/download/\${TAG}/raphael-xnu-r34-gpu-flash.img
+            https://github.com/\${REPO}/releases/download/\${TAG}/raphael-xnu-r34-flash.img
+            https://github.com/\${REPO}/releases/download/\${TAG}/raphael-r34-flashboot.apfs
+            https://github.com/\${REPO}/releases/download/\${TAG}/r34-md1-root.apfs
+            https://github.com/\${REPO}/releases/download/\${TAG}/r34-volume-manifest.json
+            https://github.com/\${REPO}/releases/download/\${TAG}/SHA256SUMS
+          ⚠️ userdata 上的 iOS 卷是唯一存货：绝不要让 MIUI 开机
+             （Android 会重格回 f2fs，iOS 卷即毁）。
+          ⚠️ 每次开机都要重复 boot/oem ramdisk/stage/oem run 四步。
+          ⚠️ 含 Apple 版权内容，仅个人研究；下载完成后请尽快删除本 Release。
+          EOF
+
+      - name: "⑦b/⑦ 发布 Release（直链交付，r34-springboard）"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: "R34 · 纯血 hackios SpringBoard · GL 测试轮（Mesa freedreno over RedwoodGPU：gl_test 三角上屏；内核 = R33 字节 verbatim，唯一变量 = md1 卷 GL 增量）"
+          body: |
+            raphael (K20 Pro) R34 交付包：**GL 测试轮**。
+
+            R33 设备判决（用户 logdump 入账）：H1 成立——steps 1..22
+            全过，"THE GPU STAYS ON for the system to draw with: the
+            service RedwoodGPU"，GPU 常驻（585 MHz），系统软件渲染。
+
+            本轮：GL 用户态首上机。userland/build.sh GL=test 的产出
+            进 md1 卷——libOSMesa.8.dylib（Mesa 25.0.7，softpipe +
+            freedreno）、gl_test、u2f_test，etc/rc.jobs 换成
+            rc.jobs.gltest。gl_test 经 OSMesa→freedreno(FD640)→内核
+            RedwoodGPU 服务画一个三角，读回像素并放到面板上 8 秒。
+            内核一字节未动（420f4b71… verbatim + CI 字节复现门禁），
+            cmdline 一个 token 未动——唯一变量 = 卷。
+
+            判读树 I：I1 = freedreno 三角上屏 ⇒ GL 全栈真机打通
+            （下一轮 GL=1，窗口服务器 GLES = UI 真加速）；I2 =
+            renderer 报 softpipe ⇒ freedreno-KMD 未接到服务；I3 =
+            编译/链接失败按码分诊；I4 = 画成但无上屏服务；
+            I5 = 挂/死 ⇒ 刷回 r33 GPU 镜像（单文件回滚）。
+
+            手术：底板 = r33 release（内核条目 R33 420f4b71…），
+            日常镜像逐字节原样，GPU 镜像只换 ramdisk 条目；装载器
+            v7 / cmdline / DTB = r33 原字节（SHA 硬校验）。
+
+            ⚠️ 含 Apple 版权内容，仅供个人研究；下载完成后请尽快删除本 Release。
+          fail_on_unmatched_files: true
+          files: |
+            release/raphael-xnu-r34-flash.img
+            release/raphael-xnu-r34-gpu-flash.img
+            release/raphael-r34-flashboot.apfs
+            release/r34-md1-root.apfs
+            release/r34-volume-manifest.json
+            release/SHA256SUMS
+            release/README.txt
+            release/toolchain-versions.txt
+      - name: "直链汇总（跑完看这里，复制即用）"
+        run: |
+          set -eu
+          echo "════════════ 全部下载直链 ════════════"
+          for f in "$REL"/raphael-xnu-r34-flash.img "$REL"/raphael-xnu-r34-gpu-flash.img \
+                   "$REL"/raphael-r34-flashboot.apfs "$REL"/r34-md1-root.apfs \
+                   "$REL"/r34-volume-manifest.json "$REL"/SHA256SUMS "$REL"/README.txt \
+                   "$REL"/toolchain-versions.txt; do
+            echo "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/$(basename "$f")"
+          done
