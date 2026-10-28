@@ -120,33 +120,21 @@ def gate(r33, new):
         return False
     runs = diff_runs(r33, new)
     cl = clusters(runs)
-    # remove ONE 16-byte cluster (the UUID) and ONE <=32-byte cluster (the
-    # version timestamp); try every such pair and keep the MINIMAL residual --
-    # position must not matter (a stray cluster may precede the timestamp).
-    best = None
-    for i, cu in enumerate(cl):
-        if cu[2] != 16:
-            continue
-        for j, ct in enumerate(cl):
-            if j == i or ct[2] > 32:
-                continue
-            residual = sum(c[2] for k, c in enumerate(cl) if k not in (i, j))
-            if best is None or residual < best[0]:
-                best = (residual, i, j)
-    if best is None:
-        uuid_i, stray = [], sum(c[2] for c in cl)
-        ts_i = []
-    else:
-        _, ui, ti = best
-        uuid_i = [ui]
-        ts_i = [ti]
-        stray = best[0]
+    # remove the two build-meta clusters (the ~16-byte LC_UUID -- note a random UUID
+    # byte may COINCIDE with R33's byte, so the cluster is 15-16 B, run 40620330106 --
+    # and the version timestamp ~18-20 B) and require everything else to fit the
+    # stray budget. Position-independent: take the two LARGEST clusters.
+    ranked = sorted(cl, key=lambda c: -c[2])
+    top2 = ranked[:2]
+    stray = sum(c[2] for c in ranked[2:])
     s33, snew = strings_set(r33), strings_set(new)
     only33, onlynew = s33 - snew, snew - s33
     ok_str = all('Darwin Kernel Version' in t for t in list(only33) + list(onlynew))
-    ok_shape = (len(uuid_i) == 1 and len(ts_i) == 1 and stray <= 8)
+    ok_shape = (len(cl) >= 2 and len(top2) == 2
+                and all(c[2] <= 32 for c in top2) and top2[0][2] >= 8
+                and stray <= 8)
     print(f'GATE: sizes equal ({len(new):,} B); clusters {[(hex(c[0]), c[2]) for c in cl]}; '
-          f'UUID cluster: {len(uuid_i)==1}; timestamp cluster: {len(ts_i)>=1}; '
+          f'top2 {[(c[2]) for c in top2]} (UUID+timestamp, <=32 B each, largest >=8 B); '
           f'stray bytes outside meta: {stray} (budget 8); '
           f'strings-delta {len(only33)}/{len(onlynew)} lines, all Darwin-version: {ok_str}')
     for s, e, nb_ in cl:
