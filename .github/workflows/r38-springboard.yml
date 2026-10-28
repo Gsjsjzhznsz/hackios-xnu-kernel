@@ -10,6 +10,10 @@ on:
         description: "Release tag（直链的一部分）"
         required: true
         default: "r38-springboard"
+      wifi_stack:
+        description: "WiFi 对象进内核（诊断开关：0 = 不带 ath10k.o 构建，二分 check_all_exports 触发方）"
+        required: false
+        default: "1"
       base_image:
         description: "r37 日常镜像直链（R38 日常镜像 = 它逐字节原样：本轮的控制组）"
         required: false
@@ -203,11 +207,16 @@ jobs:
           # WiFi 对象：mk-ath10k.py 钉版下载（Linux 7.0.14 / FreeBSD 15.1 / wpa_s 2.11 / mbedTLS 3.6.7，
           # 各带 SHA-256 硬校验）→ 编 xnu-deps/build/ath10k/out/ath10k.o → WIFI_OBJECT 进内核链接。
           export CC="$XNU_HOST_CLANG"
-          python3 tools/mk-ath10k.py
-          A=xnu-deps/build/ath10k/out/ath10k.o
-          test -s "$A" || { echo "::error::ath10k.o 没有产出"; exit 1; }
-          echo "→ ath10k.o: $(sha256sum "$A" | cut -d' ' -f1) ($(stat -c %s "$A") B)"
-          WIFI_OBJECT="$PWD/$A" ./xnu-build.sh -j4 -k BUILD_DSYM=0 \
+          if [ "${{ inputs.wifi_stack }}" = "1" ]; then
+            python3 tools/mk-ath10k.py
+            A=xnu-deps/build/ath10k/out/ath10k.o
+            test -s "$A" || { echo "::error::ath10k.o 没有产出"; exit 1; }
+            echo "→ ath10k.o: $(sha256sum "$A" | cut -d' ' -f1) ($(stat -c %s "$A") B)"
+            export WIFI_OBJECT="$PWD/$A"
+          else
+            echo "→ 诊断轮：不带 ath10k.o（wifi_stack=0）"
+          fi
+          ./xnu-build.sh -j4 -k BUILD_DSYM=0 \
             || echo "（make 退出码 $?——上游文档：链接后的检查，内核若已产出即成功）"
           K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
           ls -la "$K" || { echo "::error::内核没有产出"; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
