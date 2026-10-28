@@ -6064,7 +6064,7 @@ redwood_adreno_init(void)
 
 /* ---- R38: the display round -- SM8150 scanout: compose into reserved off-screen memory, then latch VIG0 at TE ---
  * (ported from the reference repo's bsd/dev/hakios.adreno.c, the phone-proven form; this tree's
- * names elsewhere.  The GCC_DISP_AHB_CBCR/DISPCC_*/INTF_* macros this block reads for its probe
+ * names elsewhere.  The GCC_DISP_AHB_CBCR, DISPCC_xxx and INTF_xxx macros this block reads for its probe
  * prints are this file's own, above; the offsets the display round itself drives are the DPU
  * command-mode ones the reference validated on this phone, including gcc 0xb00c -- SM8150's
  * disp_ahb clock gate, which this file's older display_probe names 0x27004 for the video INTF.) */
