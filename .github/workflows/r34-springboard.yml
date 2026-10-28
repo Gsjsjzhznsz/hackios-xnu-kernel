@@ -231,6 +231,9 @@ jobs:
             echo "✅ 可复现性证明成立：同一棵树、同一个钉死的工具链，R33 的字节逐位重现（420f4b71…）"
           else
             echo "::error::重建内核 sha $KSHA != R33 发布字节 420f4b71…——环境漂移或内核源被误改；先查清，不许带疑点上机"
+            # 现场法证：R33 的内核就在 sha 钉死的底板镜像里，当场逐字节比对——
+            # 差异落在哪（UUID/签名区？字符串？代码区？）、差异多少，日志即答案。
+            python3 tools/r34_shadiff.py base/raphael-xnu-r33-gpu-flash.img "$K" || true
             exit 1
           fi
           echo "→ ccache 收官统计："; ccache -s 2>/dev/null | head -8 || true
