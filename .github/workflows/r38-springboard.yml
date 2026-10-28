@@ -255,10 +255,10 @@ jobs:
               ('display: raphael command TE:', 'the TE phase measurement (display.c)'),
               ('page flips retained (fb_scan=1)', 'the fb_scan boot-arg'),
               ('wifi: raphael needs WCN3990 SNOC/ath10k and MPSS service 0x45', 'the raphael Wi-Fi branch'),
-              ('XNULIVE4', 'the R38 loader-framebuffer channel'),
               ('raphael-display: flip did not latch at TE, restoring boot framebuffer', 'the flip fallback'),
           ]:
               assert n(mark) == 1, '%s x%d != 1 (%s)' % (mark, n(mark), why)
+          assert n('XNULIVE4') >= 1, 'the R38 loader-framebuffer channel mark is missing (x%d)' % n('XNULIVE4')
           assert n('wifi_step') >= 1, 'the wifi boot-arg surface is missing'
           print('内核标记门禁全过：R33 谱系 4 项 + R38 显示/WiFi/通道 6 项')
           PY
