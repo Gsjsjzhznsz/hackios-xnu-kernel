@@ -1,4 +1,4 @@
-name: R35 · SpringBoard 一键流水线（Metal 轮：RedwoodMetal.bundle 进卷 + IOAcceleratorES 发现链 + cmdline 追加 metal=1 + libredwood-gl.dylib 注入 backboardd；内核 = R33 字节 verbatim（字节复现门禁）；底板 = r34 release · I1 已由用户 logdump 坐实（freedreno FD640 三角上屏）之后，Metal 发现链 + 系统级 GL 通道的首上机轮）
+name: R35 · SpringBoard 一键流水线（Metal 轮：RedwoodMetal.bundle 进卷 + IOAcceleratorES 发现链 + cmdline 追加 metal=1 + libredwood-gl.dylib 注入 backboardd；内核 = R33 字节 verbatim（shadiff 内容等价门禁）；底板 = r34 release · I1 已由用户 logdump 坐实（freedreno FD640 三角上屏）之后，Metal 发现链 + 系统级 GL 通道的首上机轮）
 on:
   workflow_dispatch:
     inputs:
@@ -166,10 +166,12 @@ jobs:
           key: r35-ccache-${{ github.run_id }}
 
       # ---------------------------------------------------------------
-      # ③ 内核构建：R35 改的是卷和一个 cmdline token，不是内核——本轮的构建是一次可复现性
-      # 证明：同一棵树、同一个钉死的工具链，必须重新产出 R33 的字节（420f4b71…）。差一个
-      # 字节都是环境漂移或误改内核，必须查清，不许带着疑点上机。
-      - name: "③/⑦ 内核源码构建 + R33 字节复现门禁（theos v19.0.0-L2 + xnu/apply.sh + xnu-deps + clean ccache + make；sha 必须 == 420f4b71…）"
+      # ③ 内核构建：R35 改的是卷和一个 cmdline token，不是内核——本轮的构建是一次内容等价
+      # 证明：同一棵树、同一个钉死的工具链，重建内核必须与 R33 发布字节内容等价（shadiff
+      # 门禁，R34 run 40621589211 同法通过）。精确 sha 门禁天生不可满足——构建把墙钟写进
+      # 版本串、cctools ld 假签名随机 LC_UUID（R34 run 40607732684 法证），差一个代码字节
+      # 都是环境漂移或误改内核，必须查清，不许带着疑点上机。
+      - name: "③/⑦ 内核源码构建 + R33 内容等价门禁（theos v19.0.0-L2 + xnu/apply.sh + xnu-deps + clean ccache + make；shadiff --gate 参照 = r34 底板内核条目 = 420f4b71…）"
         run: |
           set -eu
           if [ ! -x "$THEOS/toolchain/linux/iphone/bin/ld64" ]; then
@@ -201,7 +203,11 @@ jobs:
           : > "$XNU_WRAPPER_LOG"
           ccache -C >/dev/null 2>&1 || true
           ccache -M 2G >/dev/null 2>&1 || true
-          ./xnu-build.sh -j4 -k || echo "（make 退出码 $?——上游文档：链接后的检查，内核若已产出即成功）"
+          # dSYM 在这条流水线里是纯开销且脆弱（R34 run 40560646210：DSYMUTIL 解析为空 →
+          # bash 把 --minimize 当命令 → Error 127；R35 run 40670171127 抄丢旗标后同伤复发）。
+          # 正解 = 上游正规开关 BUILD_DSYM=0（MakeInc.def:298 默认 1；=0 时 dSYM 规则走
+          # mkdir+touch 分支，DSYMUTIL 根本不被查询）。内核字节 = 编译+链接+strip，门禁证明力不变。
+          ./xnu-build.sh -j4 -k BUILD_DSYM=0 || echo "（make 退出码 $?——上游文档：链接后的检查，内核若已产出即成功）"
           K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
           ls -la "$K" || { echo "::error::内核没有产出"; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
           # --- R35 门禁一：R33 标记快检（树没被误改的第一道网）
@@ -211,15 +217,19 @@ jobs:
           echo "    R33 keep switch = $(strings -a "$K" | grep -cF 'THE GPU STAYS ON for the system to draw with')（应 1）"
           echo "    R33 SCMDMP begin = $(strings -a "$K" | grep -cF 'SCMDMP: R33 begins')（应 1）"
           echo "    R32/R31 旧戳（应 0）= $(strings -a "$K" | grep -cE 'R32: the kernel generation line|R31: the kernel generation line')（应 0）"
-          # --- R35 门禁二：字节复现——R33 的树必须产出 R33 的字节
+          # --- R35 门禁二：内容等价——R33 的源必须产出 R33 的代码字节。
+          # 精确 sha 门禁天生不可满足（墙钟版本串 + 随机 LC_UUID，R34 法证：重建 vs R33 =
+          # 34 字节全落在 UUID+时间戳两个 meta 区）。正解 = shadiff 内容等价（R34 run
+          # 40621589211 通过）：尺寸相等 + 非回收 + 差异只在 <=2 个 build-meta 簇
+          # （UUID>=8B / 时间戳<=32B）+ 残留<=8B + 字符串差全是 Darwin 版本行。
+          # 参照 = r34 底板的内核条目（= R33 发布字节 420f4b71…；② 的 r34-kernel-id
+          # 判读已断言底板内核 = R33 verbatim，本地对真底板实测逐位相同）。
           KSHA=$(sha256sum "$K" | cut -d' ' -f1)
           echo "rebuilt kernel sha256: $KSHA" | tee -a "$REL/toolchain-versions.txt"
-          if [ "$KSHA" = "420f4b717b5dd0fe2f0b236bdbf2c686da6a2dd0169b3c9985de8e600e1e3560" ]; then
-            echo "✅ 可复现性证明成立：同一棵树、同一个钉死的工具链，R33 的字节逐位重现（420f4b71…）"
-          else
-            echo "::error::重建内核 sha $KSHA != R33 发布字节 420f4b71…——环境漂移或内核源被误改；先查清，不许带疑点上机"
+          python3 tools/r34_shadiff.py --gate base/raphael-xnu-r34-gpu-flash.img "$K" || {
+            echo "::error::重建内核与 R33（420f4b71…）不是内容等价——见上方 GATE 法证输出；先查清，不许带疑点上机"
             exit 1
-          fi
+          }
           echo "→ ccache 收官统计："; ccache -s 2>/dev/null | head -8 || true
 
       - name: "诊断产物（wrapper argv 日志，失败也上传）"
@@ -355,7 +365,8 @@ jobs:
             这正是本轮要验的东西的前置。
           【R35 改了什么（以及刻意不改什么）】
             内核：一字节未动（R33 的 420f4b71… verbatim；CI 用同一棵
-            树 + 钉死的工具链重建出同一份字节 = 可复现性门禁）。
+            树 + 钉死的工具链重建，shadiff 内容等价门禁——差异只许
+            落在 UUID/时间戳两个 build-meta 簇，代码区零差异）。
             cmdline：恰好一个新 token（metal=1 = IOAcceleratorES 服务
             被允许接受两个发现属性；没有它 metal_props 的写入被内核
             拒绝，发现链无从谈起）。
@@ -457,7 +468,7 @@ jobs:
             metal_drv_test --sweep（全类全方法）；② GL=1 的
             libredwood-gl.dylib 进卷并注入 backboardd（CoreAnimation
             经 EAGL→Mesa→freedreno→A640 画 UI 的通道）；③ 内核一字节
-            未动（420f4b71… verbatim + CI 字节复现门禁），cmdline 恰好
+            未动（420f4b71… verbatim + CI shadiff 内容等价门禁），cmdline 恰好
             一个新 token——单变量纪律。
 
             判读树 J：J1 = 发现链五步全绿 + sweep 计数 ⇒ Metal 真机
