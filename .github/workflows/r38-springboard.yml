@@ -220,6 +220,13 @@ jobs:
             || echo "（make 退出码 $?——上游文档：链接后的检查，内核若已产出即成功）"
           K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
           ls -la "$K" || { echo "::error::内核没有产出"; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
+          # 诊断留存：无论门禁成败，内核本体与符号清单先落 release 目录（r38-diag 上传）
+          KU=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped
+          cp -f "$K" "$REL/r38-kernel-stripped.bin" || true
+          cp -f "$KU" "$REL/r38-kernel-unstripped.bin" || true
+          AS=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/config/allsymbols
+          [ -f "$AS" ] && cp -f "$AS" "$REL/r38-allsymbols.txt" || true
+          ls -la "$REL" | head -12
           # --- R38 门禁一：R33 谱系标记（一代人的记号不丢）
           echo "→ 诊断：R33 谱系标记（R38 在 R33 之上生长，记号应与 R33 发布件全同）"
           echo "    R33 generation line = $(strings -a "$K" | grep -cF 'R33: the kernel generation line')（应 2）"
@@ -267,6 +274,9 @@ jobs:
           path: |
             hackios/xnu-clang-args.log
             hackios/xnu-deps/exporthdrs.log
+            release/r38-kernel-stripped.bin
+            release/r38-kernel-unstripped.bin
+            release/r38-allsymbols.txt
           if-no-files-found: ignore
 
       # ---------------------------------------------------------------
