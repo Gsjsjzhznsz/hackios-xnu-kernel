@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
 """r34_shadiff.py -- byte-level forensics for the R34 kernel reproduction gate.
 
-When the rebuild's sha256 does not equal R33's published bytes (420f4b71...),
-the discipline says "no flashing on suspicion": the run must stop AND say why.
-This tool extracts R33's kernel entry from a pinned r33 base flash image and
-compares it byte-for-byte with the freshly built kernel, so the CI log carries
-the answer with it:
+The build embeds its wall-clock time in the kernel version string and cctools
+ld stamps a random LC_UUID, so the sha256 is EXPECTED to change every build
+(R32 44b5a2b9, R33 420f4b71 -- each round a fresh sha by design; the R33 gate
+enforced "new source => new sha", an anti-recycling blacklist, NOT byte
+reproduction). What must hold for R34 (kernel = R33's source verbatim) is
+CONTENT EQUIVALENCE: identical size, identical markers, and byte differences
+confined to the build-meta regions (UUID + version timestamp).
 
-  * sizes and sha256 of both
-  * the differing byte runs (contiguous regions, hex context around each)
-  * the strings-view delta (>=10 printable chars) -- timestamps, paths and
-    embedded identifiers live there
+modes:
+  default     print the forensics (sizes/shas, differing runs with hex
+              context, strings delta)
+  --gate      CONTENT-EQUIVALENCE verdict for the CI gate. Exit 0 iff
+                * sizes equal
+                * NOT byte-identical (identical = recycled binary -> fail)
+                * differing runs cluster into <= 2 regions, <= 64 bytes total
+                * every strings-delta line is a Darwin-version line
+              exit 1 otherwise, with the evidence printed.
 
-usage: r34_shadiff.py <r33-base-flash.img> <rebuilt-kernel-binary>
+usage: r34_shadiff.py [--gate] <r33-base-flash.img> <rebuilt-kernel-binary>
 """
 import gzip, hashlib, struct, sys
 
@@ -82,14 +89,77 @@ def strings_set(blob, minlen=10):
     return out
 
 
+def clusters(runs, gap=256):
+    """Merge runs whose gap is small -> [(start, end, nbytes)]."""
+    out = []
+    for s, e in runs:
+        if out and s - out[-1][1] <= gap:
+            out[-1] = (out[-1][0], e, out[-1][2] + (e - s))
+        else:
+            out.append((s, e, e - s))
+    return out
+
+
+def gate(r33, new):
+    """Content-equivalence verdict. True iff only build-meta regions differ."""
+    if len(r33) != len(new):
+        print(f'GATE FAIL: size {len(new):,} != R33 {len(r33):,}')
+        return False
+    if r33 == new:
+        print('GATE FAIL: byte-identical to the R33 base kernel -- a recycled '
+              'binary, not a fresh build (the build timestamp + UUID make this '
+              'impossible for a genuine rebuild)')
+        return False
+    runs = diff_runs(r33, new)
+    total = sum(e - s for s, e in runs)
+    cl = clusters(runs)
+    # exactly two meta edits: the 16-byte LC_UUID and the version timestamp
+    nb = sorted(c[2] for c in cl)
+    ok_runs = (len(cl) == 2 and nb[0] == 16 and nb[1] <= 32 and total <= 48)
+    s33, snew = strings_set(r33), strings_set(new)
+    only33, onlynew = s33 - snew, snew - s33
+    ok_str = all('Darwin Kernel Version' in t for t in list(only33) + list(onlynew))
+    print(f'GATE: sizes equal ({len(new):,} B); differing runs {len(runs)} '
+          f'in {len(cl)} cluster(s), bytes/cluster {nb}, {total} B total; '
+          f'strings-delta {len(only33)}/{len(onlynew)} lines, all Darwin-version: {ok_str}')
+    for s, e, nb_ in cl:
+        print(f'  cluster @0x{s:08x}..0x{e:08x} (span {e - s} B, {nb_} differing bytes)')
+    if not (ok_runs and ok_str):
+        print('GATE FAIL: differences extend beyond the build-meta regions '
+              '(UUID + version timestamp) -- treat as environment/source drift')
+        return False
+    print('GATE PASS: content-equivalent to R33 -- every differing byte sits in '
+          'the version timestamp / LC_UUID meta regions, code bytes identical')
+    return True
+
+
 def main():
-    if len(sys.argv) != 3:
+    argv = sys.argv[1:]
+    gate_mode = '--gate' in argv
+    if gate_mode:
+        argv.remove('--gate')
+    if len(argv) != 2:
         raise SystemExit(__doc__)
-    r33 = kernel_of_bootimg(sys.argv[1])
-    new = open(sys.argv[2], 'rb').read()
+    r33 = kernel_of_bootimg(argv[0])
+    new = open(argv[1], 'rb').read()
     print('=' * 96)
-    print(f'R33 kernel (from {sys.argv[1]}): {len(r33):,} B  sha256 {hashlib.sha256(r33).hexdigest()}')
-    print(f'rebuilt kernel        ({sys.argv[2]}): {len(new):,} B  sha256 {hashlib.sha256(new).hexdigest()}')
+    print(f'R33 kernel (from {argv[0]}): {len(r33):,} B  sha256 {hashlib.sha256(r33).hexdigest()}')
+    print(f'rebuilt kernel        ({argv[1]}): {len(new):,} B  sha256 {hashlib.sha256(new).hexdigest()}')
+    if gate_mode:
+        ok = gate(r33, new)
+        if not ok:
+            # fall through to the full forensics so the log carries the evidence
+            runs = diff_runs(r33, new)
+            for s, e in runs[:16]:
+                print(f'  run @0x{s:08x}..0x{e:08x} ({e - s:,} B)')
+                print(f'    R33: {hexctx(r33, s)}')
+                print(f'    new: {hexctx(new, s)}')
+            s33, snew = strings_set(r33), strings_set(new)
+            for t in sorted(s33 - snew)[:20]:
+                print(f'  < {t[:150]}')
+            for t in sorted(snew - s33)[:20]:
+                print(f'  > {t[:150]}')
+        sys.exit(0 if ok else 1)
     if r33 == new:
         print('IDENTICAL -- the gate disagreement is not in the kernel payload itself')
         return

@@ -224,18 +224,20 @@ jobs:
           echo "    R33 keep switch = $(strings -a "$K" | grep -cF 'THE GPU STAYS ON for the system to draw with')（应 1）"
           echo "    R33 SCMDMP begin = $(strings -a "$K" | grep -cF 'SCMDMP: R33 begins')（应 1）"
           echo "    R32/R31 旧戳（应 0）= $(strings -a "$K" | grep -cE 'R32: the kernel generation line|R31: the kernel generation line')（应 0）"
-          # --- R34 门禁二：字节复现——R33 的树必须产出 R33 的字节
+          # --- R34 门禁二：内容等价——R33 的源必须产出 R33 的代码字节。
+          # 本构建把墙钟时刻写进内核版本串、cctools ld 假签名给随机 LC_UUID，内核
+          # sha256 天生每轮不同（R32 44b5a2b9、R33 420f4b71——各轮各自的新 sha 是
+          # 设计使然；R33 的门禁是"新源码必须给出新 sha"反回收黑名单，不是字节复现）。
+          # run 40607732684 的法证实证：重建内核 vs R33 = 34 字节、11 处、全部落在
+          # 版本时间戳与 0x11d0 的 UUID 两个 meta 区，代码区零差异。故门禁 = shadiff
+          # 内容等价判定（尺寸相等 + 非回收 + 差异只在 meta 区 + 字符串差全是版本行），
+          # 并保留 R33 代的反回收语义（逐字节相同 = 回收，同样拒收）。
+          python3 tools/r34_shadiff.py --gate base/raphael-xnu-r33-gpu-flash.img "$K" || {
+            echo "::error::重建内核与 R33 不是内容等价——见上方 GATE 法证输出；先查清，不许带疑点上机"
+            exit 1
+          }
           KSHA=$(sha256sum "$K" | cut -d' ' -f1)
           echo "rebuilt kernel sha256: $KSHA" | tee -a "$REL/toolchain-versions.txt"
-          if [ "$KSHA" = "420f4b717b5dd0fe2f0b236bdbf2c686da6a2dd0169b3c9985de8e600e1e3560" ]; then
-            echo "✅ 可复现性证明成立：同一棵树、同一个钉死的工具链，R33 的字节逐位重现（420f4b71…）"
-          else
-            echo "::error::重建内核 sha $KSHA != R33 发布字节 420f4b71…——环境漂移或内核源被误改；先查清，不许带疑点上机"
-            # 现场法证：R33 的内核就在 sha 钉死的底板镜像里，当场逐字节比对——
-            # 差异落在哪（UUID/签名区？字符串？代码区？）、差异多少，日志即答案。
-            python3 tools/r34_shadiff.py base/raphael-xnu-r33-gpu-flash.img "$K" || true
-            exit 1
-          fi
           echo "→ ccache 收官统计："; ccache -s 2>/dev/null | head -8 || true
 
       - name: "诊断产物（wrapper argv 日志，失败也上传）"
