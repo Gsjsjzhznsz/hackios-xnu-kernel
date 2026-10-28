@@ -13,8 +13,26 @@
 #include <sys/systm.h>
 #include <sys/uio.h>
 #include <pexpert/pexpert.h>
+#include <pexpert/device_tree.h>
 
 #define TOUCH_QUEUE     512             /* records; a power of two */
+
+/*
+ * Which phone this is. The loader writes the platform's name into /chosen as "hackios,platform"
+ * (xnuloader/loader.c); the drivers of the two phones this tree runs on branch on it -- the POCO
+ * X5 Pro ("redwood") and the Mi 9 / K20 Pro ("raphael").
+ */
+int
+redwood_is_raphael(void)
+{
+	DTEntry chosen;
+	const void *name;
+	unsigned size;
+
+	return SecureDTLookupEntry(NULL, "/chosen", &chosen) == kSuccess &&
+	       SecureDTGetProperty(chosen, "hackios,platform", &name, &size) == kSuccess &&
+	       size == sizeof("raphael") && memcmp(name, "raphael", sizeof("raphael")) == 0;
+}
 
 /*
  * Boot-arg touch_lat=1: for measuring how long a touch takes to reach the panel, a line for every

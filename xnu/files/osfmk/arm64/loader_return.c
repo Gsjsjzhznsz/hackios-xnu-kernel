@@ -58,6 +58,7 @@ extern void redwood_camera_quiesce(void);
 extern void redwood_mic_quiesce(void);
 extern void redwood_ufs_quiesce(void);
 extern void redwood_var_save_on_return(void);   /* bsd/dev/redwood_ufs.c: the data volume into the flash */
+extern void raphael_display_quiesce(void);      /* bsd/dev/redwood_adreno.c: the scanout back into the boot framebuffer */
 void loader_checkpoint(uint64_t n);
 
 /* Also referenced from the early exception vector in start.s. */
@@ -206,6 +207,8 @@ struct loader_live {
 	uint64_t magic3;                /* "XNULIVE3" (R26): the kernel can ask for the log on the storage */
 	volatile uint64_t flush_seq;    /* the kernel's to write: a call that can reset the phone is coming */
 	volatile uint64_t flush_ack;    /* the loader's to write: it is done */
+	uint64_t magic4;                /* "XNULIVE4" (R38): what follows is there */
+	const uint64_t *framebuffer;    /* loader_framebuffer: the current scanout physical address */
 };
 
 /*
@@ -215,6 +218,16 @@ struct loader_live {
 uint64_t loader_recording[3];
 /* ... and of the sound (/dev/redwood-audio makes one with boot-arg rec_sound). */
 uint64_t loader_sound[3];
+/* R38: where the panel is being read from (the display round's page flips), for the loader's
+ * screenshot to find the front buffer; 0 until the display round has taken the scanout over. */
+uint64_t loader_framebuffer;
+
+void
+loader_set_framebuffer(uint64_t phys)
+{
+	loader_framebuffer = phys;
+	__asm__ volatile ("dc cvac, %0\n dsb sy" : : "r" (&loader_framebuffer) : "memory");
+}
 
 struct loader_live loader_live = {
 	.magic = 0x214556494c554e58ULL, .log = loader_log, .log_len = &loader_log_len, .log_ring_at = &loader_log_ring_at,
@@ -222,6 +235,7 @@ struct loader_live loader_live = {
 	.recording = loader_recording,
 	.magic2 = 0x324556494c554e58ULL, .sound = loader_sound,
 	.magic3 = LOADER_LIVE_MAGIC3,
+	.magic4 = 0x344556494c554e58ULL, .framebuffer = &loader_framebuffer,
 };
 
 /*
@@ -410,6 +424,7 @@ loader_return(void)
 	psci_smp_stop_others();
 #endif
 	redwood_ufs_quiesce();          /* this kernel's requests to the storage done, UEFI's list as it was, for the log */
+	raphael_display_quiesce();      /* the panel back on the boot framebuffer, the flips off (R38 display round) */
 	redwood_adreno_quiesce();       /* the GPU block, if it was started, has tables in memory that is about to be reused */
 	redwood_wifi_quiesce();         /* the Wi-Fi DSP, if it still runs (a panic), is not left to itself */
 	redwood_adsp_quiesce();         /* nor the audio DSP */

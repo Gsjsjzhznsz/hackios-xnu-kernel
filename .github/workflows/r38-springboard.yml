@@ -1,0 +1,431 @@
+name: R38 · SpringBoard 一键流水线（显示轮 + WiFi 栈轮：内核首次换代——TE scanout 三缓冲 + 实测 TE 刷新通知 fb_scan=1 + 阻塞 SwapWait（R35/R37 黑屏根因的内核侧修复，参考同机实证）；WCN399x/ICNSS/MPSS/ath10k 全栈进内核（WIFI_OBJECT）+ wifi_step=2 判决 token；装载器换代：平台名 + raphael autorefresh + 前缓冲截图；卷 = R37 原字节；底板 = r37 release）
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_repo:
+        description: "hackios 内核树 fork（含 xnu/ + tools/r38-*）"
+        required: true
+        default: "Gsjsjzhznsz/hackios-xnu-kernel"
+      release_tag:
+        description: "Release tag（直链的一部分）"
+        required: true
+        default: "r38-springboard"
+      base_image:
+        description: "r37 日常镜像直链（R38 日常镜像 = 它逐字节原样：本轮的控制组）"
+        required: false
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r37-springboard/raphael-xnu-r37-flash.img"
+      base_gpu_image:
+        description: "r37 GPU 镜像直链（外科手术的底板：换 loader+kernel+cmdline 三条目，卷/usb/DTB 原样）"
+        required: false
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r37-springboard/raphael-xnu-r37-gpu-flash.img"
+      base_flashboot:
+        description: "r37 启动卷直链（= r35 = r34 谱系，真机验证过，原样转发）"
+        required: false
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r37-springboard/raphael-r37-flashboot.apfs"
+      base_root:
+        description: "r37 小卷 md1 直链（本轮不改卷，原样转发为 r38 资产）"
+        required: false
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r37-springboard/r37-md1-root.apfs"
+permissions:
+  contents: write
+concurrency:
+  group: r38-springboard
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 200
+    env:
+      REL: ${{ github.workspace }}/release
+      THEOS: /home/runner/theos     # (literal: GitHub Actions' env: block expands nothing)
+      CCACHE_DIR: ${{ github.workspace }}/hackios/.ccache
+    steps:
+      # ---------------------------------------------------------------
+      - name: "①/⑧ 磁盘准备与依赖（内核工具链 + 装载器交叉链接 lld-link）"
+        run: |
+          set -eu
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+                       /usr/local/share/boost /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential python3-dev clang lld ccache \
+                       flex bison m4 perl python3 autoconf automake libtinfo6 xz-utils uuid-dev 7zip \
+                       ripgrep >/dev/null
+          command -v clang && command -v ccache && command -v 7z && command -v rg
+          # dsymutil：Ubuntu 的 apt clang 不往 /usr/bin 放它（R11 run 39973048286 的教训）
+          DS=$(command -v dsymutil || clang --print-prog-name=dsymutil 2>/dev/null || true)
+          [ -x "$DS" ] || DS=$(ls /usr/lib/llvm-*/bin/dsymutil 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$DS" ] && [ -x "$DS" ]; then
+            sudo ln -sf "$DS" /usr/bin/dsymutil
+          else
+            printf '#!/bin/sh\nexit 0\n' | sudo tee /usr/bin/dsymutil >/dev/null && sudo chmod +x /usr/bin/dsymutil
+          fi
+          # lld-link：装载器（AArch64 UEFI PE）的链接器；llvm-ar 留给 Mesa 构建（本轮不构建 Mesa，一并就位无害）
+          LL=$(ls /usr/lib/llvm-*/bin/lld-link 2>/dev/null | sort -V | tail -1 || command -v lld-link || true)
+          [ -n "$LL" ] && [ -x "$LL" ] && sudo ln -sf "$(readlink -f "$LL")" /usr/local/bin/lld-link
+          AR=$(ls /usr/lib/llvm-*/bin/llvm-ar 2>/dev/null | sort -V | tail -1 || true)
+          [ -n "$AR" ] && sudo ln -sf "$(readlink -f "$AR")" /usr/local/bin/llvm-ar
+          command -v lld-link && lld-link --version | head -1
+          mkdir -p "$REL"
+          {
+            echo "R38 toolchain audit (recorded $(date -u +%FT%TZ))"
+            echo "--- runner image ---"
+            cat /etc/os-release | grep -E '^(PRETTY_NAME|VERSION)=' || true
+            echo "--- apt clang (the kernel's + loader's host compiler) ---"
+            clang --version | head -2
+            lld --version 2>/dev/null || true
+            echo "--- lld-link (the loader's PE linker) ---"
+            lld-link --version | head -1
+          } | tee "$REL/toolchain-versions.txt"
+          df -h /
+
+      # ---------------------------------------------------------------
+      - name: "②/⑧ 取树 + 取 r37 资产（本轮底板；SHA 对官方 SHA256SUMS 硬校验）"
+        run: |
+          set -eu
+          git clone --depth 1 "https://github.com/${{ inputs.kernel_repo }}.git" hackios
+          cd hackios
+          echo "→ 内核树 @ $(git log -1 --format='%h %s')"
+          ls -lh tools/r38_flash_build.py tools/r38-kernel-id.py tools/mk-ath10k.py \
+                xnu/files/bsd/dev/redwood_display.c wifi/lx/ath10k/host.c
+          # r37 的四件资产：两张镜像是外科手术的底板（装载器 v7 / 内核 R33 / 卷 R37）；启动卷与
+          # 小卷本轮原样转发为 r38 资产（本轮零卷改动——kernel/loader/cmdline 三条目之外一切不动）。
+          mkdir -p base
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o base/raphael-xnu-r37-flash.img  "${{ inputs.base_image }}"
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o base/raphael-xnu-r37-gpu-flash.img "${{ inputs.base_gpu_image }}"
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o base/raphael-r37-flashboot.apfs "${{ inputs.base_flashboot }}"
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o base/r37-md1-root.apfs "${{ inputs.base_root }}"
+          sha256sum base/* | tee base/SHA256SUMS.r37base
+          # 硬校验：四件资产必须是 r37 release 的官方字节（r37-springboard 的 SHA256SUMS）
+          python3 - base/ <<'PY'
+          import hashlib, sys
+          want = {
+              'raphael-xnu-r37-flash.img':    'b0f9f6df4ea13ad9d45048e7ff15e33d7b2fcb67204d01964b1014517ca8a60b',
+              'raphael-xnu-r37-gpu-flash.img':'897c104c335cdccc45bd78f4db038940b484b9521c44cb68780c4fac5eb6bfa1',
+              'raphael-r37-flashboot.apfs':   '14485e7c5ce125ef516168445c2500ac04ca5e40a908c2aef516b2d92c24ba0c',
+              'r37-md1-root.apfs':            '7ad5b1f880a938fb2ffb7824a11e4cc5a49d5cbdb66d7405c7fb1626d1ef865c',
+          }
+          for name, sha in want.items():
+              got = hashlib.sha256(open(sys.argv[1] + name, 'rb').read()).hexdigest()
+              assert got == sha, f'{name}: {got} != the r37 release sha {sha}'
+          print('底板四件全部等于 r37 release 的官方字节（r37-springboard SHA256SUMS）')
+          PY
+          # 底板判读（r38-kernel-id 对 r37 底板自身的三态：内核 R33 / 卷 R37 / cmdline R37 组）
+          python3 tools/r38-kernel-id.py base/raphael-xnu-r37-flash.img base/raphael-xnu-r37-gpu-flash.img \
+                  | tee base-id.txt
+          grep -q "ec15106da4bad290" base-id.txt || { echo "::error::r37 底板镜像的 loader 不是设备验证过的 v7（ec15106d…）"; exit 1; }
+          grep -c "VERDICT: the kernel entry is R33" base-id.txt | grep -qx 2 || { echo "::error::两张 r37 底板的内核都必须判为 R33（R34..R37 同字节）"; exit 1; }
+          grep -q "the cmdline is the R37 GPU form verbatim" base-id.txt || { echo "::error::r37 GPU 底板的 cmdline 不是 R37 组原样"; exit 1; }
+          grep -c "the cmdline is the daily image WITHOUT" base-id.txt | grep -qx 1 || { echo "::error::r37 日常底板的 cmdline 应无任何 gpu token"; exit 1; }
+          grep -c "ramdisk entry is R36/R37" base-id.txt | grep -qx 1 || { echo "::error::r37 GPU 底板的小卷不是 R37 卷"; exit 1; }
+          grep -c "ramdisk entry is R13..R33" base-id.txt | grep -qx 1 || { echo "::error::r37 日常底板的小卷不是 R13 谱系"; exit 1; }
+
+      # ---------------------------------------------------------------
+      # R28i 工具链纪律（原样继承）：缓存键全新、无 restore 链，重建确定性。
+      - name: "②c/⑧ 缓存：theos（工具链 + iPhoneOS16.5.sdk；R38 全新键、无 restore 链）"
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/theos
+          key: r38-theos-v19L2-v1
+      - name: "②d/⑧ 缓存：xnu-deps（Apple 开源件 + host 工具 + SDK 链接树；R38 全新键、无 restore 链）"
+        uses: actions/cache@v4
+        with:
+          path: hackios/xnu-deps
+          key: r38-xnu-deps-v1
+      - name: "②e/⑧ ccache（R38 clean build——零回填，只存不用）"
+        uses: actions/cache@v4
+        with:
+          path: hackios/.ccache
+          key: r38-ccache-${{ github.run_id }}
+
+      # ---------------------------------------------------------------
+      # ③ 装载器构建：R38 的 loader 是换代件——/chosen "hackios,platform"（redwood_is_raphael 的
+      # 依据）、raphael command-mode autorefresh（内核页翻转所楔入的管线）、oem screenshot 前缓冲。
+      # 指纹门禁：v7 横幅 + autorefresh 行必须逐字在字节里。
+      - name: "③/⑧ 装载器构建 + 指纹门禁（clang AArch64 UEFI + lld-link；v7 横幅 + raphael autorefresh 行）"
+        run: |
+          set -eu
+          cd hackios/xnuloader
+          ./build.sh
+          test -s loader.efi || { echo "::error::loader.efi 没有产出"; exit 1; }
+          LSHA=$(sha256sum loader.efi | cut -d' ' -f1)
+          echo "LSHA=$LSHA" >> "$GITHUB_ENV"
+          echo "→ R38 loader: $LSHA ($(stat -c %s loader.efi) B)"
+          python3 - loader.efi <<'PY'
+          import sys
+          b = open(sys.argv[1], 'rb').read()
+          assert b.count(b'== XNULOADER v7 ==') == 1, 'the loader banner is not exactly one v7 line'
+          assert b.count(b'display: raphael command-mode autorefresh enabled') == 1, \
+              'the R38 autorefresh fingerprint is missing'
+          assert b.count(b'hackios,platform') == 1, 'the /chosen platform-name write is missing'
+          assert b.count(b'XNULIVE4') == 1, 'the magic4 framebuffer channel is missing'
+          print('装载器指纹门禁全过：v7 横幅 ×1、autorefresh 行 ×1、hackios,platform ×1、XNULIVE4 ×1')
+          PY
+
+      # ---------------------------------------------------------------
+      # ④ 内核构建：R38 内核首次换代——显示轮（TE scanout 三缓冲 + 实测 TE 刷新通知 + 阻塞
+      # SwapWait）与 WiFi 栈（8 驱动文件 + wifi/lx/ath10k 对象）。门禁 = 标记组：R33 谱系全部
+      # 在位（一代人的记号不丢）+ R38 显示/WiFi 字符串逐字在字节里。BUILD_DSYM=0（R34/R35 两轮
+      # 的教训：dSYM 在这条流水线里是纯开销且脆弱）。
+      - name: "④/⑧ 内核源码构建 + R38 标记门禁（theos v19.0.0-L2 + xnu/apply.sh + xnu-deps + mk-ath10k.py → WIFI_OBJECT + BUILD_DSYM=0）"
+        run: |
+          set -eu
+          if [ ! -x "$THEOS/toolchain/linux/iphone/bin/ld64" ]; then
+            rm -rf "$THEOS"
+            git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
+            mkdir -p "$THEOS/toolchain"
+            curl -fL --retry 3 --retry-delay 5 -sS https://github.com/L1ghtmann/llvm-project/releases/download/main-update_3-eabca92/iOSToolchain-x86_64.tar.xz | tar -xJ -C "$THEOS/toolchain/"
+          fi
+          "$THEOS/toolchain/linux/iphone/bin/ld64" --version | tee -a "$REL/toolchain-versions.txt" || true
+          if [ ! -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include" ]; then
+            rm -rf "$THEOS/sdks/iPhoneOS16.5.sdk" /tmp/theos-sdks
+            git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/theos-sdks
+            git -C /tmp/theos-sdks sparse-checkout set iPhoneOS16.5.sdk
+            mkdir -p "$THEOS/sdks"
+            mv /tmp/theos-sdks/iPhoneOS16.5.sdk "$THEOS/sdks/"
+            rm -rf /tmp/theos-sdks
+          fi
+          test -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include" || { echo "::error::iPhoneOS16.5.sdk 就位失败"; exit 1; }
+          df -h /
+          cd hackios
+          xnu/apply.sh
+          XNU_HOST_CLANG="$THEOS/toolchain/linux/iphone/bin/clang"
+          export XNU_HOST_CLANG
+          test -x "$XNU_HOST_CLANG" || { echo "::error::theos 工具链 clang 缺位"; exit 1; }
+          "$XNU_HOST_CLANG" --version | tee -a "$REL/toolchain-versions.txt"
+          grep -q "eabca92" "$REL/toolchain-versions.txt" || { echo "::error::内核编译器不是钉死的 theos clang"; exit 1; }
+          bash xnu-deps/setup.sh || { echo "::error::setup.sh 失败"; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
+          export XNU_CCACHE=1 CCACHE_COMPILERCHECK=content XNU_WRAPPER_LOG="$PWD/xnu-clang-args.log"
+          : > "$XNU_WRAPPER_LOG"
+          ccache -C >/dev/null 2>&1 || true
+          ccache -M 2G >/dev/null 2>&1 || true
+          # dSYM 在这条流水线里是纯开销且脆弱（R34 run 40560646210 / R35 run 40670171127 的教训）：
+          # 上游正规开关 BUILD_DSYM=0（MakeInc.def:298 默认 1）。
+          # WiFi 对象：mk-ath10k.py 钉版下载（Linux 7.0.14 / FreeBSD 15.1 / wpa_s 2.11 / mbedTLS 3.6.7，
+          # 各带 SHA-256 硬校验）→ 编 xnu-deps/build/ath10k/out/ath10k.o → WIFI_OBJECT 进内核链接。
+          export CC="$XNU_HOST_CLANG"
+          python3 tools/mk-ath10k.py
+          A=xnu-deps/build/ath10k/out/ath10k.o
+          test -s "$A" || { echo "::error::ath10k.o 没有产出"; exit 1; }
+          echo "→ ath10k.o: $(sha256sum "$A" | cut -d' ' -f1) ($(stat -c %s "$A") B)"
+          WIFI_OBJECT="$PWD/$A" ./xnu-build.sh -j4 -k BUILD_DSYM=0 \
+            || echo "（make 退出码 $?——上游文档：链接后的检查，内核若已产出即成功）"
+          K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
+          ls -la "$K" || { echo "::error::内核没有产出"; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
+          # --- R38 门禁一：R33 谱系标记（一代人的记号不丢）
+          echo "→ 诊断：R33 谱系标记（R38 在 R33 之上生长，记号应与 R33 发布件全同）"
+          echo "    R33 generation line = $(strings -a "$K" | grep -cF 'R33: the kernel generation line')（应 2）"
+          echo "    R33 resident round = $(strings -a "$K" | grep -cF 'R33: the resident round')（应 1）"
+          echo "    R33 keep switch = $(strings -a "$K" | grep -cF 'THE GPU STAYS ON for the system to draw with')（应 1）"
+          echo "    R33 SCMDMP begin = $(strings -a "$K" | grep -cF 'SCMDMP: R33 begins')（应 1）"
+          echo "    R32/R31 旧戳（应 0）= $(strings -a "$K" | grep -cE 'R32: the kernel generation line|R31: the kernel generation line')（应 0）"
+          # --- R38 门禁二：本轮标记（显示轮 + WiFi 栈，逐字在字节里）
+          echo "→ 诊断：R38 标记（显示轮 + WiFi 栈）"
+          echo "    display scanout = $(strings -a "$K" | grep -cF 'raphael-display: three scanout buffers, VIG0/CTL0, hardware TE')（应 1）"
+          echo "    display TE measure = $(strings -a "$K" | grep -cF 'display: raphael command TE:')（应 1）"
+          echo "    fb_scan boot-arg = $(strings -a "$K" | grep -cF 'page flips retained (fb_scan=1)')（应 1）"
+          echo "    wifi raphael branch = $(strings -a "$K" | grep -cF 'wifi: raphael needs WCN3990 SNOC/ath10k and MPSS service 0x45')（应 1）"
+          echo "    wifi ath10k dispatch = $(strings -a "$K" | grep -cF 'wifi_step')（≥1）"
+          echo "    MPSS loader = $(strings -a "$K" | grep -cF 'MPSS')（≥1）"
+          echo "    XNULIVE4 channel = $(strings -a "$K" | grep -cF 'XNULIVE4')（应 1）"
+          python3 - "$K" <<'PY'
+          import sys
+          b = open(sys.argv[1], 'rb').read()
+          def n(s): return b.count(s.encode())
+          assert n('R33: the kernel generation line') == 2, 'R33 generation line x%d != 2' % n('R33: the kernel generation line')
+          assert n('R33: the resident round') == 1 and n('SCMDMP: R33 begins') == 1, 'R33 lineage markers broken'
+          assert n('R32: the kernel generation line') == 0, 'a stale R32 stamp rides'
+          for mark, why in [
+              ('raphael-display: three scanout buffers, VIG0/CTL0, hardware TE', 'the display round (adreno side)'),
+              ('display: raphael command TE:', 'the TE phase measurement (display.c)'),
+              ('page flips retained (fb_scan=1)', 'the fb_scan boot-arg'),
+              ('wifi: raphael needs WCN3990 SNOC/ath10k and MPSS service 0x45', 'the raphael Wi-Fi branch'),
+              ('XNULIVE4', 'the R38 loader-framebuffer channel'),
+              ('raphael-display: flip did not latch at TE, restoring boot framebuffer', 'the flip fallback'),
+          ]:
+              assert n(mark) == 1, '%s x%d != 1 (%s)' % (mark, n(mark), why)
+          assert n('wifi_step') >= 1, 'the wifi boot-arg surface is missing'
+          print('内核标记门禁全过：R33 谱系 4 项 + R38 显示/WiFi/通道 6 项')
+          PY
+          sha256sum "$K" | tee "$REL/r38-kernel-sha.txt"
+          cp "$K" "$REL/r38-kernel.bin"
+
+      # ---------------------------------------------------------------
+      - name: "诊断产物（wrapper argv 日志，失败也上传）"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r38-diag
+          path: |
+            hackios/xnu-clang-args.log
+            hackios/xnu-deps/exporthdrs.log
+          if-no-files-found: ignore
+
+      # ---------------------------------------------------------------
+      # ⑤ 打 r38 双启动镜像（外科手术：底板 = r37 release；日常镜像逐字节原样；GPU 镜像换
+      # loader+kernel+cmdline 三条目，卷/usb/DTB = r37 原字节）
+      - name: "⑤/⑧ 打 r38 双启动镜像（外科手术：底板 = r37 release；GPU 镜像换 loader/kernel/cmdline 三条目；卷 R37 / usb / DTB 原字节）"
+        run: |
+          set -eu
+          cd hackios
+          python3 tools/r38_flash_build.py \
+            --daily base/raphael-xnu-r37-flash.img \
+            --gpu base/raphael-xnu-r37-gpu-flash.img \
+            --loader xnuloader/loader.efi \
+            --kernel xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837 \
+            --out-daily "$REL/raphael-xnu-r38-flash.img" \
+            --out-gpu "$REL/raphael-xnu-r38-gpu-flash.img" | tee "$REL/r38-pack.txt"
+          # 镜像里读出的装载器/内核 sha，交给判读工具指认
+          LSHA2=$(python3 -c "import hashlib;print(hashlib.sha256(open('xnuloader/loader.efi','rb').read()).hexdigest())")
+          KSHA2=$(cut -d' ' -f1 "$REL/r38-kernel-sha.txt")
+          echo "LSHA2=$LSHA2" >> "$GITHUB_ENV"
+          echo "KSHA2=$KSHA2" >> "$GITHUB_ENV"
+
+      # ---------------------------------------------------------------
+      # ⑥ 门禁复证 + 判读预注册：r38-kernel-id 对双输出镜像判读；失败分诊树写在 README 里。
+      - name: "⑥/⑧ r38-kernel-id 复证门禁（双镜像：R38 内核/loader + 恰两新 token + 卷 R37 + 日常原样）"
+        run: |
+          set -eu
+          cd hackios
+          python3 tools/r38-kernel-id.py "$REL/raphael-xnu-r38-flash.img" "$REL/raphael-xnu-r38-gpu-flash.img" \
+                  --expect-loader-sha "$LSHA2" --expect-kernel-sha "$KSHA2" | tee "$REL/r38-kernel-id.txt"
+          grep -c "loader  sha256" "$REL/r38-kernel-id.txt" | grep -qx 2 || { echo "::error::双镜像都要读到 loader 条目"; exit 1; }
+          grep -c "the R38 loader (v7 banner" "$REL/r38-kernel-id.txt" | grep -qx 1 || { echo "::error::GPU 镜像的 loader 不是本轮换代件"; exit 1; }
+          grep -c "the R38 kernel (this round's build)" "$REL/r38-kernel-id.txt" | grep -qx 1 || { echo "::error::GPU 镜像的内核不是本轮换代件"; exit 1; }
+          grep -c "the kernel entry is R38" "$REL/r38-kernel-id.txt" | grep -qx 1 || { echo "::error::GPU 镜像内核判词不是 R38"; exit 1; }
+          grep -c "EXACTLY the two R38 tokens" "$REL/r38-kernel-id.txt" | grep -qx 1 || { echo "::error::GPU 镜像 cmdline 不是 R37 组 + 恰两新 token"; exit 1; }
+          grep -c "ramdisk entry is R36/R37" "$REL/r38-kernel-id.txt" | grep -qx 1 || { echo "::error::GPU 镜像小卷不是 R37 卷原样"; exit 1; }
+          grep -c "the daily image WITHOUT" "$REL/r38-kernel-id.txt" | grep -qx 1 || { echo "::error::日常镜像必须无任何 gpu token（控制组原样）"; exit 1; }
+          echo "r38 复证门禁全绿。"
+
+      # ---------------------------------------------------------------
+      # ⑦ SHA256 + README（判读树预注册）+ 启动卷/小卷原样转发
+      - name: "⑦/⑧ SHA256 + README + 转发资产就位"
+        run: |
+          set -eu
+          cd hackios
+          cp base/raphael-r37-flashboot.apfs "$REL/raphael-r38-flashboot.apfs"
+          cp base/r37-md1-root.apfs "$REL/r38-md1-root.apfs"
+          cat "$REL/r38-kernel-sha.txt" >> "$REL/toolchain-versions.txt"
+          {
+            echo "r38 volume lineage (forwarded verbatim)"
+            sha256sum "$REL/raphael-r38-flashboot.apfs" "$REL/r38-md1-root.apfs"
+          } >> "$REL/toolchain-versions.txt"
+          {
+            sha256sum "$REL/raphael-xnu-r38-flash.img" "$REL/raphael-xnu-r38-gpu-flash.img" \
+                      "$REL/raphael-r38-flashboot.apfs" "$REL/r38-md1-root.apfs"
+          } > "$REL/SHA256SUMS"
+          cat > "$REL/README.txt" <<'EOF'
+          ============================================================
+           R38 · 纯血 hackios SpringBoard 交付包（raphael / K20 Pro）
+           —— 显示轮 + WiFi 栈轮：内核首次换代
+              （TE scanout 三缓冲 + 实测 TE 刷新通知 + 阻塞 SwapWait；
+               WCN399x/ICNSS/MPSS/ath10k-SNOC 全栈编译进内核；
+               装载器换代：/chosen 平台名 + raphael autorefresh + 前缓冲截图；
+               卷 = R37 字节原样；底板 = r37 release）
+          ============================================================
+          ⚠️⚠️⚠️ 启动卷只 stage 一个文件：raphael-r38-flashboot.apfs ⚠️⚠️⚠️
+            （R14 事故纪律不变：md1 备份不要 stage，flash.img 已内嵌全量小卷）
+          主镜像   : raphael-xnu-r38-flash.img（= r37 逐字节原样：本轮控制组）
+          GPU 镜像 : raphael-xnu-r38-gpu-flash.img（cmdline =
+                      touchscreen=1 buttons=1 cpus=8 ufs=2 bootcpu=7
+                      root_apfs=ufs_userdata gpu=1 adreno=22 adreno_pause=0
+                      adreno_watch=0 adreno_keep=1 metal=1
+                      fb_scan=1 wifi_step=2
+                      = R37 的 token 组原样 + 本轮恰两个新 token）
+                      装载器 = R38 换代件（v7 横幅 + raphael autorefresh）
+                      内核   = R38 换代件（R33 谱系标记全在 + 显示轮 + WiFi 栈）
+                      卷/usb/DTB = R37 原字节（sha 7ad5b1f8… 断言在案）
+          启动卷   : raphael-r38-flashboot.apfs（= r37 官方字节，原样转发）
+          小卷 md1 : r38-md1-root.apfs（= r37 官方字节，原样转发）
+          【R38 的两刀，与依据】
+          ① 显示轮（黑屏根因的内核侧修复）：R35/R37 logdump 判决 = CA 合成环
+             第 4 帧后停摆——内核显示单缓冲覆写 + SwapWait 即返，合成的
+             surface 在被覆写时从未等到"上屏完成"。参考仓库在同一台手机
+             上实证的形态原样移植：三缓冲（0x9c000000 起，0xa00000 步进，
+             Display Reserved 36MB 内）、VIG0 在面板自身 TE 沿锁存、
+             SwapWait 阻塞到交换 id 完成才放 surface、刷新通知对齐实测
+             command-mode TE（fb_scan=1 门）。装载器在起内核前把 ABL 的
+             command-mode 管线 autorefresh 打开（内核页翻转楔入的管线），
+             失败路径逐级回退单缓冲（vinfo 基址），不上锁死机。
+          ② WiFi 栈：WCN399x/ICNSS 控制链（MPSS PAS4 装载、SMEM、SMP2P、
+             GLINK、QRTR、RMTFS、TFTP、PD mapper、PDR、DMS、BDF、MSA/SMMU、
+             五路 PMIC）+ SNOC 主机路径（12 路 CE 中断、NAPI、HTC/WMI）+
+             ath10k 对象（wifi/lx/ath10k + LinuxKPI，mk-ath10k.py 钉版链）。
+             本轮 cmdline 只带 wifi_step=2（零副作用判决 token：仅证明
+             raphael 分支派发，不碰供电/固件）；真上机联网 = R39，需要
+             私有固件输入（modem.mdt/wlanmdsp.mbn/firmware-5.bin/
+             bd_f11cn.bin/NV 快照，从本机提取，只进本机 resident 镜像，
+             禁发布）。
+          【判读树 W+D（logdump 全文入账后判）】
+          D1 = "raphael-display: three scanout buffers" + "flip N latched"
+               ⇒ 页翻转成立；CA 若不再停摆（frame 计数持续增长）⇒ 黑屏
+               根因关闭。
+          D2 = "unexpected firmware scanout, no flip" ⇒ ABL 管线状态与
+               预期不同：回退单缓冲（等于 R37 行为），logdump 照收。
+          D3 = "no active interface tear-check, no flip" ⇒ command-mode
+               TE 未开：装载器 autorefresh 未生效，回退单缓冲，照收。
+          D4 = "display: raphael command TE: NN.HHH Hz" ⇒ 实测 TE 相位
+               通道成立（120Hz 面板应报 ~119.9）。
+          D5 = 内核显示超时行（flip did not latch）⇒ 记录全部寄存器现场，
+               回退单缓冲，logdump 定位。
+          W1 = "wifi: raphael needs WCN3990 SNOC/ath10k and MPSS service
+               0x45" ⇒ 本轮唯一 WiFi 判决：分支派发成立（栈在内核里）。
+          W2 = 无此行 ⇒ wifi_step 未被解析（cmdline 断言会先在 CI 拦）。
+          回滚 = 刷回 r37 GPU 镜像。
+          【手机端（Termux / bootloader）】
+          fastboot flash boot raphael-xnu-r38-gpu-flash.img
+          （启动卷 stage 一次：raphael-r38-flashboot.apfs）
+          ⚠️ 含 Apple 版权内容，仅供个人研究；下载完成后请尽快删除本 Release。
+          EOF
+          echo "README + SHA256SUMS + 转发资产就位"
+          df -h /
+
+      # ---------------------------------------------------------------
+      - name: "⑦b/⑧ 发布 Release（直链交付，r38-springboard）"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: "R38 · 纯血 hackios SpringBoard · 显示轮 + WiFi 栈轮（TE scanout 三缓冲 + 阻塞 SwapWait + ath10k 全栈进内核；内核/装载器首次换代；卷 = R37 原字节）"
+          body: |
+            raphael (K20 Pro) R38 交付包：**显示轮 + WiFi 栈轮**。
+
+            R37 设备判决（用户 logdump 3101 行全文入账）：J1 前哨成立——
+            MTLCreateSystemDefaultDevice() = RedwoodMetalDevice，11 类
+            420+ 方法 sweep 全答（发现链通了）；CI filter 在 FD640 上渲染
+            出正确像素。黑屏根因仍判 CA 合成环第 4 帧停摆（R35 同判）=
+            内核单缓冲 + SwapWait 不等，即本轮内核侧课题。
+
+            本轮两件事：① 内核显示轮——参考仓库同机实证的 TE scanout
+            原样移植（三缓冲 0x9c000000 起、VIG0 在面板 TE 沿锁存、
+            SwapWait 阻塞到交换完成、刷新通知对齐实测 command-mode TE、
+            fb_scan=1 门；失败逐级回退单缓冲）；② WiFi 栈全量编译进
+            内核（8 驱动文件 + wifi/lx/ath10k 对象 + MPSS/ICNSS 控制链），
+            cmdline 只带 wifi_step=2 零副作用判决 token——真联网 = R39
+            私有固件轮。装载器换代（平台名 /chosen + autorefresh + 前缓冲
+            截图）；卷 = R37 字节原样；底板 = r37 release（SHA 硬校验）。
+
+            判读树 W+D 见 README（D1 页翻转成立/D2-D5 逐级回退取证/
+            W1 派发成立）。回滚 = 刷回 r37 GPU 镜像。
+
+            ⚠️ 含 Apple 版权内容，仅供个人研究；下载完成后请尽快删除本 Release。
+          fail_on_unmatched_files: true
+          files: |
+            release/raphael-xnu-r38-flash.img
+            release/raphael-xnu-r38-gpu-flash.img
+            release/raphael-r38-flashboot.apfs
+            release/r38-md1-root.apfs
+            release/SHA256SUMS
+            release/README.txt
+            release/toolchain-versions.txt
+
+      # ---------------------------------------------------------------
+      - name: "⑧/⑧ 直链汇总（跑完看这里，复制即用）"
+        run: |
+          set -eu
+          echo "════════════ 全部下载直链 ════════════"
+          for f in "$REL"/raphael-xnu-r38-flash.img "$REL"/raphael-xnu-r38-gpu-flash.img \
+                   "$REL"/raphael-r38-flashboot.apfs "$REL"/r38-md1-root.apfs \
+                   "$REL"/SHA256SUMS "$REL"/README.txt "$REL"/toolchain-versions.txt; do
+            echo "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/$(basename "$f")"
+          done

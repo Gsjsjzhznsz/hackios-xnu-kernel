@@ -2,7 +2,7 @@
  * A STAND-IN, TO BE THROWN AWAY when ath11k's own qmi.c runs here.
  *
  * Before a WCN6750's driver touches the radio it has an exchange with the Wi-Fi firmware's
- * service ("WLFW", on the DSP that redwood_wifi.c starts): it says which indications it wants
+ * service ("WLFW", on the DSP that redwood.wifi.c starts): it says which indications it wants
  * and what the host can do, asks what the firmware and the chip are, sends the regulatory
  * database and the board's data file in pieces, and is told "init done" and "ready". This file
  * makes that exchange by hand, in the order and with the values of ath11k's qmi.c for this chip
@@ -10,7 +10,7 @@
  * work of running the real qmi.c is spent: whether this firmware build takes ath11k's messages,
  * whether it takes the phone's own board file, and what calibration does.
  *
- * It is step 15 of wifi_step=N (redwood_wifi.c), and stops where qmi.c hands over to the rest of the
+ * It is step 15 of wifi_step=N (redwood.wifi.c), and stops where qmi.c hands over to the rest of the
  * driver. Boot-arg wifi_cal=1 adds what qmi.c does with cold-boot calibration switched on.
  * Boot-arg wifi_mission=1 adds what qmi.c is asked for next (ath11k_qmi_firmware_start()): the
  * firmware's logging, the configuration, the mode "mission", after which the firmware has the
@@ -34,7 +34,7 @@
  * The messages' structures and the tables that describe them are ath11k's own, taken out of its
  * sources when the kernel is built (tools/mk-wlfw.sh) and not kept anywhere: nothing of them is
  * in this file. Without them this compiles to a line that says so. The coding itself and the
- * transactions are ours (redwood_qmi.c).
+ * transactions are ours (redwood.qmi.c).
  */
 #include <kern/clock.h>
 #include <libkern/libkern.h>
@@ -46,7 +46,7 @@
 
 #define say redwood_wifi_say
 
-#if !__has_include("redwood_wlfw_ath11k.h")
+#if !__has_include("redwood.wlfw_ath11k.h")
 
 bool
 redwood_wlfw_registers(__unused uint64_t *address, __unused uint32_t *size, __unused bool *mission)
@@ -70,7 +70,7 @@ redwood_wlfw_exchange(uint32_t step)
 #else
 
 #define REDWOOD_QMI_NO_KERNEL_CONNECT
-#include "redwood_wlfw_ath11k.h"
+#include "redwood.wlfw_ath11k.h"
 
 #define MODE_COLD_BOOT          7               /* core.h: ATH11K_FIRMWARE_MODE_COLD_BOOT */
 #define ATH11K_FIRMWARE_MODE_NORMAL 0           /* core.h: the mode "mission" */

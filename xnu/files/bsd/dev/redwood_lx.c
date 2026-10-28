@@ -7,7 +7,7 @@
  * is built with that object when xnu-build.sh finds it). The object shows one name, lx_start(),
  * and asks for the calls of sys/redwood_lx.h, which are here: memory, time, threads, one lock
  * to sleep under, the kernel's options. What it asks of the radio itself -- its firmware's
- * files, its view of memory, the processor its firmware runs on -- is redwood_wifi.c's to
+ * files, its view of memory, the processor its firmware runs on -- is redwood.wifi.c's to
  * answer, which knows the phone.
  *
  * A kernel built without the object has the lx_start() at the end of this file, which says so.
@@ -57,7 +57,7 @@ lx_os_free(void *memory, unsigned long size)
 
 /*
  * In one physical piece, so that it can be mapped a second time without this processor's cache
- * in between (as redwood_adreno.c does with what it shares with the GPU); the first, cached
+ * in between (as redwood.adreno.c does with what it shares with the GPU); the first, cached
  * view is written out and never used again.
  */
 void *
@@ -230,6 +230,9 @@ lx_os_rproc_boot(void)
 {
 	return redwood_wifi_dsp_is_up() ? 0 : ENXIO;
 }
+
+extern bool redwood_wifi_icnss_ready(void);
+int lx_os_radio_powered(void) { return redwood_wifi_icnss_ready(); }
 
 int
 lx_os_radio_address(unsigned char *address)
@@ -443,13 +446,14 @@ int
 lx_os_irq_attach(unsigned vector, void (*function)(void *), void *argument)
 {
 	kern_return_t kr;
+	if (redwood_is_raphael()) lx_irq_first = 446; /* SM8150 SNOC CE SPIs 414..425, level high. */
 
 	if (vector >= LX_VECTORS || lx_irq_first == 0 || function == NULL) {
 		return EINVAL;
 	}
 	if (lx_irq_thread == THREAD_NULL) {
-		redwood_wifi_tell("lx: wifi_irq: THE GIC'S DISTRIBUTOR IS WRITTEN for the radio's interrupts: each vector's SPI (%u + v) edge-"
-		    "triggered, group 1, routed to this processor, then enabled\n", lx_irq_first);
+		redwood_wifi_tell("lx: wifi_irq: the radio's SPIs (%u + v), %s-triggered, group 1, routed to this processor\n",
+		    lx_irq_first, redwood_is_raphael() ? "level" : "edge");
 		if (kernel_thread_start(lx_irq_runs, NULL, &lx_irq_thread) != KERN_SUCCESS) {
 			lx_irq_thread = THREAD_NULL;
 			return ENOMEM;
@@ -461,7 +465,7 @@ lx_os_irq_attach(unsigned vector, void (*function)(void *), void *argument)
 	lx_vector[vector].argument = argument;
 	lx_vector[vector].attached = true;
 	lck_mtx_unlock(&lx_irq_lock);
-	if ((kr = gic_v3_spi_attach(lx_irq_first + vector, true, lx_irq_arrived, NULL)) != KERN_SUCCESS) {
+	if ((kr = gic_v3_spi_attach(lx_irq_first + vector, !redwood_is_raphael(), lx_irq_arrived, NULL)) != KERN_SUCCESS) {
 		lck_mtx_lock(&lx_irq_lock);
 		lx_vector[vector].attached = false;
 		lck_mtx_unlock(&lx_irq_lock);

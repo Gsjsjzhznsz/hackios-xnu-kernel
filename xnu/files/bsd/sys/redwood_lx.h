@@ -1,7 +1,7 @@
 /*
  * The whole of what the Wi-Fi driver's object asks of the kernel it is linked into. That object
  * (tools/mk-ath11k.sh in the repository: Linux's ath11k on FreeBSD's LinuxKPI headers and our
- * wifi/lx) is compiled as FreeBSD kernel code, bsd/dev/redwood_lx.c on this side as XNU's;
+ * wifi/lx) is compiled as FreeBSD kernel code, bsd/dev/redwood.lx.c on this side as XNU's;
  * neither sees the other's headers, so nothing but C's own types crosses (and the station
  * boundary's, redwood_sta.h, which is written for both). Everything the
  * driver's side knows of locks, timers, work queues and buffers is built in wifi/lx/src on the
@@ -56,6 +56,7 @@ unsigned lx_os_option(const char *name);
 int	 lx_os_firmware(const char *name, const void **data, unsigned long *size);
 /* the processor that runs the radio's firmware: started, and up when this returns; 0 or an errno */
 int	 lx_os_rproc_boot(void);
+int	 lx_os_radio_powered(void);	/* ICNSS firmware, five rails and QDSS are ready */
 /* the radio's own address (six bytes), if the machine has one for it: 1, or 0 and nothing written */
 int	 lx_os_radio_address(unsigned char *address);
 /*

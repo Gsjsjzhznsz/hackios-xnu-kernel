@@ -3,12 +3,12 @@
  *
  * On one side whatever does the scanning and the joining with a radio: the station logic over
  * ath11k on the phone (wifi/lx in the repository). On the other whoever wants a network: the
- * Apple80211 requests of iOS's Wi-Fi side, answered in bsd/dev/redwood_apple80211.c, and the
- * kernel's own join of the network it was given in a file (bsd/dev/redwood_wifi.c). Frames do
+ * Apple80211 requests of iOS's Wi-Fi side, answered in bsd/dev/redwood.apple80211.c, and the
+ * kernel's own join of the network it was given in a file (bsd/dev/redwood.wifi.c). Frames do
  * not pass here, and neither does "the link is up": those go through bsd/sys/redwood_net.h,
  * which the station side calls itself.
  *
- * Between the two stands bsd/dev/redwood_sta.c: one thread, on which every call into the station
+ * Between the two stands bsd/dev/redwood.sta.c: one thread, on which every call into the station
  * side is made, one at a time, and what the last scan heard, kept for whoever asks.
  *
  * Nothing but C's own types here: the station side is not compiled as XNU's code.
@@ -42,7 +42,7 @@ struct redwood_sta_scan {
 	uint16_t dwell_ms;                      /* on each channel; 0: the radio's own */
 };
 
-enum { REDWOOD_STA_OPEN, REDWOOD_STA_WPA2_PSK };
+enum { REDWOOD_STA_OPEN, REDWOOD_STA_WPA2_PSK, REDWOOD_STA_WPA3_SAE };
 
 struct redwood_sta_join {
 	uint8_t ssid[32], ssid_length;
@@ -114,7 +114,7 @@ void     redwood_sta_state(struct redwood_sta_state *state);
 unsigned redwood_sta_channels(struct redwood_sta_channel *channels, unsigned most);
 bool     redwood_sta_address(uint8_t *address);
 
-/* ---- the listener: bsd/dev/redwood_apple80211.c ---- */
+/* ---- the listener: bsd/dev/redwood.apple80211.c ---- */
 void     redwood_apple80211_event(enum redwood_sta_event event, int status);
 void     redwood_apple80211_summary(void);                              /* what was asked in this run, to the log */
 #endif

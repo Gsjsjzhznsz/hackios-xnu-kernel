@@ -1,10 +1,10 @@
 /*
  * en0, and what stands behind it.
  *
- * The network interface iOS uses here is made in bsd/dev/redwood_net.c with the kernel's own
+ * The network interface iOS uses here is made in bsd/dev/redwood.net.c with the kernel's own
  * interface KPI: Ethernet as far as the rest of the kernel and user space can tell. What carries
  * the frames is a "link", a driver of its own that knows nothing about interfaces: QEMU's virtio
- * network device today (bsd/dev/redwood_virtio_net.c), the phone's radio or frames carried over
+ * network device today (bsd/dev/redwood.virtio_net.c), the phone's radio or frames carried over
  * the boot loader's USB channel tomorrow. This is all the two know of each other.
  *
  * A link driver
@@ -25,9 +25,11 @@
 #include <sys/kpi_mbuf.h>
 
 #define REDWOOD_NET_FRAME_MAX   1514
+#define REDWOOD_NET_UNITS       2       /* en0: the radio (or virtio); en1: the modem's packets (redwood.cell.c) */
 
 struct redwood_net_link {
 	const char *    name;           /* for the log */
+	unsigned        unit;           /* which enN this is (0 unless said otherwise) */
 	uint8_t         address[6];     /* the interface's Ethernet address */
 	bool            wireless;       /* the interface is told to be Wi-Fi (its "subfamily"), which is how the
 	                                 * network stack and configd tell a radio from a cable */
@@ -47,15 +49,17 @@ struct redwood_net_link {
 	unsigned        (*poll)(void);
 };
 
-/* Make en0 on top of that link (the structure must stay). One link, once: false if there is one already. */
+/* Make en<unit> on top of that link (the structure must stay). One link per unit, once: false if there is one already. */
 bool redwood_net_attach(const struct redwood_net_link *link);
-/* A frame has arrived. Copied; the buffer is the caller's again on return. */
+/* A frame has arrived (on en0 / on en<unit>). Copied; the buffer is the caller's again on return. */
 void redwood_net_input(const uint8_t *frame, size_t length);
-/* Frames can pass now / can no longer pass. */
+void redwood_net_input_unit(unsigned unit, const uint8_t *frame, size_t length);
+/* Frames can pass now / can no longer pass (on en0 / on en<unit>). */
 void redwood_net_link_state(bool up);
+void redwood_net_link_state_unit(unsigned unit, bool up);
 
 void redwood_net_init(void);            /* the links there are: each looks for its hardware (or its boot-arg) */
-/* an Apple80211 request (SIOCGA80211, SIOCSA80211) for the interface of a radio: redwood_apple80211.c */
+/* an Apple80211 request (SIOCGA80211, SIOCSA80211) for the interface of a radio: redwood.apple80211.c */
 errno_t redwood_apple80211_ioctl(u_long command, void *data);
 void redwood_virtio_net_init(void);     /* boot-arg virtio_net=1: QEMU's virtio network device */
 #endif /* KERNEL */

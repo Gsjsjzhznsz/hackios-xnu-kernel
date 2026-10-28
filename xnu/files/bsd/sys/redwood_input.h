@@ -17,6 +17,10 @@
 
 #define REDWOOD_TOUCH_DEVICE    "/dev/redwood-touch"
 
+/* Which phone this is (the loader's /chosen "hackios,platform"; redwood = the POCO, raphael = the K20 Pro). */
+int redwood_is_raphael(void);
+int redwood_ufs_read_partition(const char *name, uint64_t offset, uint8_t *dst, uint64_t len, uint64_t *bytes); /* for drivers (bsd/dev/redwood_ufs.c) */
+
 #define REDWOOD_TOUCH_DOWN      1       /* a finger has landed */
 #define REDWOOD_TOUCH_MOVE      2
 #define REDWOOD_TOUCH_UP        3       /* it has lifted (x, y: where it was last) */

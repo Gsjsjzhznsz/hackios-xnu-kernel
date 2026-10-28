@@ -6,7 +6,7 @@
  * ioctls still: SIOCGA80211 and SIOCSA80211 on any socket, with a struct apple80211req that
  * names the interface, a request type, a value, and a buffer in the caller's memory
  * (IO80211.framework: Apple80211Get/Set and their kin all end there). XNU hands an interface
- * ioctl it does not know to the interface, so they arrive in bsd/dev/redwood_net.c, which
+ * ioctl it does not know to the interface, so they arrive in bsd/dev/redwood.net.c, which
  * passes them here when its link is a radio.
  *
  * What is asked is answered from the station boundary (sys/redwood_sta.h): the radio's power,
@@ -165,6 +165,7 @@ struct apple80211_assoc {
 
 #define CIPHER_PMK              6
 #define CIPHER_PASSPHRASE       10
+#define AUTH_WPA3_SAE           0x1000u
 
 /* the link event's data (at least 32 bytes, or the framework drops the event) */
 struct apple80211_link_changed {
@@ -195,7 +196,7 @@ _Static_assert(sizeof(struct apple80211_scan_result) == 1164 && offsetof(struct 
 enum { EVENT_POWER_CHANGED = 1, EVENT_SSID_CHANGED = 2, EVENT_BSSID_CHANGED = 3, EVENT_LINK_CHANGED = 4, EVENT_ASSOC_DONE = 9,
        EVENT_SCAN_DONE = 10 };
 
-static const char interface_name[16] = "en0";   /* (bsd/dev/redwood_net.c makes one interface, and that is its name) */
+static const char interface_name[16] = "en0";   /* (bsd/dev/redwood.net.c makes one interface, and that is its name) */
 
 static LCK_GRP_DECLARE(apple80211_lock_group, "redwood-apple80211");
 static LCK_MTX_DECLARE(apple80211_lock, &apple80211_lock_group);
@@ -294,7 +295,8 @@ get(struct apple80211req *request)
 	switch (request->req_type) {
 	case 43:
 	case 44: {                              /* the driver's and the hardware's name: the text alone, in 256 bytes */
-		static const char name[256] = "redwood: ath11k for the WCN6750";
+		char name[256] = { 0 };
+		strlcpy(name, redwood_is_raphael() ? "raphael: ath10k for the WCN3998" : "redwood: ath11k for the WCN6750", sizeof(name));
 
 		return give(request, name, sizeof(name));
 	}
@@ -311,6 +313,11 @@ get(struct apple80211req *request)
 
 		for (unsigned i = 0; i < sizeof(has); i++) {
 			bits[has[i] / 8] |= (uint8_t)(1u << (has[i] % 8));
+		}
+		if (redwood_is_raphael()) {
+			/* iOS 16.5 IO80211: byte 9 bit 3 selects SAE and passes CIPHER_PWD instead of a WPA2 PMK. */
+			bits[6] |= 1;                 /* protected management frames */
+			bits[9] |= 8;                 /* WPA3 Personal; no FT or enterprise */
 		}
 		return give(request, bits, sizeof(bits));
 	}
@@ -541,10 +548,11 @@ set_join(const struct apple80211req *request, char *said, size_t said_size)
 	if (asked->key_length == 0) {
 		what->security = REDWOOD_STA_OPEN;
 	} else if (asked->key_cipher == CIPHER_PASSPHRASE && asked->key_length >= 8 && asked->key_length <= 63) {
-		what->security = REDWOOD_STA_WPA2_PSK;
+		what->security = asked->auth_upper & AUTH_WPA3_SAE ? REDWOOD_STA_WPA3_SAE : REDWOOD_STA_WPA2_PSK;
 		what->passphrase_length = (uint8_t)asked->key_length;
 		memcpy(what->passphrase, asked->key, asked->key_length);
 	} else if (asked->key_cipher == CIPHER_PMK && asked->key_length == sizeof(what->pmk)) {
+		if (asked->auth_upper & AUTH_WPA3_SAE) { error = EINVAL; goto out; }
 		what->security = REDWOOD_STA_WPA2_PSK;
 		memcpy(what->pmk, asked->key, sizeof(what->pmk));
 	} else {
@@ -613,7 +621,7 @@ post(uint32_t code, const void *data, uint32_t length)
 	kev_post_msg(&message);
 }
 
-/* What the station side says has happened (bsd/dev/redwood_sta.c calls this, on its thread or the station's). */
+/* What the station side says has happened (bsd/dev/redwood.sta.c calls this, on its thread or the station's). */
 void
 redwood_apple80211_event(enum redwood_sta_event event, int status)
 {
