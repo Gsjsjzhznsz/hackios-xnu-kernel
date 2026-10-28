@@ -92,11 +92,13 @@ jobs:
           curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o base/r35-md1-root.apfs "${{ inputs.base_root }}"
           sha256sum base/* | tee base/SHA256SUMS.r35base
           # 硬校验：四件资产必须是 r35 release 的官方字节
+          # （gpu 的 4eec8b34 = run 40704068058 step② 对 release 直链完整下载的 sha256——
+          #   本地 07fd928a 是上会话 curl 中断的坏副本，作废；底板谱系三查即法律自证）
           python3 - base/ <<'PY'
           import hashlib, sys
           want = {
               'raphael-xnu-r35-flash.img':    'b0f9f6df4ea13ad9d45048e7ff15e33d7b2fcb67204d01964b1014517ca8a60b',
-              'raphael-xnu-r35-gpu-flash.img':'07fd928a5825cac2175e79f252f74d107fe04c799a4b42abb6b6fb195fb27090',
+              'raphael-xnu-r35-gpu-flash.img':'4eec8b340534bea96ca5a31731f0e47bc8b038eaf7f806c49b0d22d7c21da6a9',
               'raphael-r35-flashboot.apfs':   '14485e7c5ce125ef516168445c2500ac04ca5e40a908c2aef516b2d92c24ba0c',
               'r35-md1-root.apfs':            'a6dcfc919b2752c626bbedc29601b0b1a07bdf58c8ba16cf89c7ed53919d3117',
           }
