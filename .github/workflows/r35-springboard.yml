@@ -112,13 +112,16 @@ jobs:
           print('底板四件全部等于 r34 release 的官方字节（r34-springboard SHA256SUMS）')
           PY
           # 底板谱系三查（r34-kernel-id 还在本树）：v7 装载器 + R33 内核 + 小卷三态判读
-          python3 tools/r34-kernel-id.py base/raphael-xnu-r34-flash.img base/raphael-xnu-r34-gpu-flash.img | tee base-id.txt
+          # （--expect-volume-sha = r34 release 的 GL 卷：r34-kernel-id 的 KNOWN 表止于 R13 谱系，
+          #   R34 卷 sha 只能由打包时的 --expect 通道认领）
+          python3 tools/r34-kernel-id.py base/raphael-xnu-r34-flash.img base/raphael-xnu-r34-gpu-flash.img \
+                  --expect-volume-sha 7e15aaa6bb047fca48ea8b2b4ce7c84b0757deee76b95bbc2f825f6922e46abf | tee base-id.txt
           grep -q "ec15106da4bad290" base-id.txt || { echo "::error::r34 底板镜像的 loader 不是设备验证过的 v7（ec15106d…）"; exit 1; }
           grep -Ec "loader  sha256" base-id.txt | grep -qx 2 || { echo "::error::两张 r34 底板镜像都要读到 loader 条目"; exit 1; }
           grep -c "VERDICT: the kernel entry is R34" base-id.txt | grep -qx 2 || { echo "::error::底板镜像的内核不是 R34（= R33 字节 verbatim）"; exit 1; }
           grep -q "VERDICT: the ramdisk entry is R13..R33 VERBATIM" base-id.txt || { echo "::error::r34 日常镜像的小卷不是 R13 谱系"; exit 1; }
           grep -q "VERDICT: the ramdisk entry is the R34 GL-test volume" base-id.txt || { echo "::error::r34 GPU 镜像的小卷不是 R34 GL 卷"; exit 1; }
-          grep -q "but NOT metal=1" base-id.txt || { echo "::error::r34 GPU 底板的 cmdline 不该带 metal=1（那是本轮的新 token）"; exit 1; }
+          grep -q "R34 adds no token" base-id.txt || { echo "::error::r34 GPU 底板的 cmdline 不该带 metal=1（那是本轮的新 token，R34 的判词是不加 token）"; exit 1; }
           grep -c "libOSMesa.8.dylib=2" base-id.txt | grep -qx 1 || { echo "::error::r34 GPU 底板小卷的名字表指纹缺 libOSMesa.8.dylib"; exit 1; }
           # 两张底板镜像的 ramdisk 条目必须与各自底料一致（日常 = R13 谱系字节；GPU = r34-md1-root.apfs）
           python3 - base/ <<'PY'
