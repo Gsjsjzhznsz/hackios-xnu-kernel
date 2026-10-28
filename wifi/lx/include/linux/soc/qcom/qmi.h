@@ -1,6 +1,6 @@
 /*
  * QMI, the protocol in which the driver talks to the radio's firmware before the radio's own
- * registers exist. The helpers are the kernel's (bsd/sys/redwood_qmi.h, bsd/dev/redwood_qmi.c),
+ * registers exist. The helpers are the kernel's (bsd/sys/redwood_qmi.h, bsd/dev/redwood.qmi.c),
  * under Linux's names; a kernel tree that does not have them yet gets LinuxKPI's header, in
  * which every call fails.
  */

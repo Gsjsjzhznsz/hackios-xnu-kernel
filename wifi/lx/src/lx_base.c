@@ -3,7 +3,7 @@
  * ask it: locks, sleeping and waking, work queues, timers, memory, memory the radio reads and
  * writes, socket buffers, firmware files. The headers that declare all this are FreeBSD's
  * LinuxKPI; FreeBSD's own implementations stand on FreeBSD's kernel and are not used. These
- * stand on the few calls of lx_os.h, which the XNU side gives (bsd/dev/redwood_lx.c), and are
+ * stand on the few calls of lx_os.h, which the XNU side gives (bsd/dev/redwood.lx.c), and are
  * written for a driver that runs on threads only: nothing here is called from an interrupt.
  *
  * Everything that sleeps does so with lx_os_sleep() under the one lock of lx_os.h, and wakes
@@ -696,6 +696,22 @@ linux_cancel_delayed_work_sync(struct delayed_work *dwork)
 	bool waited = linux_cancel_delayed_work(dwork);
 
 	return (linux_cancel_work_sync(&dwork->work) || waited);
+}
+
+bool
+linux_flush_work(struct work_struct *work)
+{
+	if (work->work_queue == NULL) return false;
+	struct lx_workqueue *queue = __containerof(work->work_queue, struct lx_workqueue, shown);
+	bool waited = false;
+	lx_os_lock();
+	while (queue->thread != lx_os_thread_self() &&
+	    (queue->running == work || atomic_read(&work->state) != WORK_IDLE)) {
+		lx_os_sleep(&queue->running, SLICE_NS);
+		waited = true;
+	}
+	lx_os_unlock();
+	return waited;
 }
 
 void
