@@ -250,7 +250,7 @@ jobs:
           if-no-files-found: ignore
 
       # ---------------------------------------------------------------
-      - name: "④/⑦ GL 构建（userland pin aba1e81 + Mesa 25.0.7 softpipe,freedreno → libOSMesa.8.dylib + gl_test + u2f_test）"
+      - name: "④/⑦ GL 构建（userland pin 6832a54 + Mesa 25.0.7 softpipe,freedreno → libOSMesa.8.dylib + gl_test + u2f_test）"
         run: |
           set -eu
           set -o pipefail
@@ -261,6 +261,7 @@ jobs:
             echo "→ GL 构建失败——现场法证："
             ls -la xnu-deps/build/mesa/ 2>/dev/null || true
             echo "--- meson-setup.log (tail) ---"; tail -50 xnu-deps/build/mesa/meson-setup.log 2>/dev/null || true
+            echo "--- meson-log.txt (tail，meson 自己的完整日志) ---"; tail -80 xnu-deps/build/mesa/build-softpipe-freedreno/meson-logs/meson-log.txt 2>/dev/null || true
             echo "--- ninja.log (tail) ---"; tail -50 xnu-deps/build/mesa/ninja.log 2>/dev/null || true
             echo "--- venv 存在性 ---"; ls xnu-deps/build/mesa/venv/bin/ 2>/dev/null | head -8 || true
             exit 1
