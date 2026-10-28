@@ -100,7 +100,7 @@ jobs:
               'raphael-xnu-r35-flash.img':    'b0f9f6df4ea13ad9d45048e7ff15e33d7b2fcb67204d01964b1014517ca8a60b',
               'raphael-xnu-r35-gpu-flash.img':'4eec8b340534bea96ca5a31731f0e47bc8b038eaf7f806c49b0d22d7c21da6a9',
               'raphael-r35-flashboot.apfs':   '14485e7c5ce125ef516168445c2500ac04ca5e40a908c2aef516b2d92c24ba0c',
-              'r35-md1-root.apfs':            'a6dcfc919b2752c626bbedc29601b0b1a07bdf58c8ba16cf89c7ed53919d3117',
+              'r35-md1-root.apfs':            '6a8b055d1ea48b4647843c6eda47880121af3ba50886ddad152ef76edd09de6f',
           }
           for name, sha in want.items():
               got = hashlib.sha256(open(sys.argv[1] + name, 'rb').read()).hexdigest()
@@ -110,7 +110,7 @@ jobs:
           # 底板谱系三查（r36-kernel-id 还在本树）：v7 装载器 + R33 内核 + 小卷三态判读
           # （--expect-volume-sha = r35 release 的 GL+Metal 卷）
           python3 tools/r36-kernel-id.py base/raphael-xnu-r35-flash.img base/raphael-xnu-r35-gpu-flash.img \
-                  --expect-volume-sha a6dcfc919b2752c626bbedc29601b0b1a07bdf58c8ba16cf89c7ed53919d3117 \
+                  --expect-volume-sha 6a8b055d1ea48b4647843c6eda47880121af3ba50886ddad152ef76edd09de6f \
                   --expect-volume-name "the R35 GL+Metal volume" | tee base-id.txt
           grep -q "ec15106da4bad290" base-id.txt || { echo "::error::r35 底板镜像的 loader 不是设备验证过的 v7（ec15106d…）"; exit 1; }
           grep -Ec "loader  sha256" base-id.txt | grep -qx 2 || { echo "::error::两张 r35 底板镜像都要读到 loader 条目"; exit 1; }

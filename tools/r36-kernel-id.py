@@ -25,7 +25,7 @@ Known ramdisk-entry sha256s:
     R13..R33   372c7fcb7730726a8fb806eec7251e0e75a4188f64db6fbaedcf5b7663672dd4  (the R13 bytes)
     R34        7e15aaa6bb047fca48ea8b2b4ce7c84b0757deee76b95bbc2f825f6922e46abf  (the GL-test volume;
                the R35 daily rides it VERBATIM)
-    R35        a6dcfc919b2752c626bbedc29601b0b1a07bdf58c8ba16cf89c7ed53919d3117  (the GL+Metal volume;
+    R35        6a8b055d1ea48b4647843c6eda47880121af3ba50886ddad152ef76edd09de6f  (the GL+Metal volume;
                the R36 daily rides it VERBATIM)
     R36        the J3-fix volume (the sha the flash build passes in; its file-name table --
                libredwood-gl.dylib / RedwoodMetal.bundle / metal_props / metal_test /
@@ -42,7 +42,7 @@ FD_SIZE = 0x300000
 R33_SHA = '420f4b717b5dd0fe2f0b236bdbf2c686da6a2dd0169b3c9985de8e600e1e3560'
 R13_VOLUME = '372c7fcb7730726a8fb806eec7251e0e75a4188f64db6fbaedcf5b7663672dd4'
 R34_VOLUME = '7e15aaa6bb047fca48ea8b2b4ce7c84b0757deee76b95bbc2f825f6922e46abf'
-R35_VOLUME = 'a6dcfc919b2752c626bbedc29601b0b1a07bdf58c8ba16cf89c7ed53919d3117'
+R35_VOLUME = '6a8b055d1ea48b4647843c6eda47880121af3ba50886ddad152ef76edd09de6f'
 V7 = 'ec15106da4bad2905f5adefae194a1209daea9c0f464239d619804ec68f77cc2'
 KNOWN = {
     R33_SHA: 'R33 (run 40549952622, clean build; the resident round; R34..R36 ride these bytes VERBATIM)',

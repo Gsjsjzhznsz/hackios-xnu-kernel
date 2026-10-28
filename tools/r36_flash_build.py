@@ -10,7 +10,7 @@ bundle's ABSENCE at that path, which is the volume's sbin/init's business, not t
 cmdline's).
 
 The ONE thing that moves, in the GPU image's payload:
-  - the ramdisk entry: out goes the R35 GL+Metal volume (a6dcfc91...), in comes the R36
+  - the ramdisk entry: out goes the R35 GL+Metal volume (6a8b055d...), in comes the R36
     J3-fix volume (tools/r36_volume_build.py: sbin/init = the union-mount init, userland
     pin 6f04967; etc/rc.jobs = rc.jobs.r36metal; every other byte the R35 lineage's)
 
@@ -23,7 +23,7 @@ Laws asserted here, from the bytes alone:
   - the kernel entry is R33 (420f4b71...) in BOTH base images
   - the daily base carries NO gpu/adreno/metal token
   - the GPU base carries the FULL R35 set INCLUDING metal=1 -- and R36 adds NO token
-  - the base ramdisk entry is the R35 GL+Metal volume (a6dcfc91...), and the new volume's
+  - the base ramdisk entry is the R35 GL+Metal volume (6a8b055d...), and the new volume's
     sha256 matches what r36_volume_build.py recorded
   - the packed payload stays inside the loader's 64 MB window
   - the output re-proves every law from its own bytes
@@ -43,7 +43,7 @@ import sys
 
 V7 = 'ec15106da4bad2905f5adefae194a1209daea9c0f464239d619804ec68f77cc2'   # the device-validated loader
 R33 = '420f4b717b5dd0fe2f0b236bdbf2c686da6a2dd0169b3c9985de8e600e1e3560'  # R33's kernel (run 40549952622); R34, R35 and R36 ride it VERBATIM
-R35_VOLUME = 'a6dcfc919b2752c626bbedc29601b0b1a07bdf58c8ba16cf89c7ed53919d3117'  # the R35 GL+Metal volume (run 40674307363's release bytes)
+R35_VOLUME = '6a8b055d1ea48b4647843c6eda47880121af3ba50886ddad152ef76edd09de6f'  # the R35 GL+Metal volume (the r35 release's own SHA256SUMS bytes)
 R13_VOLUME = '372c7fcb7730726a8fb806eec7251e0e75a4188f64db6fbaedcf5b7663672dd4'  # the R13-lineage md1 (the DAILY images' ramdisk)
 GPU_TOKENS = ('gpu=1', 'adreno=22', 'adreno_pause=0', 'adreno_watch=0', 'adreno_keep=1', 'metal=1')
 DAILY_TOKENS = ('touchscreen=1', 'buttons=1', 'cpus=8', 'ufs=2', 'bootcpu=7', 'root_apfs=ufs_userdata')
