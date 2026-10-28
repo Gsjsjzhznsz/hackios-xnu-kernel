@@ -125,7 +125,7 @@ jobs:
           grep -c "libOSMesa.8.dylib=2" base-id.txt | grep -qx 1 || { echo "::error::r34 GPU 底板小卷的名字表指纹缺 libOSMesa.8.dylib"; exit 1; }
           # 两张底板镜像的 ramdisk 条目必须与各自底料一致（日常 = R13 谱系字节；GPU = r34-md1-root.apfs）
           python3 - base/ <<'PY'
-          import gzip, struct, sys
+          import gzip, struct, hashlib, sys
           def ramdisk_of(path):
               img = open(path, 'rb').read()
               blob = gzip.decompress(img[4096:4096 + struct.unpack('<I', img[8:12])[0]])
@@ -140,7 +140,7 @@ jobs:
               return out['ramdisk']
           daily_expect = '372c7fcb7730726a8fb806eec7251e0e75a4188f64db6fbaedcf5b7663672dd4'
           gpu_base = open(sys.argv[1] + 'r34-md1-root.apfs', 'rb').read()
-          assert ramdisk_of(sys.argv[1] + 'raphael-xnu-r34-flash.img').hex() == daily_expect, \
+          assert hashlib.sha256(ramdisk_of(sys.argv[1] + 'raphael-xnu-r34-flash.img')).hexdigest() == daily_expect, \
               'r34 日常镜像的 ramdisk 条目不是 R13 谱系字节'
           assert ramdisk_of(sys.argv[1] + 'raphael-xnu-r34-gpu-flash.img') == gpu_base, \
               'r34 GPU 镜像的 ramdisk 条目与 r34-md1-root.apfs 不一致'
