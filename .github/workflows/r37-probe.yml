@@ -1,0 +1,15 @@
+name: r37 registration probe
+on:
+  workflow_dispatch:
+    inputs:
+      x:
+        description: "probe"
+        required: false
+        default: "1"
+permissions:
+  contents: write
+jobs:
+  p:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo probe
