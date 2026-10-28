@@ -22,7 +22,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 
 USERLAND_URL=${USERLAND_URL:-https://github.com/Gsjsjzhznsz/hackios-xnu-userland.git}
-USERLAND_PIN=${USERLAND_PIN:-6832a54fee2c9605a141c2aa7bd9ab5f40b93f69}
+USERLAND_PIN=${USERLAND_PIN:-e76d965e80882d8d0c242023639f26996095746c}
 GL_OUT=${GL_OUT:-r34-gl}
 MESA_OUT=xnu-deps/build/mesa/out
 

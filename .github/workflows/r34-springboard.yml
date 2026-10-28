@@ -250,7 +250,7 @@ jobs:
           if-no-files-found: ignore
 
       # ---------------------------------------------------------------
-      - name: "④/⑦ GL 构建（userland pin 6832a54 + Mesa 25.0.7 softpipe,freedreno → libOSMesa.8.dylib + gl_test + u2f_test）"
+      - name: "④/⑦ GL 构建（userland pin e76d965 + Mesa 25.0.7 softpipe,freedreno → libOSMesa.8.dylib + gl_test + u2f_test）"
         run: |
           set -eu
           set -o pipefail
