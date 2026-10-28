@@ -50,7 +50,7 @@ jobs:
                        /usr/local/share/boost /opt/hostedtoolcache/CodeQL 2>/dev/null || true
           sudo docker image prune -af >/dev/null 2>&1 || true
           sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential python3-dev clang lld ccache \
+          sudo apt-get install -y -qq build-essential python3-dev python3-venv python3-pip clang lld ccache \
                        flex bison m4 perl python3 autoconf automake libtinfo6 xz-utils uuid-dev 7zip \
                        meson ninja-build llvm >/dev/null
           command -v clang && command -v ccache && command -v 7z && command -v meson && command -v ninja
@@ -253,8 +253,18 @@ jobs:
       - name: "④/⑦ GL 构建（userland pin aba1e81 + Mesa 25.0.7 softpipe,freedreno → libOSMesa.8.dylib + gl_test + u2f_test）"
         run: |
           set -eu
+          set -o pipefail
           cd hackios
-          bash tools/r34_gl_build.sh 2>&1 | tee "$REL/r34-gl-build.log"
+          bash tools/r34_gl_build.sh 2>&1 | tee "$REL/r34-gl-build.log" || {
+            # 现场法证：mk-mesa.sh 把 meson/ninja 的输出重定向进自己的日志，无声死掉时
+            # 把现场原样倾倒进 job log（run 40612388705：12 秒静默死亡，无任何输出）
+            echo "→ GL 构建失败——现场法证："
+            ls -la xnu-deps/build/mesa/ 2>/dev/null || true
+            echo "--- meson-setup.log (tail) ---"; tail -50 xnu-deps/build/mesa/meson-setup.log 2>/dev/null || true
+            echo "--- ninja.log (tail) ---"; tail -50 xnu-deps/build/mesa/ninja.log 2>/dev/null || true
+            echo "--- venv 存在性 ---"; ls xnu-deps/build/mesa/venv/bin/ 2>/dev/null | head -8 || true
+            exit 1
+          }
           test -f r34-gl/libOSMesa.8.dylib || { echo "::error::GL 构建没有产出 libOSMesa.8.dylib"; exit 1; }
           test -f r34-gl/gl_test || { echo "::error::GL 构建没有产出 gl_test"; exit 1; }
           test -f r34-gl/u2f_test || { echo "::error::GL 构建没有产出 u2f_test"; exit 1; }
