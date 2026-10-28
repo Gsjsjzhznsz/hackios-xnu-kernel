@@ -221,6 +221,10 @@ uint64_t loader_sound[3];
 /* R38: where the panel is being read from (the display round's page flips), for the loader's
  * screenshot to find the front buffer; 0 until the display round has taken the scanout over. */
 uint64_t loader_framebuffer;
+/* The R38 round's own mark, in the binary on purpose: the flash build and r38-kernel-id
+ * name the kernel by the strings it carries, and a channel that is only ever compared as
+ * a number otherwise leaves no trace in them. */
+__attribute__((used)) static const char loader_live_magic4_mark[] = "XNULIVE4";
 
 void
 loader_set_framebuffer(uint64_t phys)

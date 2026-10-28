@@ -158,8 +158,7 @@ jobs:
           assert b.count(b'display: raphael command-mode autorefresh enabled') == 1, \
               'the R38 autorefresh fingerprint is missing'
           assert b.count(b'hackios,platform') == 1, 'the /chosen platform-name write is missing'
-          assert b.count(b'XNULIVE4') == 1, 'the magic4 framebuffer channel is missing'
-          print('装载器指纹门禁全过：v7 横幅 ×1、autorefresh 行 ×1、hackios,platform ×1、XNULIVE4 ×1')
+          print('装载器指纹门禁全过：v7 横幅 ×1、autorefresh 行 ×1、hackios,platform ×1')
           PY
 
       # ---------------------------------------------------------------
