@@ -34,7 +34,7 @@ TREE=$(cd "${1:-$(dirname "$0")/..}" && pwd)
 cd "$TREE"
 R36_OUT=${R36_OUT:-r36-init}
 USERLAND_URL=${USERLAND_URL:-https://github.com/Gsjsjzhznsz/hackios-xnu-userland.git}
-USERLAND_PIN=${USERLAND_PIN:-6f04967}
+USERLAND_PIN=${USERLAND_PIN:-6f049679ee6fe9a565486b1eb8a957ac9fdf2287}
 
 # ---- the userland checkout (the same arrangement as r35_gl_metal_build.sh's, at this round's pin)
 if [ ! -d .userland.git ] || [ "$(git --git-dir=.userland.git rev-parse HEAD 2>/dev/null)" != "$USERLAND_PIN" ]; then
@@ -57,7 +57,7 @@ if [ ! -d .userland.git ] || [ "$(git --git-dir=.userland.git rev-parse HEAD 2>/
         "${UG[@]}" ls-files -z | grep -zvxE 'README\.md|\.gitignore|LICENSE' | xargs -0 "${UG[@]}" checkout --
 fi
 GOT=$(git --git-dir=.userland.git rev-parse HEAD)
-[ "$GOT" = "$USERLAND_PIN" ] || { echo "::error::userland pin drift: $GOT != $USERLAND_PIN"; exit 1; }
+case "$GOT" in "$USERLAND_PIN"*) ;; *) echo "::error::userland pin drift: $GOT != $USERLAND_PIN"; exit 1;; esac
 echo "→ userland @ $(git --git-dir=.userland.git log -1 --format='%h %cs %s')"
 test -f userland/src/init.c || { echo "::error::the pin's tree has no userland/src/init.c"; exit 1; }
 test -f userland/rc.jobs.r36metal || { echo "::error::the pin's tree has no rc.jobs.r36metal (the pin predates the R36 round)"; exit 1; }
