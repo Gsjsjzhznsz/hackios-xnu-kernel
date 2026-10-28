@@ -16,20 +16,20 @@ HackiOS 让 Apple 开源的 XNU 内核在 Android 手机硬件上启动，并在
 - **会话式研究台，不是 ROM**：系统卷住在 RAM、不写手机闪存（logdump 取证分区除外），重启即回 Android
 - **每轮一个变量**：R 系轮次（R28d → R28i → R28j…）用外科手术式打包——底板镜像只换内核条目，装载器/卷/cmdline 逐字节原样，机器可证明
 
-## 当前状态（2026-10 · R32 实机判决 + R33 GPU 常驻落地 + R34 GL 测试轮）
+## 当前状态（2026-10 · R32 实机判决 + R33 GPU 常驻 + R34 GL 全栈真机验证（I1）+ R35 Metal 轮）
 
 | 已工作 | 未工作 / 卡点 |
 |---|---|
-| 锁屏 → 桌面 → 应用（R28i 真机点亮 SpringBoard） | **窗口服务器 GL（GL=1）**：R34 把 Mesa/FD640 的 libOSMesa + gl_test 送进卷（GL=test：三角上屏验全栈），窗口服务器切换是下一轮 |
-| 触摸（Goodix GT9886，含冷启动重试梯）、电源/音量键 | Metal（编译器在，无 Metal 驱动） |
+| 锁屏 → 桌面 → 应用（R28i 真机点亮 SpringBoard） | **窗口服务器 GL（GL=1）**：R35 送 libredwood-gl.dylib 进卷并注入 backboardd（gpu_draws() 门），真机判决待 J 树 |
+| 触摸（Goodix GT9886，含冷启动重试梯）、电源/音量键 | Metal：发现链全栈已就位（R35：RedwoodMetal.bundle + metal=1 + metal_props/metal_test 上机），真机判决待 J 树 |
 | 八核（`cpus=8`，Kryo 485） | 蜂窝、蓝牙 |
-| **GPU 全管线真机打通（R32 设备判决，logdump 入账）**：step 12 TZ 认签 → step 19 zap 认证+起动 → step 21 3D 核按命令写内存 → step 22 GPU 画的画面上屏 | WiFi（raphael = WCN399x/ath10k-SNOC + ICNSS/MPSS：移植方案已立项，[docs/RAPHAEL-WIFI-PORT-PLAN.md](docs/RAPHAEL-WIFI-PORT-PLAN.md)，参照 HeliumStudio raphael-bringup 的独立大移植） |
+| **GPU 全管线真机打通（R32 设备判决）+ GL 用户态真机验证（R34 I1）**：step 12/19/21/22 全过 → gl_test 报 freedreno FD640 / GLES 3.2，三角 57 ms 画成、26% 像素计数与几何精确一致、上屏 | WiFi（raphael = WCN399x/ath10k-SNOC + ICNSS/MPSS：移植方案已立项，[docs/RAPHAEL-WIFI-PORT-PLAN.md](docs/RAPHAEL-WIFI-PORT-PLAN.md)，fork 资产 hakios.mpss/wifi/qmi 已确认可达，R36 MPSS 装载轮待开工） |
 | 显示 + 亮度通道（IOMFB sel 50 → DSI DCS 0x51） | 完整充电路径（电池链与充电监视在，端到端未验证） |
 | 电池服务（AppleSmartBattery）+ 5s 充电输入监视 | App Store / Apple ID（无 Secure Enclave） |
 | USB ECM 网络（`ue0` 192.168.7.2） | |
 | logdump 分区取证 + R26 flush 通道（可能复位的调用前整日志落盘） | |
 
-**当前轮 R34（GL 测试轮）**：R33 的设备判决（H1 成立）证明 GPU 常驻落地——steps 1..22 全过后 `"THE GPU STAYS ON for the system to draw with: the service RedwoodGPU"`（585 MHz，温度/频率在案），系统软件渲染。R34 送 GL 用户态上机：userland `build.sh GL=test` 的产出（Mesa 25.0.7 libOSMesa.8.dylib = softpipe+freedreno、gl_test、u2f_test）注入 md1 卷，`etc/rc.jobs` 换成 `rc.jobs.gltest`——gl_test 经 OSMesa→freedreno(FD640)→内核 RedwoodGPU 服务画一个三角，读回像素并放面板 8 秒。**内核一字节未动（R33 的 420f4b71… verbatim + CI 字节复现门禁），cmdline 一个 token 未动——唯一变量 = 卷**。手术方式：提取 R13 谱系卷（只读 apfs.py）→ 增量注入 → mkapfs 重建 → 逐文件往返证明（79 文件 byte-identical + 3 增量 + 1 换装）。判读树 I（I1 全通 / I2 softpipe / I3 编译链接 / I4 无上屏服务 / I5 回滚）见 [r34-springboard Release](https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases) 的 `README.txt`。
+**当前轮 R35（Metal 轮）**：R34 的设备判决（I1 成立，用户 logdump 入账）证明 GL 全栈真机打通——`gl_test: freedreno; FD640; OpenGL ES 3.2 Mesa 25.0.7`，三角 57 ms 画成/29 ms 读回/26% 像素精确，上屏 8 秒；同份 logdump 在案 `backboardd: CoreAnimation: Failed to initialize Metal or OpenGLES contexts!` = 系统级通道缺席，即本轮课题。R35 三件事：① **Metal 发现链上机**——RedwoodMetal.bundle（源码声明的 `_MTLDevice` 子类 RedwoodMetalDevice，资源层走 RedwoodGPU 的 msm 形接口）进卷 + `/System/Library/Extensions/` 链接 + cmdline 追加 `metal=1`（IOAcceleratorES 服务接受两个发现属性的唯一开关），`rc.jobs.r35metal` 依次 metal_props on → metal_test（五步）→ metal_drv_test --sweep（全类全方法）；② **GL=1 的 libredwood-gl.dylib 进卷**并经 inject.conf 注入 backboardd（gpu_draws() 门开 ⇒ CoreAnimation 经 EAGL→Mesa→freedreno→A640 画 UI 的通道）；③ **内核一字节未动**（R33 的 420f4b71… verbatim + CI 字节复现门禁），cmdline 恰好一个新 token——单变量纪律。判读树 J（J1 发现链全通 / J2 metal=1 门 / J3 bundle 缺位 / J4 类注册 / J5 backboardd 深层 / J6 daemon 循环 / J7 早期崩）见 [r35-springboard Release](https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases) 的 `README.txt`。R34 段（GL 测试轮）的完整记述移至 git 历史与 [r34 Release](https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases)。
 
 **越狱路线**：本项目内核即越狱——kernel 由我们构建、注入式 dylib（libredwood*）已在 iOS 进程内跑；包管理生态（/var/jb + Procursus + Sileo）的落地路径见 [docs/JAILBREAK.md](docs/JAILBREAK.md)（fork 的 rc.jobs.jb/sileo 实证：WiFi 联网后 apt 可用）。
 
@@ -40,29 +40,29 @@ HackiOS 让 Apple 开源的 XNU 内核在 Android 手机硬件上启动，并在
 需要：解锁 bootloader 的 Redmi K20 Pro、`fastboot`、Release 里的两个文件（镜像 + 启动卷）。**不写手机闪存。**
 
 ```sh
-fastboot boot  raphael-xnu-r34-gpu-flash.img   # R34 GL 轮（三角在锁屏稳定后上屏 8 秒）
+fastboot boot  raphael-xnu-r35-gpu-flash.img   # R35 Metal 轮（发现链判决在系统安静后跑）
 fastboot oem  ramdisk
-fastboot stage raphael-r34-flashboot.apfs      # iOS 系统卷 → RAM（一次 loader 会话一次）
-fastboot oem  run                              # 等 SpringBoard（约 1-2 分钟）+ gl_test 判决行
+fastboot stage raphael-r35-flashboot.apfs      # iOS 系统卷 → RAM（一次 loader 会话一次）
+fastboot oem  run                              # 等 SpringBoard（约 1-2 分钟）+ rwtouch wait 22 后的五行判决
 ```
 
-- 控制组/回滚：`raphael-xnu-r34-flash.img`（= r33 日常镜像逐字节原样，无 GPU 步骤）或 r33 GPU 镜像
+- 控制组/回滚：`raphael-xnu-r35-flash.img`（= r34 日常镜像逐字节原样，无 GPU 步骤）或 r34 GPU 镜像
 - ⚠️ 启动卷**只 stage 这一个文件**：md1 备份不要 stage（镜像已内嵌全量小卷——R14 事故纪律）
 - ⚠️ userdata 上的 iOS 卷是唯一存货：绝不要让 MIUI 开机（Android 会重格回 f2fs，iOS 卷即毁）
 - 每次开机都要重复四步（会话住 RAM 是"不写闪存"设计的一部分）
 
 ## 构建（CI 一键）
 
-Actions → `R34 · SpringBoard 一键流水线` → Run workflow（默认参数即可）。流水线做的事：
+Actions → `R35 · SpringBoard 一键流水线` → Run workflow（默认参数即可）。流水线做的事：
 
 1. 工具链钉死（L1ghtmann v19.0.0-L2 具名 tag + 每轮全新缓存键、无 restore 链——R28i 对 lsd SIGBUS 构建漂移的定罪回应）
-2. 从本树源码构建内核并断言字节复现（sha == R33 的 420f4b71…——R34 不动内核，差一字节即环境漂移/误改，硬门禁）
-3. GL 构建（userland pin aba1e81 + Mesa 25.0.7 softpipe,freedreno → libOSMesa.8.dylib + gl_test + u2f_test）
-4. 卷构建（提取 R13 谱系卷 → GL 增量注入 → mkapfs 重建 → selftest 往返 + 79 文件逐字节证明）
-5. 外科手术：日常镜像 = r33 逐字节原样；GPU 镜像只换 ramdisk 条目 = GL 卷（装载器 v7 / kernel / cmdline / DTB 逐字节原样，SHA 硬校验）
-6. 发布 Release（双镜像 + 启动卷 + GL 卷 + 卷清单 manifest + SHA256SUMS + README 判读树 + 工具链审计表）
+2. 从本树源码构建内核并断言字节复现（sha == R33 的 420f4b71…——R35 不动内核，差一字节即环境漂移/误改，硬门禁）
+3. GL+Metal 构建（userland pin de5ef58 + Mesa 25.0.7 → GL 三件 + libredwood-gl.dylib + RedwoodMetal.bundle + metal_props/metal_test/metal_drv_test，八件全部 Mach-O 断言）
+4. 卷构建（提取 R34 谱系卷 → GL/Metal 增量 + Extensions 链接 + inject.conf +1 行注入 → mkapfs 重建 → selftest 往返 + 81 文件逐字节证明）
+5. 外科手术：日常镜像 = r34 逐字节原样；GPU 镜像换 ramdisk 条目 = GL+Metal 卷 + cmdline 追加 metal=1（装载器 v7 / kernel / DTB 逐字节原样，SHA 硬校验）
+6. 发布 Release（双镜像 + 启动卷 + 卷 + 卷清单 manifest + SHA256SUMS + README 判读树 + 工具链审计表）
 
-本地构建：`xnu/apply.sh` → `xnu-deps/setup.sh` → `xnu-build.sh -k`（详见 `xnu/README.md`）；GL 件 `tools/r34_gl_build.sh`；卷 `tools/r34_volume_build.py`；打包 `tools/r34_flash_build.py`；离线血统判定 `tools/r34-kernel-id.py <image> --expect-volume-sha <sha>`。
+本地构建：`xnu/apply.sh` → `xnu-deps/setup.sh` → `xnu-build.sh -k`（详见 `xnu/README.md`）；GL+Metal 件 `tools/r35_gl_metal_build.sh`；卷 `tools/r35_volume_build.py`；打包 `tools/r35_flash_build.py`；离线血统判定 `tools/r35-kernel-id.py <image> --expect-volume-sha <sha>`。
 
 ## 仓库结构
 
