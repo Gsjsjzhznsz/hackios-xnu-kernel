@@ -59,6 +59,7 @@
 extern int loader_log_flush(void);              /* osfmk/arm64/loader_return.c */
 extern int proc_selfpid(void);
 extern char *proc_name_address(void *p);        /* the bsd proc's name buffer */
+extern void *get_bsdtask_info(task_t task);     /* bsd/sys/proc.h (declared here: an osfmk file keeps to its own externs, the file's own precedent above) */
 
 #define R42_PATH_MAX            1024
 #define R42_VERBOSE_FIRST       3
@@ -120,12 +121,18 @@ redwood_fault_convict(vm_map_t map, vm_map_offset_t vaddr, kern_return_t kr)
                 (void) loader_log_flush();
                 return;
         }
-        fileoff = entry->offset + (vaddr - entry->vme_start);
+        /* vme_offset is a bitfield member of vm_map_entry (xnu-8796: vme_start
+         * through vme_end are macros over links.*, offset lives as vme_offset) */
+        fileoff = entry->vme_offset + (vaddr - entry->vme_start);
 
         /* down the shadow chain, locks held top-down (the collapse order):
          * each level's size and pager read under its own exclusive lock, the
          * chain keeps every level pinned while the walk continues */
-        object = entry->object.vm_object;
+        /* xnu-8796 packs the object into the entry: there is no entry->object
+         * union any more -- VME_OBJECT() is the accessor (vm_map.h), it UNPACKs
+         * vme_object_or_delta and asserts the entry is not a sub map (this
+         * caller already returned on is_sub_map above) */
+        object = VME_OBJECT(entry);
         while (object != VM_OBJECT_NULL && walk_depth < R42_SHADOW_MAX) {
                 vm_object_t next;
 
