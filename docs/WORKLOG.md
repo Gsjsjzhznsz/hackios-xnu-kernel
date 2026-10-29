@@ -1435,3 +1435,16 @@ r28l flashboot → oem run；**等 ~2-3 分钟过风暴首发窗再抓 logdump**
 **新律入册（模板占位符定律的第二条）**：凡模板经临时文件交子 bash 执行，其占位符**逐一**核对可见性——export 或 job 级 env 二选一，普通赋值=子进程空串；凡模板内含管道（tee 收尾是常态），调用必须 `bash -eo pipefail`——管道尾命令的 0 不是工具的 0。
 
 **离线复验（scripts/r41_univ_globfix_verify.py，21 项）**：全绿——结构断言（③ 无裸 K= 赋值/全仓 0 处 bash -e /tmp/ 恰 7 处 pipefail）+ run#2 全套 15 项回归 + **子 bash 展开双态**：K 不在环境 ⇒ 模板收到空串（run#3 bug 复现，open('') 崩）；K 在环境 ⇒ open() 拿到真路径。另：本地容器曾回滚到 R35 快照一次（worklog 首次入册的老坑：** convict 之前先 fetch**——远端未失，reset --hard origin/main 即愈）。
+
+## R41 收官 + 真机判决（2026-10-29，run#4 = 40858174758 SUCCESS；用户刷 GPU 镜像：卡白苹果）
+
+**CI 收官**：run#4 8.5 分钟全绿——通用工作流 springboard.yml 首个成功轮（run#1 派发 422 / run#2 发布 glob 基准面 / run#3 占位符空串+pipefail，三修四跑）。Release r41-springboard 八资产齐（双镜像/flashboot/md1/gate 报告/SHA256SUMS/README/toolchain）。镜像复验（tools/r41-kernel-id.py）：GPU 内核判 R41、cmdline = R39 组 verbatim、卷 = R39/R40（5b9bbbcb）、loader = 4bf828e4 verbatim；日常镜像 sha b0f9f6df 逐字节 == r40（控制组律成立）。**发布内核 sha = f17119fb**（CI gate 报告六律全绿）；run#3 的 7a2564bd 同源不同 UUID——不可复现律应验，判读时不得跨 run 钉 sha。
+
+**真机判决（用户 logdump 4546 行，单 boot 全程至用户态 00:03:17）**：
+- **M1 = 未触发**：全篇 0 处 "frame dropped"——R41 快照通道武装完毕但前提（首次丢帧）从未发生；loader 记录 27 次内核主动 flush，存储通道本身工作正常。
+- **M2 = 未到窗**：WiFi 仅内核横幅一行，radio 任务没有拿到窗口（用户态卡死在 SB 之前）。
+- **M3 = 绿**：显示 scanout 三缓冲在场、logo 经 redwood-gl 帧 1-4 真渲染、触摸/按键全程存活。
+- **R40 的 GPU 停摆墙未复现**（也可能未到达——SB 从未开始绘制）。
+- **新墙 = lsd SIGBUS ×78 连续崩溃循环**：00:01:59.712 backboardd 阻塞请求 LaunchServices 数据库 → .713 lsd[29] 立即 SIGBUS；此后每秒一崩至记录尾（00:03:17）；backboardd 自身映射同库也报 "Database mapping failed"。**唯一崩溃者**（其余全部守护进程零异常）；SpringBoard[7] 00:00:48 拉起后活着但全程沉默（无绘制无退出）。
+- **判读**：两进程同一文件同死 ⇒ 矛头指向内核侧文件映射页填充路径（vnode pager / mmap 页入），csstore/mapdb 为首个受害者；SB 的沉默与 backboardd 的重试同源。R40 的 GPU 墙与本墙互相独立，boot 间服务调度次序决定先撞哪面。
+- **R42 预注册（pager 轮）**：内核在 SIGBUS 交付点记录文件身份（vnode 路径/偏移/长度/返回值）——一次 boot 定罪到具体文件；嫌疑三选一：mmap 页入未实现簇读 / csstore 稀疏或压缩场景下 extent 读零填充 / 文件尺寸报告错误（lsd 映射越 EOF 必 SIGBUS）。修复落点在定罪后开刀。
