@@ -182,7 +182,14 @@ def main():
     text_o = [s for s in segs_o if s[0] == b'__TEXT'][0]
     text_n = [s for s in segs_n if s[0] == b'__TEXT'][0]
     shift = text_n[2] - text_o[2]
-    assert shift > 0, '__TEXT did not grow (delta %d) -- the new function did not land?' % shift
+    # The real build may absorb the whole round in __TEXT's tail padding: R41's
+    # delta-0 was the real outcome, and R42's run#7 (40895517421) measured it
+    # again -- the new function and its format strings fit the page-aligned
+    # slack, __TEXT fileoff/filesize untouched, the +336 B all being __LINKEDIT
+    # symbol/string growth.  The law is the ACCOUNTING, not the sign: __TEXT
+    # must not shrink, the mid segments keep their sizes and shift by the same
+    # amount, and __LINKEDIT takes exactly the rest (asserted below).
+    assert shift >= 0, '__TEXT shrank %d B -- nothing in this round can shrink it' % shift
     assert shift < 16384, '__TEXT grew %d B, past the 16 KiB forensics band' % shift
     moved = []
     for (name_o, fo_o, fs_o), (name_n, fo_n, fs_n) in zip(segs_o, segs_n):
