@@ -1559,3 +1559,17 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 **修刀（单文件 tools/mk-ath10k.py 的 archive()/fetch()）**：①单 URL → 镜像组（freebsd 主源 + Leaseweb 官方镜像，本容器实测 200 OK；MIT/Clarkson 404 弃用；**下载后 sha256 铁闸不变，错字节永不静默**）；②180 s → 600 s/次 × 4 次外层重试，镜像轮换；③`-C -` 断点续传（.partial 跨次增长）；④停滞探测器（<10 KB/s 持续 60 s 即弃投下轮，不死等预算）；⑤sha 不符即**毒杀** .partial（删除重下，坏字节永不复用）；⑥完整未收编的 .partial 直接收编（防 `-C -` 吃 416 死循环）。**端到端真字节验证（scripts/r43_run10_fetch_verify.py）**：hostap（3.8 MB 真下载）sha 落盘 ✓、sha 快路径零网络 ✓、完整 .partial 零 HTTP 收编 ✓（416 守卫）、错 sha 毒杀 + RuntimeError ✓（真续传演练：curl 从 33 B 断点续完）。mk-ath11k.sh 的 freebsd 下载同源不同病（无超时上限，会挂不会炸）但不在 R43 路径，本轮不动。
 
 **新律入册（下载预算律）**：CI 里的钉版大文件下载，预算必须按**最慢合法节点**定（实测最差 ~1.2 MB/s → 241 MB 需 ≥ 7 min 预算），且必须带断点续传 + 重试 + sha 铁闸——单次单 URL 的 180 s 是把构建成败交给 CDN 节点分配器。镜像冗余是第二道，sha 校验是唯一裁决。
+
+## R43 收官（2026-10-30，run 40922899548 SUCCESS，fa37d34）：try-lock 探针轮发布
+
+**修复链全记录**：0f38500（R43 立项 + 工具链重锚）→ run#8 红（40917994778，门禁 lineage 律陈旧断言 `old.count(pager literal) == 0`——R42 轮复制件漏重锚，R43 的基线是 R42 发布内核自带 x4，法律 4→6 不是 0→6）→ 2aa0542（基线断言 ==4 + docstring/标签三处陈旧件，重锚律入册）→ run#10 红（40920542879，mk-ath10k.py 拉 FreeBSD 241 MB 在 180 s 预算 89 % 处超时——下载预算律入册）→ fa37d34（镜像组 + 续传 + 重试 + sha 毒杀 + 416 守卫，真字节四路径验证）→ **run#11 绿（40922899548）**。死亡点轨迹：门禁（基线侧）→ 下载（预算侧）——本轮两刀都不是内核代码，内核与探针本体一次编译通过。
+
+**六律绿（真发布对）**：r42 基线 ef204f28（17,009,200 B）× r43 内核 **cddf7a81**（17,009,200 B，**+0 B**）——size 律（带内 delta +0，本轮整轮装进 __TEXT 页尾 padding）；marker 律（R43 标记 x1 / R42 标记退役 x0，同长换装 56 B，落 0x29e76 真 rodata）；lineage 律（R33 gen4 + R38 display/WiFi 5 + XNULIVE4 + "frame dropped" x2 全在 + **"redwood-pager: verdict" 字面量 x6 = 基线 x4 + 两条新 busy 格式**——run#8 修复在真 CI 对上兑现）；**segment 律实测形 = 18 段名序列不变 + __TEXT +0 B + 其余 payload 段 +0 平移 + __LINKEDIT +0 B 恰归账（全程 delta 0，symtab 一字未动：nsyms 72993→72993，strtab 0x202d68→0x202d68）**；strings 律（+5/−3，掩码区外）；symtab 律（nsyms 持平）。**GATE GREEN**。
+
+**双镜像复验（tools/r43-kernel-id.py）**：GPU 镜像（e4860be9）= loader R39..R43 4bf828e4 verbatim + 内核判 **R43** cddf7a81（pager x6 + R42/R41/R40 三退役）+ 卷 5b9bbbcb verbatim + cmdline R39 GPU 形 verbatim（fb_scan=1 + wifi=1 wifi_bdf=bd_f11cn.bin）；日常镜像 = **b0f9f6df 整文件逐字节 = R42 日常控制组原字节**（R33 内核 420f4b71 + v7 loader + R13 卷，cmdline 无 GPU/WiFi token）。
+
+**发布内核 sha 记录**：`cddf7a81362d85f2fe2d991e21936d0ba2b4ee5e680eace85719e2fa5bc93306`（17,009,200 B；日常控制组 b0f9f6df 不变；tag r43-springboard，八资产 8/8，SHA256SUMS 逐字节吻合）。
+
+**R43 轮的真机使命（对照 R42 验尸）**：R42 黑屏主犯 = 探针自己的 RW 锁递归（shadow-chain 尾部预锁 + 顶部再锁，lock_rw.c:877 owner==self，SpringBoard 的 IOSurface 影子链当场捕获）。R43 的单刀：每把锁都是 try（vm_map_try_lock_read / vm_object_lock_try_scan，非阻塞无断言原语），每层链顶部只锁一次，busy 即最小判词走人（`map lock busy` / `chain lock busy at depth N` 两条新格式）；判词去重治理 160 条 no-map-entry 洪水。**判读预期：MR3（无 panic）是底线，MR1（lsd 定罪）预期仍缺席非失败**——lsd 的 7 ms SIGBUS 死不经过 vm_fault_internal 失败出口（R42 判词已证伪页填充假设），sandbox/CPU-monitor 拒绝路径是 R44 的线索。
+
+**下一步（用户侧）**：刷 raphael-xnu-r43-gpu-flash.img（fastboot flash boot）→ ≥4 分钟观察窗 → 五指长按 1.5s 退回 loader → 二次 boot 抓 logdump 回传。判读树：MR1 = `redwood-pager: verdict` 定罪文件（lsd 预期仍缺席，非失败）；MR2 = busy 变体行（`map lock busy` / `chain lock busy at depth N`——探针在真实持锁路径上让路的直接证据）；MR3 = panic 护栏（全 logdump 不得出现 `Lock already held`、`panic(cpu`）；MR4 = 丢帧与 R42 相若（9 处/123.9s 起的 GPU hang 链是否复现）；MR5 = WiFi（固件缺失注记依旧非失败）。
