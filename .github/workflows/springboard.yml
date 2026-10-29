@@ -46,18 +46,13 @@ on:
         description: "底板启动卷 sha256"
         required: true
         default: "14485e7c5ce125ef516168445c2500ac04ca5e40a908c2aef516b2d92c24ba0c"
-      base_loader_sha:
-        description: "底板 GPU 镜像内 loader.efi 条目 sha256（提取校验；空 = 只提取不校验）"
+      base_entry_shas:
+        description: "底板 GPU 镜像内条目 sha 钉死（每行一条 name=sha；name ∈ loader.efi/kernel/ramdisk；空 = 只提取不校验）"
         required: false
-        default: "4bf828e425e4b59d3668461ff89ef290dfbf3215cceec903f1662255fe45a3db"
-      base_kernel_sha:
-        description: "底板 GPU 镜像内 kernel 条目 sha256（提取校验 + 门禁基线）"
-        required: false
-        default: "dc03efe0d0e837cf694808dbeda0be4197ac9e701d0420ac098f61c7ced77028"
-      base_ramdisk_sha:
-        description: "底板 GPU 镜像内 ramdisk 条目 sha256"
-        required: false
-        default: "5b9bbbcb6b5ede61d734bf8144fc639d4e419a22bb81e7d6cf93141f4fbe8746"
+        default: |
+          loader.efi=4bf828e425e4b59d3668461ff89ef290dfbf3215cceec903f1662255fe45a3db
+          kernel=dc03efe0d0e837cf694808dbeda0be4197ac9e701d0420ac098f61c7ced77028
+          ramdisk=5b9bbbcb6b5ede61d734bf8144fc639d4e419a22bb81e7d6cf93141f4fbe8746
       base_id_cmd:
         description: "底板判读命令（可选；空 = 跳过。占位符：$BASE_DAILY $BASE_GPU $BASE_IDFILE）"
         required: false
@@ -319,9 +314,7 @@ jobs:
           S_GPU: ${{ inputs.base_gpu_sha }}
           U_FB: ${{ inputs.base_flashboot_url }}
           S_FB: ${{ inputs.base_flashboot_sha }}
-          S_LOADER: ${{ inputs.base_loader_sha }}
-          S_KERNEL: ${{ inputs.base_kernel_sha }}
-          S_RAMDISK: ${{ inputs.base_ramdisk_sha }}
+          S_ENTRIES: ${{ inputs.base_entry_shas }}
           BASE_ID_CMD: ${{ inputs.base_id_cmd }}
           BASE_ID_GATES: ${{ inputs.base_id_gates }}
         run: |
@@ -339,7 +332,7 @@ jobs:
           test "$(sha256sum base/gpu.img   | cut -d' ' -f1)" = "$S_GPU"   || { echo "::error::GPU 底板 sha 不符"; exit 1; }
           test "$(sha256sum base/flashboot.apfs | cut -d' ' -f1)" = "$S_FB" || { echo "::error::启动卷底板 sha 不符"; exit 1; }
           echo "底板三件全部等于输入钉死的官方字节"
-          # 底板条目提取（通用 XNUP 解析）：loader.efi / kernel / ramdisk + 可选 sha 校验
+          # 底板条目提取（通用 XNUP 解析）：loader.efi / kernel / ramdisk + 输入钉死的 sha 校验
           python3 - base/gpu.img <<'PY'
           import gzip, hashlib, os, struct, sys
           img = open(sys.argv[1], 'rb').read()
@@ -347,8 +340,14 @@ jobs:
           blob = gzip.decompress(img[page:page + k_size]); x = blob.find(b'XNUP')
           assert x > 0, 'no XNUP payload in the base gpu image'
           size = struct.unpack('<I', blob[x + 4:x + 8])[0]; i = x + 8
-          want = {'loader.efi': os.environ.get('S_LOADER', ''), 'kernel': os.environ.get('S_KERNEL', ''),
-                  'ramdisk': os.environ.get('S_RAMDISK', '')}
+          want = {}
+          for line in os.environ.get('S_ENTRIES', '').splitlines():
+              line = line.strip()
+              if not line:
+                  continue
+              name, _, sha = line.partition('=')
+              want[name.strip()] = sha.strip()
+          assert set(want) <= {'loader.efi', 'kernel', 'ramdisk'}, 'unknown entry names in base_entry_shas: %s' % set(want)
           names = {'loader.efi': 'base/loader.efi', 'kernel': 'base/kernel.bin', 'ramdisk': 'base/md1-root.apfs'}
           seen = set()
           while i + 24 <= x + 8 + size and blob[i] != 0:
