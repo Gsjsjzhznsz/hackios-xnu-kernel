@@ -1573,3 +1573,17 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 **R43 轮的真机使命（对照 R42 验尸）**：R42 黑屏主犯 = 探针自己的 RW 锁递归（shadow-chain 尾部预锁 + 顶部再锁，lock_rw.c:877 owner==self，SpringBoard 的 IOSurface 影子链当场捕获）。R43 的单刀：每把锁都是 try（vm_map_try_lock_read / vm_object_lock_try_scan，非阻塞无断言原语），每层链顶部只锁一次，busy 即最小判词走人（`map lock busy` / `chain lock busy at depth N` 两条新格式）；判词去重治理 160 条 no-map-entry 洪水。**判读预期：MR3（无 panic）是底线，MR1（lsd 定罪）预期仍缺席非失败**——lsd 的 7 ms SIGBUS 死不经过 vm_fault_internal 失败出口（R42 判词已证伪页填充假设），sandbox/CPU-monitor 拒绝路径是 R44 的线索。
 
 **下一步（用户侧）**：刷 raphael-xnu-r43-gpu-flash.img（fastboot flash boot）→ ≥4 分钟观察窗 → 五指长按 1.5s 退回 loader → 二次 boot 抓 logdump 回传。判读树：MR1 = `redwood-pager: verdict` 定罪文件（lsd 预期仍缺席，非失败）；MR2 = busy 变体行（`map lock busy` / `chain lock busy at depth N`——探针在真实持锁路径上让路的直接证据）；MR3 = panic 护栏（全 logdump 不得出现 `Lock already held`、`panic(cpu`）；MR4 = 丢帧与 R42 相若（9 处/123.9s 起的 GPU hang 链是否复现）；MR5 = WiFi（固件缺失注记依旧非失败）。
+
+## R43 真机判读（2026-10-30，logdump 11215 行，292 s 窗）：两害尽除，只剩一凶——用户态 SIGBUS 浪潮
+
+**判读树落地**：
+- **MR3 达成（底线守住）**：全 logdump **零 panic、零 "Lock already held"**——R42 的探针自杀（RW 锁递归）被 try-lock 单刀根治，内核在 292 s 观察窗内全程存活（"the kernel is still running"），heartbeat 稳定。
+- **MR4 达成**：**零 "frame dropped"**——R42 的 GPU hang 链（9 处丢帧 → 37.5 s 提交停摆 → adreno 复位）整个消失；redwood-gl（Mesa/Freedreno 栈）扩展枚举齐全，GL 基础设施活着。
+- **MR1/MR2 空白**：**零判词、零 busy 行**——pager 钩全程静默。SIGBUS 死亡全部不经过 vm_fault_internal 失败出口（再次证实页填充假设证伪、sandbox 拒绝路径是唯一嫌疑）；R42 的 160 条良性 no-map-entry 洪水也未复现。
+- **MR5 不变**：WiFi 固件依旧不在 RAM 镜像里（"modem/WLAN firmware is missing from the RAM image"——镜像侧装包问题，非内核）。
+
+**"卡3色" = adreno step 22 的三色测试帧**：`redwood_adreno.c` step 22 "have it fill three bands of colour"（R27 起），flip 1 latched 后 GPU 三色帧是面板上最后一幅成功呈现的图像；SpringBoard 十次重生全部死于接管面板之前，CoreAnimation 的 MTLCompilerService PETRIFIED——真实 UI 从未上屏。**这是 R41 白苹果（内核活/显示活/lsd 卡死）之后的又一格进步：GPU 已画出自己的帧，只剩用户态接管这最后一跳。**
+
+**唯一真凶 = 用户态 SIGBUS 浪潮（单点）**：194 次 "exited due to SIGBUS | sent by exc handler"——lsd ×107、powerd ×22、analyticsd ×22、backboardd ×21、mobilegestalt.xpc ×12、SpringBoard ×10；redwood 信号钩捕获的 21 次 signal 10 里 **20 次同一 PC 0x1a45c313c**（dyld 共享缓存内同一指令，同一 unslid 回调链）。与 log 内 R28d 注记（"the CPU monitor's override goes to every process (the refusal was fatal to lsd)"）完全吻合：**minisandbox 的 CPU 监视器拒绝路径把每个跑过它的进程送进 Mach 异常 → exc handler → SIGBUS**。六个守护进程、一条指令、一处拒绝——R44 的靶心。
+
+**R44 立案（sandbox 拒绝轮）**：靶 = minisandbox CPU-monitor 拒绝路径。用户侧请求同轮评估 HeliumStudio-Dev/hackios-xnu-kernel（同家族同设备，自称到桌面 39 init 全过 + GLES + WiFi WPA3；license NOASSERTION，8 提交 10-25 前后）——不整仓照搬（内核与镜像根文件系统是一对、43 轮取证设施不可弃、license 待读、README ≠ 真机证据），定向挖矿三处：①其 sandbox/CPU-monitor 处理（对照我们的 SIGBUS 凶点）；②其镜像构建的 WiFi 固件装包（MR5 便宜解）；③其 launchd/backboardd shim 差异。挖矿成果按单刀纪律入本轮门禁。
