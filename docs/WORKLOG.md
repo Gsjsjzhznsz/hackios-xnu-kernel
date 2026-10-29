@@ -1344,3 +1344,13 @@ r28l flashboot → oem run；**等 ~2-3 分钟过风暴首发窗再抓 logdump**
 **本地全链干跑（替身内核 = r39 字节 + 标记串）**：kernel_gate +58B/1 簇/strings {标记} 全绿；flash_build payload 24.1MB/64MB、daily sha == r39 release 的 b0f9f6df、re-prove 过；kernel-id 双镜像判读全对（daily=R33/R13/无 token，gpu=R40 判词/R39 loader/卷/cmdline）。**flashboot 实构建**：用户固件包（fw-raphael.tar.gz：modem.mdt+b00–b31+wlanmdsp.mbn+bd_f11cn.bin，34 件）→ 35 文件 80.9MB 全 plain（仅 launchd 走压缩），roundtrip 逐字节证明，NV 缺席告警符合预期。
 
 **R40 判读树 L（预注册）**：L1 = 黑屏复现 ⇒ logdump 必含 `adreno: gpu: frame dropped: submission …` 两行快照 ⇒ R41 定点修；无一次丢帧 ⇒ GPU 观察通过结案。L2 = WiFi 双态：原样 flashboot ⇒ R39 的 firmware-missing 行（原地踏步，正常）；固件版 ⇒ `SM8150 MPSS/ath10k is being brought up` ⇒ 走 6..15 步停在 RMTFS（NV 缺席，预期停点）；意外联网 ⇒ 收获轮。L3 = `raphael-display: three scanout buffers` 在场 + frames 越过 4 ⇒ 显示无回归。
+
+## R40 CI 修正（2026-10-29）：门禁按真 CI 字节重建 + pipefail 补课
+
+**run 40826230850（R40 首跑）验尸**：步①–⑤全绿（内核 dd5b7d43 真构建、双镜像、kernel-id 复证全过），死在⑥b 发布——`release/r40-kernel-gate.txt` 资产缺席。根因两条叠加：
+1. **门禁律三按替身字节起草，被真构建证伪**：`r40_kernel_gate.py` 的"字节簇 ≤32 区 ≤256KiB"与"strings 增量恰为{标记,Darwin 行}"在替身内核（r39 字节+标记串拼接）上全绿，但真构建 = 一文件补丁 → 一个 section 变长 → 后续所有 section 的 addr/size/offset 级联位移 → 链接器重指所有绝对指针：真差异 = 541,900 区 / ~5MB（99.99% 是簿记）；strings 增量 26 条全是 LC_SYMTAB strtab 里的符号名（新静态变量 `told`、kalloc_type_view、重编号的 TUNABLES）⇒ 律三断言崩溃。
+2. **`set -eu` 无 pipefail**：门禁 `python3 … | tee 报告` 的退出码被 tee 吞掉——门禁崩溃后构建照常走完，报告文件从未落盘，发布步因资产缺失而死。门禁形同虚设的根因不是门禁逻辑而是管道。
+
+**修正（bae5ac4）**：门禁六律按真 CI 字节（下载 run 的 r40-diag artifact，stripped 内核 dd5b7d43）重写并本地全绿——①尺寸带 0<d<64KiB（实测 +128B 全在 __LINKEDIT）；②R40 标记 ×1；③R33 谱系 4 + R38 标记 5 + XNULIVE4；④**段表律**（真字节教出来的新律）：18 段名序列全同、全部载荷段 fileoff/filesize 逐字节相同、__LINKEDIT 增量 == 文件增量（外来构建必动载荷段）；⑤**掩码 strings 律**：头表+符号表区先清零再扫描，增量恰为 {R40 标记, 补丁自己的 "frame dropped" 报告字面量, 2 条 Darwin 戳}、损失全为 Darwin 戳，标记钉在真 rodata（0x2a116）不在掩码区；⑥符号数不减（72984→72986）。负样本：r39 冒充 r40 被正确拒绝。步③④⑤全部 `set -euo pipefail`（flash-build 与 kernel-id 的 `| tee` 同病同治）。
+
+**新教训入册**：①替身验证不会重现真编译器的布局级联——"从未见过真构建输出的门禁律默认有毒"，上 CI 前必须拿真 artifact 字节复验（R30"从未跑过的代码默认有毒"的门禁版）；②管道里的门禁必须 pipefail，否则门禁只是装饰；③GitHub API 下 artifact 要手动处理 302 并在重定向请求里去掉 Authorization 头（blob storage 拒绝带签名的二次请求）。
