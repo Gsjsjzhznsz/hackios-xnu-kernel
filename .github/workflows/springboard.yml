@@ -5,15 +5,15 @@ on:
       round:
         description: "轮次短名（r41/r42/…）：缓存键、产物与资产文件名的唯一来源"
         required: true
-        default: "r43"
+        default: "r44"
       release_tag:
         description: "Release tag（直链的一部分）"
         required: true
-        default: "r43-springboard"
+        default: "r44-springboard"
       release_name:
         description: "Release 标题"
         required: true
-        default: "R43 · 纯血 hackios SpringBoard · try-lock 取证轮（钩子永不久堵不递归：R42 的设备判决——取证链活了但钩子自己的影子链双锁排他 panic；内核 = R42 + 一文件改造；其余 = r42 原字节；WiFi 固件+NV 走 flashboot 用户侧重建）"
+        default: "R44 · 纯血 hackios SpringBoard · systrace 询凶轮（内核侧异常分诊记录仪默认开：R43 判读——两害尽除后唯一真凶是用户态 SIGBUS 浪潮 194 死/六进程，同一 unslid 缓存指令 0x1a45c313c、同一数据页 0x2681bfd34；挖矿撤案 sandbox 靶心，R44 让每次死亡在 exception_triage 入口自报名号；内核 = R43 + 一文件改造；其余 = r43 原字节；cmdline 仍 R39 形 verbatim）"
       kernel_repo:
         description: "hackios 内核树 fork（含 xnu/ + tools/）"
         required: true
@@ -25,7 +25,7 @@ on:
       base_daily_url:
         description: "底板日常镜像直链（SHA 必填；本轮日常镜像的来源）"
         required: true
-        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r42-springboard/raphael-xnu-r42-flash.img"
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r43-springboard/raphael-xnu-r43-flash.img"
       base_daily_sha:
         description: "底板日常镜像 sha256（对官方字节硬校验）"
         required: true
@@ -33,15 +33,15 @@ on:
       base_gpu_url:
         description: "底板 GPU 镜像直链（外科手术的底板）"
         required: true
-        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r42-springboard/raphael-xnu-r42-gpu-flash.img"
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r43-springboard/raphael-xnu-r43-gpu-flash.img"
       base_gpu_sha:
         description: "底板 GPU 镜像 sha256"
         required: true
-        default: "055a3cb14ed670c9574f06440dc69f48876e97c33603dee8c6ed4fff4969eb4a"
+        default: "e4860be961a01a143cb41b092a3d6bc47ad7ff4646cc51171ed102882e9b5fd3"
       base_flashboot_url:
         description: "底板启动卷直链（原样转发进 Release）"
         required: true
-        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r42-springboard/raphael-r42-flashboot.apfs"
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r43-springboard/raphael-r43-flashboot.apfs"
       base_flashboot_sha:
         description: "底板启动卷 sha256"
         required: true
@@ -51,22 +51,22 @@ on:
         required: false
         default: |
           loader.efi=4bf828e425e4b59d3668461ff89ef290dfbf3215cceec903f1662255fe45a3db
-          kernel=ef204f284b5825d3598d7b2630159945dbb11e990f0eac75bcbff30f3f15c021
+          kernel=cddf7a81362d85f2fe2d991e21936d0ba2b4ee5e680eace85719e2fa5bc93306
           ramdisk=5b9bbbcb6b5ede61d734bf8144fc639d4e419a22bb81e7d6cf93141f4fbe8746
       base_id_cmd:
         description: "底板判读命令（可选；空 = 跳过。占位符：$BASE_DAILY $BASE_GPU $BASE_IDFILE）"
         required: false
-        default: "python3 tools/r43-kernel-id.py \"$BASE_DAILY\" \"$BASE_GPU\" | tee \"$BASE_IDFILE\""
+        default: "python3 tools/r44-kernel-id.py \"$BASE_DAILY\" \"$BASE_GPU\" | tee \"$BASE_IDFILE\""
       base_id_gates:
         description: "底板判读门禁（bash；占位符：$BASE_IDFILE。空 = 跳过）"
         required: false
         default: |
           grep -c "the kernel entry is R33" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::日常底板的内核必须判为 R33（控制组）"; exit 1; }
-          grep -c "the kernel entry is R42" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::GPU 底板的内核必须判为 R42（R43 的门禁基准）"; exit 1; }
+          grep -c "the kernel entry is R43" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::GPU 底板的内核必须判为 R43（R44 的门禁基准）"; exit 1; }
           grep -q "the cmdline is the R39 GPU form verbatim" "$BASE_IDFILE" || { echo "::error::GPU 底板的 cmdline 不是 R39 组原样"; exit 1; }
           grep -c "the cmdline is the daily image WITHOUT" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::日常底板的 cmdline 应无任何 gpu token"; exit 1; }
           # 门禁必须 grep 工具的真实判定词，不能写起草者假设的那句（run 40838276403 教训）：
-          grep -c "the ramdisk entry is R39..R43" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::GPU 底板的小卷不是 R39..R43 卷（5b9bbbcb）"; exit 1; }
+          grep -c "the ramdisk entry is R39..R44" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::GPU 底板的小卷不是 R39..R44 卷（5b9bbbcb）"; exit 1; }
           grep -c "the ramdisk entry is R13..R33" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::日常底板的小卷不是 R13 谱系"; exit 1; }
       pre_gate_py:
         description: "门禁一/二（python，argv[1]=新内核路径）：谱系 + 换代件标记逐字在字节里"
@@ -80,14 +80,14 @@ on:
           assert n('R32: the kernel generation line') == 0, 'a stale R32 stamp rides'
           assert n('R40: the first dropped frame buys the full core snapshot') == 0, 'the retired R40 marker still rides'
           assert n('R41: the snapshot buys its own ride onto the storage too') == 0, 'the retired R41 marker still rides'
-          assert n('R40: the first dropped frame buys the full core snapshot') == 0, 'the retired R40 marker still rides'
+          assert n('R43: the probe try-locks first or walks away, no recurse') == 0, 'the retired R43 marker still rides'
           for mark, why in [
               ('raphael-display: three scanout buffers, VIG0/CTL0, hardware TE', 'the display round (adreno side)'),
               ('display: raphael command TE:', 'the TE phase measurement (display.c)'),
               ('page flips retained (fb_scan=1)', 'the fb_scan boot-arg'),
               ('wifi: raphael needs WCN3990 SNOC/ath10k and MPSS service 0x45', 'the raphael Wi-Fi branch'),
               ('raphael-display: flip did not latch at TE, restoring boot framebuffer', 'the flip fallback'),
-              ('R43: the probe try-locks first or walks away, no recurse', 'THE R43 try-lock-probe marker'),
+              ('R44: the kernel asks each fatal exception to name itself', 'THE R44 systrace-conviction marker'),
           ]:
               assert n(mark) == 1, '%s x%d != 1 (%s)' % (mark, n(mark), why)
           assert n('R42: the fault names the file that died, pager forensics') == 0, 'the retired R42 marker still rides'
@@ -95,29 +95,29 @@ on:
           assert n('redwood-pager: verdict') == 6, 'the pager verdict literal x%d != 6 (the four R42 verdict formats + the two R43 busy formats)' % n('redwood-pager: verdict')
           assert n('XNULIVE4') >= 1, 'the R38 loader-framebuffer channel mark is missing (x%d)' % n('XNULIVE4')
           assert n('wifi_step') >= 1, 'the wifi boot-arg surface is missing'
-          print('门禁一/二全过：R33 谱系 4 项 + R38 显示/WiFi/通道 5 项 + 取证字面量 2 处 + pager 判词 6 处 + R43 标记 1 项 + R42/R41/R40 标记零残留')
+          print('门禁一/二全过：R33 谱系 4 项 + R38 显示/WiFi/通道 5 项 + 取证字面量 2 处 + pager 判词 6 处 + R44 标记 1 项 + R43/R42/R41/R40 标记零残留')
       kernel_gate_cmd:
         description: "门禁三命令模板（可选；占位符：$BASE_KERNEL $K $KU $KSHA $REL $R）"
         required: false
-        default: "python3 tools/r43_kernel_gate.py --r42-kernel \"$BASE_KERNEL\" --r43-kernel \"$K\" --report \"$REL/${R}-kernel-gate.txt\" | tee \"$REL/${R}-kernel-gate-run.txt\""
+        default: "python3 tools/r44_kernel_gate.py --r43-kernel \"$BASE_KERNEL\" --r44-kernel \"$K\" --report \"$REL/${R}-kernel-gate.txt\" | tee \"$REL/${R}-kernel-gate-run.txt\""
       flash_build_cmd:
         description: "④ 手术命令模板（必填；占位符：$BASE_DAILY $BASE_GPU $K $REL $R）"
         required: true
-        default: "python3 tools/r43_flash_build.py --daily \"$BASE_DAILY\" --gpu \"$BASE_GPU\" --kernel \"$K\" --out-daily \"$REL/raphael-xnu-${R}-flash.img\" --out-gpu \"$REL/raphael-xnu-${R}-gpu-flash.img\" | tee \"$REL/${R}-pack.txt\""
+        default: "python3 tools/r44_flash_build.py --daily \"$BASE_DAILY\" --gpu \"$BASE_GPU\" --kernel \"$K\" --out-daily \"$REL/raphael-xnu-${R}-flash.img\" --out-gpu \"$REL/raphael-xnu-${R}-gpu-flash.img\" | tee \"$REL/${R}-pack.txt\""
       kernel_id_cmd:
         description: "⑤ 判读命令模板（必填；占位符：$REL $R $KSHA）"
         required: true
-        default: "python3 tools/r43-kernel-id.py \"$REL/raphael-xnu-${R}-flash.img\" \"$REL/raphael-xnu-${R}-gpu-flash.img\" --expect-loader-sha 4bf828e425e4b59d3668461ff89ef290dfbf3215cceec903f1662255fe45a3db --expect-kernel-sha \"$KSHA\" --expect-volume-sha 5b9bbbcb6b5ede61d734bf8144fc639d4e419a22bb81e7d6cf93141f4fbe8746 | tee \"$IDFILE\""
+        default: "python3 tools/r44-kernel-id.py \"$REL/raphael-xnu-${R}-flash.img\" \"$REL/raphael-xnu-${R}-gpu-flash.img\" --expect-loader-sha 4bf828e425e4b59d3668461ff89ef290dfbf3215cceec903f1662255fe45a3db --expect-kernel-sha \"$KSHA\" --expect-volume-sha 5b9bbbcb6b5ede61d734bf8144fc639d4e419a22bb81e7d6cf93141f4fbe8746 | tee \"$IDFILE\""
       id_gates:
         description: "⑤ 复证门禁（bash；占位符：$IDFILE。教训：必须 grep 工具的真实判定词，run 40838276403）"
         required: true
         default: |
           grep -c "loader  sha256" "$IDFILE" | grep -qx 2 || { echo "::error::双镜像都要读到 loader 条目"; exit 1; }
-          grep -c "the kernel entry is R43" "$IDFILE" | grep -qx 1 || { echo "::error::GPU 镜像内核判词不是 R43（本轮 try-lock 取证构建）"; exit 1; }
+          grep -c "the kernel entry is R44" "$IDFILE" | grep -qx 1 || { echo "::error::GPU 镜像内核判词不是 R44（本轮 systrace 询凶构建）"; exit 1; }
           grep -c "the kernel entry is R33" "$IDFILE" | grep -qx 1 || { echo "::error::日常镜像内核必须仍是 R33（控制组）"; exit 1; }
-          grep -c "the cmdline is the R39 GPU form verbatim" "$IDFILE" | grep -qx 1 || { echo "::error::GPU 镜像 cmdline 不是 R39 组原样（R43 零 cmdline 改动）"; exit 1; }
+          grep -c "the cmdline is the R39 GPU form verbatim" "$IDFILE" | grep -qx 1 || { echo "::error::GPU 镜像 cmdline 不是 R39 组原样（R44 零 cmdline 改动，追踪默认开无需 boot-arg）"; exit 1; }
           grep -c "the cmdline is the daily image WITHOUT" "$IDFILE" | grep -qx 1 || { echo "::error::日常镜像必须无任何 gpu token（控制组原样）"; exit 1; }
-          grep -c "the ramdisk entry is R39..R43" "$IDFILE" | grep -qx 1 || { echo "::error::GPU 镜像小卷不是 R39..R43 卷（5b9bbbcb）"; exit 1; }
+          grep -c "the ramdisk entry is R39..R44" "$IDFILE" | grep -qx 1 || { echo "::error::GPU 镜像小卷不是 R39..R44 卷（5b9bbbcb）"; exit 1; }
           grep -c "the ramdisk entry is R13..R33" "$IDFILE" | grep -qx 1 || { echo "::error::日常镜像小卷不是 R13 谱系"; exit 1; }
       pre_release_cmd:
         description: "⑥ 前置命令模板（可选；转发/台账等；占位符：$BASE_FLASHBOOT $BASE_GPU $REL $R）"
@@ -134,89 +134,94 @@ on:
         description: "README.txt 全文（逐字进 Release 资产）"
         required: true
         default: |
-          raphael (K20 Pro) R43 交付包：**try-lock 取证轮**。
-          
-          R42 真机判读（5600 行入账）：取证链全活——160 条判词上机、
-          节流 16 一跳、前 3 判词自带 flush 全部工作；但 160 条全是
-          "no map entry" 良性 probe，零条 lsd。lsd 的 SIGBUS 循环照旧
-          （7 ms/死、exc handler 发送、65 连崩），根本不经过
-          vm_fault_internal 的失败出口——页填充假设证伪（log 内 R28d
-          注记点名 sandbox 拒绝路径，R44 的线索）。黑屏主犯是我们自己：
-          钩子的影子链循环尾部预锁 next、下一轮顶部再锁同一对象——
-          同线程双锁排他（lock_rw.c:877 "Lock already held, owner ==
-          self"），SpringBoard 的 IOSurface 影子链第一根深度 >1 的链
-          当场触发 panic。
-          
-          R43 一刀：每个锁都 try（vm_map_try_lock_read /
-          vm_object_lock_try_scan，双双对 xnu-8796 原文核过非阻塞无断
-          言），每级只锁一次，busy = 最小判词 + 走人；两条新 busy 判词
-          加入（pager 字面量 x6），标记同长换替。
-          
+          raphael (K20 Pro) R44 交付包：**systrace 询凶轮**。
+
+          R43 真机判读（11215 行入账）：两害尽除——零 panic（R42 的
+          探针 RW 锁递归自杀被 try-lock 根治）、零丢帧（GPU hang 链
+          消失）；但用户态 SIGBUS 浪潮照旧：194 死（lsd ×107、
+          powerd ×22、analyticsd ×22、backboardd ×21、
+          mobilegestalt.xpc ×12、SpringBoard ×10），信号钩捕获的
+          21 次里 20 次同一 unslid 缓存指令 pc 0x1a45c313c、同一
+          数据地址 0x2681bfd34。挖矿轮撤案了 R43 判词的 sandbox
+          靶心：我们的 minisandbox 对 cpumon override 是无条件放行
+          （比上游还松），且 R28d 一次性注记 printf 整轮未出现——
+          没有任何进程到过那个 priv 检查；而内核侧记录仪
+          （user_exception_trace，exception_triage 入口，R41 起接线）
+          被 systrace 默认 0 关着，cmdline 又保持 R39 形 verbatim，
+          所以死因机制整轮零内核侧记录。
+
+          R44 一刀（全部在 user_exception_trace.c）：记录仪默认开
+          （boot-arg systrace=0 仍可关回），异常过滤加
+          EXC_RESOURCE/EXC_GUARD（若真是资源/监视器类异常，code 对
+          直接点名 flavor），按进程名节流（每名首 4 次全量、之后每
+          16 次一次——R42 分区律）；cmdline 零改动；标记同长换替。
+
           【刷机与取证】
-          1. fastboot flash boot raphael-xnu-r43-gpu-flash.img; fastboot reboot
-          2. 让它跑 >= 4 分钟（lsd 的 1/s 重生循环照旧；白苹果同源场景
-             自然复现，无需特殊操作）
-          3. 五指按住屏幕 1.5 秒 = 退回 loader（拆除路径自带 flush）
-          4. 二次 boot 抓 logdump（run_ios.sh 的流程，或 fastboot oem logdump）
+          1. fastboot flash boot raphael-xnu-r44-gpu-flash.img; fastboot reboot
+          2. 让它跑 >= 4 分钟（SIGBUS 浪潮自然复现；三色画面同 R43）
+          3. 五指按住屏幕 1.5 秒 = 退回 loader
+          4. 二次 boot 抓 logdump 回传
           【判读树 MR】
           MR1 = 定罪（主目标）：logdump 找
-                "redwood-pager: verdict N: pid …[lsd] … file "…""
-                ——文件名就是下一轮的开刀对象（本轮假设已证伪，
-                lsd 大概率仍无判词——这是预期，不是失败）。
-          MR2 = busy 变体行（R43 新增）：找
-                "map lock busy, deep look skipped" /
-                "chain lock busy at depth N, deep look skipped"
-                ——它们回答"钩子看见了什么但拿不动锁"，R44 的地形图。
-          MR3 = panic 护栏（本轮的命门）：全 logdump 不得出现
-                "Lock already held" / "panic(cpu" ——出现即 R43 失败。
-          MR4 = 回归护栏：GL logo 帧继续画、触控/按钮活、
-                "frame dropped" 计数与 R42 相若（GPU hang 是 R42 已知
-                现象，本轮不修，观察不回归）。
-          MR5 = WiFi：固件仍不在 RAM 镜像（用户侧 flashboot 重建，
-                已知遗留）。
-          
+                "usertrap: <name>[pid] exception N code 0x.. 0x..: pc 0x.. lr 0x.. sp 0x.., shared cache slide 0x.."
+                ——异常号 + code/subcode + slide + 寄存器文本 + fp 链。
+                slide 一到手，0x1a45c313c / 0x2681bfd34 立即可对 dyld
+                缓存定名 = R45 的开刀对象。预期：六个死亡进程每名至少
+                4 行全量记录；无用户侧钩子的 lsd/powerd/SpringBoard/
+                mobilegestalt 第一次有内核侧现场。
+          MR2 = 节流纪律：usertrap 行数有界（每名 ≤ 4 + 死亡数/16），
+                应显著少于 launchd 的 194 条 SIGBUS 退出。
+          MR3 = panic 护栏（命门不变）：全 logdump 不得出现
+                "Lock already held" / "panic(cpu" ——出现即 R44 失败。
+          MR4 = 回归护栏：零 "frame dropped"（R43 已归零）；GL 栈
+                枚举继续活；三色画面维持（GPU 帧仍在）。
+          MR5 = WiFi：固件仍不在 RAM 镜像（已知遗留；R45+ 用户侧
+                flashboot/fw/ 七件注入，合同见 WORKLOG 挖矿报告）。
+
           【镜像说明】
-          - raphael-xnu-r43-flash.img = 日常控制组（= r42 逐字节原样）
-          - raphael-xnu-r43-gpu-flash.img = 本轮目标镜像（仅 kernel 条目换新）
-          - 启动卷 stage 一次：raphael-r43-flashboot.apfs 或固件+NV 版
+          - raphael-xnu-r44-flash.img = 日常控制组（= r43 逐字节原样）
+          - raphael-xnu-r44-gpu-flash.img = 本轮目标镜像（仅 kernel 条目换新）
+          - 启动卷 stage 一次：raphael-r44-flashboot.apfs 或固件+NV 版
           ⚠️ 含 Apple 版权内容，仅供个人研究；下载完成后请尽快删除本 Release。
-          
       release_body:
         description: "GitHub Release 正文"
         required: true
         default: |
-          raphael (K20 Pro) R43 交付包：**try-lock 取证轮**。
-          
-          R42 真机判读定案（5600 行入账）：取证链活了（160 判词、节流、
-          flush 全工作），但 (a) lsd 的死法不经过 vm_fault 失败出口——
-          页填充假设证伪，R28d 注记指向 sandbox 拒绝路径（R44）；
-          (b) 黑屏是钩子自己的影子链双锁排他 panic（lock_rw.c:877，
-          SpringBoard 当场死亡）。
-          
-          R43 一刀：取证钩全锁 try 化 + 每级单锁 + busy 判词两条新增
-          （pager 字面量 x6）；标记同长换替（R43: the probe try-locks
-          first or walks away, no recurse）。
-          
-          本轮判决问题：panic 是否根除（MR3 命门）+ busy 变体行的
-          地形图（MR2）+ lsd 判词（MR1，预期缺席——假设已证伪）。
-          
-          内核 = R42 + 一文件改造（redwood_fault_convict.c）；loader/
-          cmdline/卷 = r42 原字节；日常镜像 = r42 逐字节控制组。
-          WiFi 固件+NV 走 flashboot 用户侧重建（已知遗留）。
-          
+          raphael (K20 Pro) R44 交付包：**systrace 询凶轮**。
+
+          R43 真机判读定案（11215 行入账）：零 panic、零丢帧（R42
+          两害尽除）；唯一真凶 = 用户态 SIGBUS 浪潮 194 死/六进程，
+          20 次捕获同一 unslid 缓存指令 0x1a45c313c + 同一数据地址
+          0x2681bfd34。挖矿轮撤案 sandbox 靶心（minisandbox 对
+          cpumon override 无条件放行，R28d 一次性 printf 整轮缺席 =
+          没有进程到过该检查）；死因机制在 R43 证据下不可判——
+          vm_fault 失败出口零经过，而内核侧记录仪（systrace 默认关）
+          全程静默。
+
+          R44 一刀：user_exception_trace.c 默认开 +
+          EXC_RESOURCE/EXC_GUARD 入过滤 + 每名首 4 后每 16 的节流
+          （R42 分区律）；标记同长换替（R44: the kernel asks each
+          fatal exception to name itself）。
+
+          本轮判决问题：usertrap 行是否到场并点名异常（MR1 主目标）
+          + 节流纪律（MR2）+ panic 护栏（MR3 命门）+ 丢帧回归（MR4）。
+
+          内核 = R43 + 一文件改造（user_exception_trace.c）；loader/
+          cmdline/卷 = r43 原字节；日常镜像 = r43 逐字节控制组。
+          WiFi 固件+NV 走 flashboot 用户侧重建（已知遗留，R45+）。
       checksum_files:
         description: "进 SHA256SUMS 的文件名（空格分隔，相对 release/；通常是双镜像+启动卷+md1）"
         required: true
-        default: "raphael-xnu-r43-flash.img raphael-xnu-r43-gpu-flash.img raphael-r43-flashboot.apfs r43-md1-root.apfs"
+        default: "raphael-xnu-r44-flash.img raphael-xnu-r44-gpu-flash.img raphael-r44-flashboot.apfs r44-md1-root.apfs"
       release_files:
         description: "进 Release 的文件（每行一个，相对 release/）"
         required: true
         default: |
-          raphael-xnu-r43-flash.img
-          raphael-xnu-r43-gpu-flash.img
-          raphael-r43-flashboot.apfs
-          r43-md1-root.apfs
-          r43-kernel-gate.txt
+          raphael-xnu-r44-flash.img
+          raphael-xnu-r44-gpu-flash.img
+          raphael-r44-flashboot.apfs
+          r44-md1-root.apfs
+          r44-kernel-gate.txt
           SHA256SUMS
           README.txt
           toolchain-versions.txt

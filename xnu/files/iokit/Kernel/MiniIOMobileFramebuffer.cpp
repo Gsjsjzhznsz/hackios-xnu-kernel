@@ -58,12 +58,12 @@ extern "C" void *raphael_display_back(bool preserve);
 extern "C" bool raphael_display_present(void);
 extern "C" void redwood_gpu_report(const char *why);
 
-/* R43's own record, and the kernel-id tool's name for this build (the used-marker
+/* R44's own record, and the kernel-id tool's name for this build (the used-marker
  * tradition: loader_return.c's XNULIVE4 is the precedent).  Same byte length as the
- * R42 marker it replaces, so the round's diff stays the probe's lock edits in
+ * R43 marker it replaces, so the round's diff stays the trace's conviction edits in
  * __TEXT plus this string -- the payload layout the gate pins does not move. */
-__attribute__((used)) static const char r43_pager_trylock_mark[] =
-    "R43: the probe try-locks first or walks away, no recurse";
+__attribute__((used)) static const char r44_systrace_convict_mark[] =
+    "R44: the kernel asks each fatal exception to name itself";
 static IOLock *gScanoutLock;
 
 /* IOConnectCallMethod selectors of the framebuffer user client (iOS 16.5) */

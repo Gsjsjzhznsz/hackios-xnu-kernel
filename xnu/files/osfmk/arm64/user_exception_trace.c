@@ -1,7 +1,13 @@
 /*
- * Bring-up aid: with boot-arg systrace set, describe every fatal-looking
- * exception a user thread takes, before it is delivered. There is no crash
- * reporter in this system, so this is the only place a crash is recorded.
+ * Bring-up aid: describe every fatal-looking exception a user thread takes,
+ * before it is delivered. There is no crash reporter in this system, so this
+ * is the only place a crash is recorded.  Since R44 the trace is ON by default
+ * (boot-arg systrace=0 silences it again): the R43 window lost six daemons to
+ * a SIGBUS wave -- 194 deaths, one shared-cache instruction at unslid
+ * 0x1a45c313c, one process-independent data address 0x2681bfd34 -- while the
+ * only per-death recorder that sees every process (this one) sat behind the
+ * default-off switch, and the R43 cmdline kept the R39 form verbatim, so
+ * nothing kernel-side was ever written down.
  *
  * Besides the registers it prints the shared cache slide (most crashes are
  * inside system libraries: subtract the slide and look the address up in
@@ -26,7 +32,47 @@ extern char *proc_name_address(struct proc *p);
 
 void user_exception_trace(exception_type_t exception, mach_exception_data_t code, mach_msg_type_number_t count, thread_t thread);
 
-static TUNABLE(uint32_t, user_exception_trace_enabled, "systrace", 0);
+/*
+ * R44: the wave dies about once per 10 s per daemon (launchd respawn), and
+ * this trace fires once per death -- the R42 partition law says a respawn
+ * loop must not eat the logdump partition.  Per process name: the first 4
+ * deaths trace in full, then only every 16th does (the pager convict's
+ * heartbeat precedent).  The wave has six killer names, so the 8-slot table
+ * carries it with room to spare; a ninth dying name stays silent rather
+ * than starving the named ones.
+ */
+static struct {
+	char name[32];
+	unsigned count;
+} user_trace_budget[8];
+static unsigned user_trace_budget_count;
+
+static bool
+user_trace_admitted(const char *name)
+{
+	unsigned i;
+
+	for (i = 0; i < user_trace_budget_count; i++) {
+		if (strncmp(user_trace_budget[i].name, name, sizeof(user_trace_budget[i].name)) == 0) {
+			break;
+		}
+	}
+	if (i == sizeof(user_trace_budget) / sizeof(user_trace_budget[0])) {
+		return false;
+	}
+	if (i == user_trace_budget_count) {
+		strlcpy(user_trace_budget[i].name, name, sizeof(user_trace_budget[i].name));
+		user_trace_budget_count++;
+	}
+	user_trace_budget[i].count++;
+	return user_trace_budget[i].count <= 4 || user_trace_budget[i].count % 16 == 0;
+}
+
+/* R44: on by default -- the retracted sandbox attribution left the wave
+ * unconvicted, and this is the one recorder every death crosses (it sits at
+ * exception_triage_thread(), before any handler search).  systrace=0 turns
+ * it off again without touching the cmdline laws. */
+static TUNABLE(uint32_t, user_exception_trace_enabled, "systrace", 1);
 
 static bool
 plausible_user_address(uint64_t address)
@@ -48,8 +94,11 @@ user_exception_trace(exception_type_t exception, mach_exception_data_t code, mac
 	if (!user_exception_trace_enabled || thread != current_thread()) {
 		return;
 	}
+	/* R44: EXC_RESOURCE / EXC_GUARD join the census -- if the SIGBUS wave is a
+	 * resource/monitor exception (the retracted R28d lead), the code pair names
+	 * the flavor right here instead of staying a count-coincidence theory. */
 	if (exception != EXC_BAD_ACCESS && exception != EXC_BAD_INSTRUCTION && exception != EXC_ARITHMETIC &&
-	    exception != EXC_BREAKPOINT) {
+	    exception != EXC_BREAKPOINT && exception != EXC_RESOURCE && exception != EXC_GUARD) {
 		return;
 	}
 	task = get_threadtask(thread);
@@ -63,6 +112,9 @@ user_exception_trace(exception_type_t exception, mach_exception_data_t code, mac
 		vm_shared_region_deallocate(region);
 	}
 	proc = get_bsdtask_info(task);
+	if (!user_trace_admitted(proc ? proc_name_address(proc) : "?")) {
+		return;
+	}
 
 	printf("usertrap: %s[%d] exception %d code 0x%llx 0x%llx: pc 0x%llx lr 0x%llx sp 0x%llx, shared cache slide 0x%x\n",
 	    proc ? proc_name_address(proc) : "?", proc ? proc_pid(proc) : -1, exception,
