@@ -290,7 +290,10 @@ jobs:
 
       # ---------------------------------------------------------------
       # ⑥ 卷构建：R38 卷 + 唯一替换 etc/rc.jobs（发现链结构性离开 boot 路径）。
-      #    卷 sha 由本地预跑钉死：38955d92…（构建确定性 = 同 base 同 rc 文件同 mkapfs）。
+      #    注意：mkapfs 的容器字节跨宿主机不定（目录枚举序不同——run1 实证：
+      #    内容逐字全同而容器 sha 本地 38955d92 / CI 5b9bbbcb），所以钉的是
+      #    内容法则（manifest 逐文件 sha + 唯一替换 + init 原样），不是容器
+      #    sha；VSHA 只作本轮内部一致性断言（flash build / kernel-id）。
       - name: "⑥/⑨ R39 卷构建（r39_volume_build：base=r38 卷，唯一替换 etc/rc.jobs=rc.jobs.r39quiet）"
         run: |
           set -eu
@@ -321,9 +324,25 @@ jobs:
             --manifest "$REL/r39-volume-manifest.json" | tee "$REL/r39-volume-build.txt"
           VSHA=$(sha256sum "$REL/r39-md1-root.apfs" | cut -d' ' -f1)
           echo "VSHA=$VSHA" >> "$GITHUB_ENV"
-          echo "$VSHA" | grep -qx 38955d927ca6392b625f8a7d1ecb04513b4ac738491ed5cdf97e56e7690f39e4 \
-            || { echo "::error::R39 卷 sha 漂移：$VSHA != 38955d92…（base/rc/mkapfs 三者必须全同）"; exit 1; }
-          echo "R39 卷 sha 钉死断言通过：$VSHA"
+          # 内容法则断言（跨机钉点 = manifest 的逐文件 sha，不是容器 sha）：
+          # 卷构建自身已断言 93 文件逐字不变 + 唯一替换 + init 原样；这里再对
+          # manifest 复证 rc.jobs == pin 源文件（一个字节不许差）+ 结构四件。
+          RCSHA=$(sha256sum .userland-pin/userland/rc.jobs.r39quiet | cut -d' ' -f1)
+          python3 - "$REL/r39-volume-manifest.json" "$RCSHA" <<'PY'
+          import json, sys
+          man = json.load(open(sys.argv[1]))
+          rc = man['rc_jobs']
+          assert rc['r39_sha256'] == sys.argv[2], 'manifest rc.jobs sha %s != pin file %s' % (rc['r39_sha256'], sys.argv[2])
+          assert rc['r38_sha256'] == '7dd3ccded4574c81c2508e9343513dc00571aec61967efa88d76c143db3393d0', 'the base rc.jobs is not the r37metal list'
+          assert man['sbin_init']['r39_sha256'] == 'df43673ad99662b41ca650dfd747f15ea34adce6aa91c607be696c9ef13a1f04', 'sbin/init moved'
+          files = man['files']
+          assert len(files) == 94, 'the manifest has %d entries, expected 94' % len(files)
+          assert files['etc/rc.jobs']['sha256'] == sys.argv[2], 'the volume rc.jobs did not round-trip'
+          link = files['System/Library/Extensions/RedwoodMetal.bundle']
+          assert link.get('kind') == 'link' and link.get('target') == '/redwood/lib/RedwoodMetal.bundle', 'the Extensions link moved'
+          print('卷内容法则全过：94 条目、rc.jobs = pin 逐字、init 原样、链接原样')
+          PY
+          echo "R39 卷内容断言通过；VSHA=$VSHA（向前交给 flash build/kernel-id 作内部一致性断言）"
 
       # ---------------------------------------------------------------
       # ⑦ 打 r39 双启动镜像（外科手术：底板 = r38 release；日常镜像逐字节原样；GPU 镜像换
@@ -402,7 +421,8 @@ jobs:
                                c8328e22…内容等价——本轮改内核零行）
                       卷     = R39 新卷（93 文件逐字不变，唯一替换 etc/rc.jobs
                                = rc.jobs.r39quiet：基探针集，发现链命令零执行；
-                               sha 38955d92… 钉死断言在案）
+                               内容法则断言在案——manifest 逐文件 sha +
+                               init df43673a 原样；容器 sha 以 SHA256SUMS 为准）
                       usb/DTB = R38 原字节
           启动卷   : raphael-r39-flashboot.apfs（= r38 官方字节，原样转发）
           小卷 md1 : r39-md1-root.apfs（本轮新卷，内含 manifest 的 sha 表）
