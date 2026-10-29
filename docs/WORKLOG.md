@@ -1587,3 +1587,40 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 **唯一真凶 = 用户态 SIGBUS 浪潮（单点）**：194 次 "exited due to SIGBUS | sent by exc handler"——lsd ×107、powerd ×22、analyticsd ×22、backboardd ×21、mobilegestalt.xpc ×12、SpringBoard ×10；redwood 信号钩捕获的 21 次 signal 10 里 **20 次同一 PC 0x1a45c313c**（dyld 共享缓存内同一指令，同一 unslid 回调链）。与 log 内 R28d 注记（"the CPU monitor's override goes to every process (the refusal was fatal to lsd)"）完全吻合：**minisandbox 的 CPU 监视器拒绝路径把每个跑过它的进程送进 Mach 异常 → exc handler → SIGBUS**。六个守护进程、一条指令、一处拒绝——R44 的靶心。
 
 **R44 立案（sandbox 拒绝轮）**：靶 = minisandbox CPU-monitor 拒绝路径。用户侧请求同轮评估 HeliumStudio-Dev/hackios-xnu-kernel（同家族同设备，自称到桌面 39 init 全过 + GLES + WiFi WPA3；license NOASSERTION，8 提交 10-25 前后）——不整仓照搬（内核与镜像根文件系统是一对、43 轮取证设施不可弃、license 待读、README ≠ 真机证据），定向挖矿三处：①其 sandbox/CPU-monitor 处理（对照我们的 SIGBUS 凶点）；②其镜像构建的 WiFi 固件装包（MR5 便宜解）；③其 launchd/backboardd shim 差异。挖矿成果按单刀纪律入本轮门禁。
+
+## R43→R44 之间：HeliumStudio 上游定向挖矿报告（2026-10-30，repo_helium @ raphael-bringup 5772246）
+
+挖矿对象：HeliumStudio-Dev/hackios-xnu-kernel 的 `raphael-bringup` 分支（HEAD `5772246`，与 origin 同步；工作区仅 785 个文件的权限位翻转，0/0 行差异，可当净基线读）。三处靶点逐一定案：
+
+### ① sandbox/CPU-monitor——R43 判词翻案（本轮最重要产出）
+
+**上游与我方在 sandbox 层的唯一真分歧**：`xnu/files/bsd/kern/kern_minimac.c`（AMFI/Sandbox 替身，两树同源）忽略空白后 diff 只有一处——我方多出 R28d 块：**无条件放行** `PRIV_PROC_CPUMON_OVERRIDE`（return 0）；上游没有这块，该 priv 走 entitlement 表行 `{ PRIV_PROC_CPUMON_OVERRIDE, "com.apple.private.kernel.override-cpumon" }`（按签名 entitlement 决定）。**我们的 priv 层比上游更松**——"CPU-monitor 拒绝"在代码层面不可能是我们的凶点。
+
+**R43 日志自身定案**：全 11215 行 **零 minisandbox 行**——既没有 R28d 的一次性注记 printf（"the CPU monitor's override goes to every process"），也没有任何 "privilege N refused"。R28d printf 只在**第一次**有人问 cpumon override 时打一行：它整轮缺席 = **292 秒内没有任何进程到过这个 priv 检查**。R43 判词把"minisandbox CPU-monitor 拒绝路径"立为 R44 靶心，是**数量巧合诱导的误判**（144 拒绝/11s 的 R28c 旧形 vs 194 死/292s 的新形），据此撤案。
+
+**死亡现场重读（真实画像）**：194 次 SIGBUS 分布 = lsd ×107、powerd ×22、analyticsd ×22、backboardd ×21、mobilegestalt.xpc ×12、SpringBoard ×10（复核吻合）。redwood 信号钩捕获 21 次，**两个凶点**：
+- **A 点（analyticsd 首死，1 次）**：pc unslid `0x1a4604068`，故障数据地址 `0x217a58014`——独立事件。
+- **B 点（其余 20 次，全是 backboardd，每 ~10.3 s 一轮）**：pc unslid `0x1a45c313c` / lr `0x1a45c3118` / 同一条 unslid 回调链 `0x1a45c4c20 → 0x18e545dfc → 0x1884fa3d8 → 0x186e1bff8 → 0x186e7e0b4 → 0x186e51884 → 0x186e55da0 → 0x186e94c58`，故障数据地址**次次相同** `0x2681bfd34`。同一指令、同一数据页、跨进程确定复现——该数据地址是进程无关映射，最自然的解释是 **dyld 共享缓存的数据段页**（全进程同 slide 共享）。
+- 投递路径分两形：`| sent by exc handler` 后缀 ×173（launchd 的异常处理者代发 SIGBUS），无后缀 ×21（backboardd 全部——直达内核信号）。
+- **与 R42/R43 的机械事实拼合**：vm_fault_internal 失败出口零经过（pager 钩全静默）→ 不是页填充失败；页 fault 若失败会被定罪 → 故障页要么填充成功（指令应重试不死）、要么**根本不走 vm_fault（PTE 在场但物理侧坏，或软件合成异常）**。内核侧 `user_exception_trace.c` 的 `usertrap:` 行（异常号 + code/subcode + **共享缓存 slide** + 寄存器文本 + fp 链）本可一次定案——但 R43 GPU cmdline 沿 R39 形 verbatim，**systrace 默认 0，全程零 usertrap**。死因机制（外部 abort on resident page / EXC_RESOURCE flavor / 其他）在现有证据下不可判。
+- **上游没有现成答案**：其全部文档（air.md 1589 行、RAPHAEL*.md、README×3）零 SIGBUS 史；且其 10-27 基线迁移自述"本轮未实机验收"，桌面战绩（39 init、GLES、WPA3）属 10-23 Metal 时代旧树——README ≠ 真机证据，又一例。
+
+### ② WiFi 固件装包（MR5 的便宜解，合同已对上）
+
+- **上游合同**（userland/build.sh:502-508）：`MPSS_FW` 目录输入 → 硬校验七件 `modem.mdt wlanmdsp.mbn nv-modemst1 nv-modemst2 nv-fsg nv-fsc firmware-5.bin` → `cp -a "$MPSS_FW"/. flashboot/fw/`；BDF 不在七件里，由 `wifi_bdf=bd_f11cn.bin` 参数指定（上游同样拒绝缺省 0xff 通配）。
+- **我方合同**（redwood_wifi.c/redwood_mpss.c）：`image_file(name)` → `redwood_image_file("fw", name, …)`——**同一个 `fw/` 目录约定**，文件名逐一对应。R43 log 的 "modem/WLAN firmware is missing from the RAM image" = `image_file("modem.mdt"/"wlanmdsp.mbn")` 空手而归。
+- **结论**：MR5 不需要动内核，需要的是用户侧注入工具/说明——从本机 modem 分区只读提取七件+`bd_f11cn.bin` → 注入 flashboot.apfs 的 `fw/` → 重刷。注意：这些是设备私有文件，禁止发布（上游同此纪律，且其 RMTFS 快照只写 RAM 副本）。
+- **R45 调参情报**：上游已验证控制链含 PM8150L L10C 3312 mV/HPM 五路供电、AOSS QDSS 时钟投票、`wifi_step=15 wifi_lx=2 wifi_smmu=2 wifi_keep=1 wifi_wait=10 wifi_listen=15` 参数组；已知遗留 = WiFi 开关后重扫不复（"保存已有实现，不声称已修复"）。
+
+### ③ launchd/backboardd shim
+
+- 上游用户态 10-27 已统一进单仓（hk_* → hakios_*，与旧历史断绝）；七个注入库（inject / inject_app / inject_fairplay / inject_media / inject_sb / inject_store / inject_tweaks）+ `rc.jobs.*` 作业系统（数十个）+ `watch_for_faults()` 故障报告器（sigaction SIGSEGV/SIGBUS/SIGABRT/SIGILL/SIGTRAP → 打 unslid 现场 → SIG_DFL 重抛——**与我方 redwood: 信号钩同款**，家族代码分叉后改名）。
+- 我方用户态是 R13 谱系预构建（release 链继承，仓库无 userland 源），与上游源树不可逐文件 diff，无整搬价值；真差异要等内核侧定罪后按需引入（例如上游 inject 库的 abort 观察三件套经验）。
+
+### 许可证事实
+
+仓库 LICENSE 按目录双许可：内核（hakios.patch + xnu/files/）= APSL 2.0 衍生作品（源码可得义务），其余另有条款；COMPLIANCE.md 是运营中的合规清单。GitHub API 的 "NOASSERTION" 是多许可叠加的显示结果，**不等于不可用，也不等于可以整仓照搬**。定向挖矿（读源码、学方案、按我方树重写）在内核侧 APSL 义务内与现有做法同构。
+
+### R44 重锚立案：靶心从"sandbox 拒绝"改判"systrace 询凶"
+
+单刀（全部在 `xnu/files/osfmk/arm64/user_exception_trace.c`）：**(a)** `systrace` 默认 0→1（内核侧异常分诊入口 `exception_triage_thread` 的接线自 R41 在位，boot-arg 仍可关回）；**(b)** 异常过滤加 EXC_RESOURCE / EXC_GUARD（若真是 CPU-monitor/资源类异常，code 对直接点名 flavor）；**(c)** 按进程名节流：每名首 4 次全量、此后每 16 次一次（R42 分区律：1/s 重生循环不得吃掉 logdump 分区）。marker 同长换装（MiniIOMobileFramebuffer.cpp，56 B）。预期判读：**MR1 = usertrap: 行**（异常号 + code/subcode + slide + 现场）——B 点 20 死、A 点 1 死、以及 173 个无钩进程的死全部补上内核侧现场；slide 一到手，0x2681bfd34 与 0x1a45c313c 立即可对 dyld 缓存定名。R45 按定罪结果开真修复刀。
