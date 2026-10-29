@@ -9,17 +9,32 @@ the log but the drops).  The build also carries the round's used-marker string.
 
 So the r34_shadiff --gate content-equivalence verdict (identical size, diffs confined
 to the UUID + version-timestamp clusters) CANNOT apply: this round's kernel is SUPPOSED
-to differ, by exactly one patch.  The gate proves the difference IS one patch:
+to differ, by exactly one patch.  And a NAIVE "the diff clusters in <= 32 regions"
+verdict cannot apply EITHER -- that law was drafted on a STUB (r39 bytes + one appended
+string) and died on its first contact with a REAL build (CI run 40826230850): one patch
+re-lengthens one section, every following section's addr/size/offset shifts, and the
+linker re-points every absolute pointer -- 541,900 differing regions / ~5 MB, 99.99% of
+it compiler-and-linker bookkeeping.  LESSON (recorded 2026-10-29, real-artifact bytes
+release/r40-kernel-stripped.bin = dd5b7d43... vs base/r39-kernel.bin = 24ec4e42...):
+a gate law drafted on synthetic bytes must be validated on real build output before it
+rides in CI.  The laws below are what the REAL bytes support:
 
-  1. size:    r40 > r39, and the delta stays under 64 KiB (the patch is ~a dozen lines)
-  2. marker:  the R40 marker is in r40 exactly once and in r39 zero times
-  3. lineage: every R33 generation marker and every R38 display/Wi-Fi mark rides in r40
-  4. strings: every string r40 gains over r39 is either the R40 marker or a Darwin
-              version line (the wall-clock build stamp); every string it loses is a
-              Darwin version line -- NO other text moves
-  5. bytes:   the differing runs cluster into <= 32 regions and <= 256 KiB total (the
-              patch's code+rodata plus the build-meta clusters; a wrong build blows
-              every bound at once)
+  1. size:      r40 > r39 and the delta stays under 64 KiB (observed +128 B, ALL of it
+                __LINKEDIT symbol-table growth -- the patch's code fits existing slack)
+  2. marker:    the R40 marker is in r40 exactly once and in r39 zero times
+  3. lineage:   every R33 generation marker and every R38 display/Wi-Fi mark rides in r40
+  4. segments:  the LC_SEGMENT_64 name sequence is identical; every payload segment's
+                fileoff/filesize is byte-identical; only __LINKEDIT may grow, by exactly
+                the file delta (a wrong/foreign build moves payload segments)
+  5. strings:   computed with the volatile regions MASKED OUT of both files (the load
+                commands + the SYMTAB nlist/strtab span): every string r40 gains is
+                either the R40 marker, the patch's own report literal "frame dropped",
+                or a Darwin version line (the wall-clock build stamp); every string it
+                loses is a Darwin version line.  The R40 marker must live OUTSIDE the
+                masked spans (real __TEXT/__DATA rodata, not smuggled into the symbol
+                table).  (The report literal surfaced on the REAL CI bytes -- the stub
+                never had it; validated 2026-10-29, run 40826230850's kernel.)
+  6. symtab:    r40 carries at least as many symbols as r39 (the patch adds statics).
 
 usage:
   python3 tools/r40_kernel_gate.py --r39-kernel base/r39-kernel.bin \
@@ -29,9 +44,12 @@ usage:
 import argparse
 import hashlib
 import re
+import struct
 import sys
 
 R40_MARKER = b'R40: the first dropped frame buys the full core snapshot'
+# the patch's own forensic literal: show() calls redwood_gpu_report("frame dropped")
+R40_REPORT_LITERAL = b'frame dropped'
 
 R39_KERNEL = '24ec4e421c3fb760972af3f97324f2c3bbe490c441239c7f8139d1914a626f16'
 
@@ -51,28 +69,43 @@ R38_MARKS = (
 XNULIVE4 = b'XNULIVE4'
 DARWIN = re.compile(rb'Darwin Kernel Version')
 
-
-def strings(data, minimum=8):
-    out = set()
-    for run in re.findall(rb'[\x20-\x7e]{%d,}' % minimum, data):
-        out.add(run)
-    return out
+LC_SEGMENT_64 = 0x19
+LC_SYMTAB = 0x2
 
 
-def diff_runs(a, b):
-    runs, n, i = [], min(len(a), len(b)), 0
-    while i < n:
-        if a[i] != b[i]:
-            j = i
-            while j < n and a[j] != b[j]:
-                j += 1
-            runs.append((i, j - i))
-            i = j
-        else:
-            i += 1
-    if len(a) != len(b):
-        runs.append((n, abs(len(a) - len(b))))
-    return runs
+def macho_layouts(d):
+    """Parse the 64-bit Mach-O: (lc_end, segments[(name, fileoff, filesize)], symtab dict)."""
+    magic, = struct.unpack_from('<I', d, 0)
+    assert magic == 0xfeedfacf, 'not a 64-bit Mach-O (magic %#x)' % magic
+    ncmds, sizeofcmds = struct.unpack_from('<II', d, 16)
+    lc_end = 32 + sizeofcmds
+    off = 32
+    segs, sym = [], None
+    for _ in range(ncmds):
+        cmd, size = struct.unpack_from('<II', d, off)
+        if cmd == LC_SEGMENT_64:
+            name = d[off + 8:off + 24].split(b'\0')[0]
+            fileoff, filesize = struct.unpack_from('<QQ', d, off + 40)
+            segs.append((name, fileoff, filesize))
+        elif cmd == LC_SYMTAB:
+            symoff, nsyms, stroff, strsize = struct.unpack_from('<IIII', d, off + 8)
+            sym = {'symoff': symoff, 'nsyms': nsyms, 'stroff': stroff, 'strsize': strsize}
+        off += size
+    assert sym, 'no LC_SYMTAB'
+    assert sym['stroff'] + sym['strsize'] <= len(d), 'symtab strtab runs past EOF'
+    return lc_end, segs, sym
+
+
+def masked_strings(d, masks, minimum=8):
+    """Printable runs >= minimum, with every masked span zeroed first."""
+    buf = bytearray(d)
+    for a, b in masks:
+        buf[a:b] = b'\x00' * (b - a)
+    return set(re.findall(rb'[\x20-\x7e]{%d,}' % minimum, bytes(buf)))
+
+
+def in_masks(off, masks):
+    return any(a <= off < b for a, b in masks)
 
 
 def main():
@@ -95,6 +128,9 @@ def main():
     assert osha == R39_KERNEL, 'the r39 base kernel is %s, not the release byte %s' % (osha, R39_KERNEL)
     say('r40 kernel: %d B, sha256 %s' % (len(new), nsha))
 
+    lc_end_o, segs_o, sym_o = macho_layouts(old)
+    lc_end_n, segs_n, sym_n = macho_layouts(new)
+
     # 1. size
     delta = len(new) - len(old)
     assert delta > 0, 'the r40 kernel is not bigger than r39 (delta %d) -- the patch did not land?' % delta
@@ -115,26 +151,59 @@ def main():
     assert new.count(XNULIVE4) >= 1, 'the XNULIVE4 channel mark is missing'
     say('lineage law: R33 generation 4 + R38 display/WiFi 5 + XNULIVE4 all ride')
 
-    # 4. strings delta
-    o_str, n_str = strings(old), strings(new)
+    # 4. segment census (the law the real CI bytes taught us)
+    names_o = [s[0] for s in segs_o]
+    names_n = [s[0] for s in segs_n]
+    assert names_o == names_n, 'the LC_SEGMENT_64 name sequence changed: %s -> %s' % (names_o, names_n)
+    moved = []
+    for (name_o, fo_o, fs_o), (name_n, fo_n, fs_n) in zip(segs_o, segs_n):
+        if name_o == b'__LINKEDIT':
+            continue
+        if (fo_o, fs_o) != (fo_n, fs_n):
+            moved.append((name_o.decode(), fo_o, fs_o, fo_n, fs_n))
+    assert not moved, 'payload segments moved (a foreign build does this): %s' % moved[:4]
+    link_o = [s for s in segs_o if s[0] == b'__LINKEDIT'][0]
+    link_n = [s for s in segs_n if s[0] == b'__LINKEDIT'][0]
+    assert link_o[1] == link_n[1], '__LINKEDIT fileoff moved'
+    assert link_n[2] - link_o[2] == delta, \
+        'file delta %d != __LINKEDIT delta %d -- payload grew, not just symbols' % (delta, link_n[2] - link_o[2])
+    say('segment law: %d segments, name sequence identical; every payload segment'
+        ' fileoff/filesize byte-identical; __LINKEDIT +%d B == the file delta'
+        % (len(segs_n), link_n[2] - link_o[2]))
+
+    # 5. strings delta, volatile regions masked
+    mask_o = [(0, lc_end_o), (sym_o['symoff'], len(old))]
+    mask_n = [(0, lc_end_n), (sym_n['symoff'], len(new))]
+    o_str = masked_strings(old, mask_o)
+    n_str = masked_strings(new, mask_n)
     gained, lost = n_str - o_str, o_str - n_str
-    bad_gain = [s for s in gained if s != R40_MARKER and not DARWIN.search(s)]
+    def allowed_gain(s):
+        return s == R40_MARKER or s == R40_REPORT_LITERAL or DARWIN.search(s)
+
+    bad_gain = [s for s in gained if not allowed_gain(s)]
     bad_loss = [s for s in lost if not DARWIN.search(s)]
-    assert not bad_gain, 'r40 gains unexpected strings: %s' % [s[:64] for s in bad_gain[:5]]
+    assert not bad_gain, 'r40 gains unexpected strings (outside symtab/load cmds): %s' % [s[:64] for s in bad_gain[:5]]
     assert not bad_loss, 'r40 loses unexpected strings: %s' % [s[:64] for s in bad_loss[:5]]
-    say('strings law: gained %d (the R40 marker + %d Darwin stamp lines), lost %d (all Darwin stamps)'
-        % (len(gained), len(gained) - 1, len(lost)))
+    assert R40_REPORT_LITERAL in gained, \
+        'the report literal "frame dropped" is missing from the masked delta'
+    assert not in_masks(new.find(R40_REPORT_LITERAL), mask_n), \
+        'the report literal sits inside a masked span -- smuggled?'
+    marker_at = new.find(R40_MARKER)
+    assert not in_masks(marker_at, mask_n), \
+        'the R40 marker sits inside a masked span (symtab/load cmds) at %#x -- smuggled?' % marker_at
+    say('strings law: masked delta: gained %d (the R40 marker + the report literal'
+        ' "frame dropped" + %d Darwin stamp lines), lost %d (all Darwin stamps);'
+        ' marker at %#x rides real rodata'
+        % (len(gained), len(gained) - 2, len(lost), marker_at))
 
-    # 5. byte clusters
-    runs = diff_runs(old, new)
-    total = sum(size for _, size in runs)
-    assert len(runs) <= 32, 'the diffs cluster into %d regions, over the 32 bound' % len(runs)
-    assert total <= 262144, 'the differing bytes total %d, over the 256 KiB bound' % total
-    say('cluster law: %d differing regions, %d B total (bounds 32 / 256 KiB)' % (len(runs), total))
-    for at, size in runs[:8]:
-        say('  run at %#x, %d B' % (at, size))
+    # 6. symtab census
+    assert sym_n['nsyms'] >= sym_o['nsyms'], \
+        'r40 carries FEWER symbols than r39 (%d < %d)' % (sym_n['nsyms'], sym_o['nsyms'])
+    say('symtab law:  nsyms %d -> %d (the patch adds statics; strtab %#x -> %#x)'
+        % (sym_o['nsyms'], sym_n['nsyms'], sym_o['strsize'], sym_n['strsize']))
 
-    say('GATE GREEN: the r40 kernel IS the r39 kernel plus one forensic patch.')
+    say('GATE GREEN: the r40 kernel IS the r39 kernel plus one forensic patch'
+        ' (payload layout pinned, only the symbol table grew).')
     if args.report:
         with open(args.report, 'w') as f:
             f.write('\n'.join(lines) + '\n')

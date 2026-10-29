@@ -156,12 +156,17 @@ jobs:
       #    首次丢帧即 redwood_gpu_report("frame dropped")，补上 R39 验尸坐实的
       #    取证缺口）+ R40 used-标记串。门禁三层：
       #    一 = R33 谱系标记；二 = R38 显示/WiFi 标记 + R40 标记逐字在字节里；
-      #    三 = r40_kernel_gate 对 r39 release 内核（24ec4e42）：尺寸带 + strings
-      #         增量恰为 {R40 标记, Darwin 版本行} + 字节簇界——"差异恰为一个补丁"。
+      #    三 = r40_kernel_gate 对 r39 release 内核（24ec4e42）："差异恰为一个补丁"，
+      #         六律：尺寸带 / R40 标记 / 谱系 / 段表不动仅 LINKEDIT 增长 /
+      #         掩码 strings（头表+符号表掩掉，增量= {标记,"frame dropped",Darwin 行}）/
+      #         符号数不减。律三的字节簇界在真构建（run 40826230850）下被
+      #         布局级联位移证伪——已按 dd5b7d43 真字节重写并在本地全绿。
       # BUILD_DSYM=0 + .DEFAULT_GOAL=build（R34/R35/R38 三轮的教训全数继承）。
       - name: "③/⑧ 内核构建 + 三层门禁（theos v19.0.0-L2 + xnu/apply.sh + xnu-deps + mk-ath10k.py → WIFI_OBJECT + BUILD_DSYM=0 + r40_kernel_gate 对 R39 release）"
         run: |
-          set -eu
+          set -euo pipefail
+          # pipefail（run 40826230850 教训）：门禁 | tee 管道会吞掉门禁的退出码，
+          # r40_kernel_gate 在 CI 上崩溃后构建居然继续跑——门禁必须能杀死构建。
           if [ ! -x "$THEOS/toolchain/linux/iphone/bin/ld64" ]; then
             rm -rf "$THEOS"
             git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
@@ -259,7 +264,7 @@ jobs:
       #    一条目，loader/cmdline/卷/usb = r39 原字节骑乘；日常镜像逐字节原样）
       - name: "④/⑧ 打 r40 双启动镜像（外科手术：底板 = r39 release；GPU 镜像只换 kernel 一条目）"
         run: |
-          set -eu
+          set -euo pipefail
           cd hackios
           python3 tools/r40_flash_build.py \
             --daily base/raphael-xnu-r39-flash.img \
@@ -274,7 +279,7 @@ jobs:
       # ⑤ 门禁复证 + 判读预注册：r40-kernel-id 对双输出镜像判读。
       - name: "⑤/⑧ r40-kernel-id 复证门禁（双镜像：R40 内核 + R39 loader/cmdline/卷 + 日常原样）"
         run: |
-          set -eu
+          set -euo pipefail
           cd hackios
           python3 tools/r40-kernel-id.py "$REL/raphael-xnu-r40-flash.img" "$REL/raphael-xnu-r40-gpu-flash.img" \
                   --expect-loader-sha 4bf828e425e4b59d3668461ff89ef290dfbf3215cceec903f1662255fe45a3db \
