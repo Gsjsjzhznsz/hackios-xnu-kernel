@@ -370,10 +370,10 @@ jobs:
             BASE_IDFILE="$PWD/base-id.txt"
             export BASE_IDFILE
             printf '%s' "$BASE_ID_CMD" > /tmp/base-id.sh
-            bash -e /tmp/base-id.sh
+            bash -eo pipefail /tmp/base-id.sh
             if [ -n "$BASE_ID_GATES" ]; then
               printf '%s' "$BASE_ID_GATES" > /tmp/base-id-gates.sh
-              bash -e /tmp/base-id-gates.sh
+              bash -eo pipefail /tmp/base-id-gates.sh
               echo "底板判读门禁全绿。"
             fi
           fi
@@ -450,7 +450,13 @@ jobs:
           fi
           ./xnu-build.sh -j4 -k BUILD_DSYM=0 \
             || echo "（make 退出码 $?——上游文档：链接后的检查，内核若已产出即成功）"
-          K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
+          # run#3 验尸（40853122934）：K 曾是无 export 的普通变量——门禁一/二由步 shell
+          # 自己展开 "$K" 所以活得好好的，而门禁三模板经 /tmp/kernel-gate.sh 交给子 bash
+          # 执行，$K 展开成空串 => r41_kernel_gate open('') 崩；又因 python|tee 管道无
+          # pipefail，tee 0 退出把崩溃整个吞掉，步③假绿，缺件迟到步⑥才被预检点名。
+          # 教训：喂给子 bash 模板的占位符必须 export（BASE_KERNEL 就是这么活下来的）；
+          # 门禁调用一律 bash -eo pipefail，工具崩 = 步当场死。
+          export K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
           ls -la "$K" || { echo "::error::内核没有产出"; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
           KU=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped
           cp -f "$K" "$REL/${R}-kernel-stripped.bin" || true
@@ -472,7 +478,7 @@ jobs:
             echo "→ 门禁三：轮 gate（新内核 vs 底板内核）"
             export BASE_KERNEL="$PWD/base/kernel.bin"
             printf '%s' "$KERNEL_GATE_CMD" > /tmp/kernel-gate.sh
-            bash -e /tmp/kernel-gate.sh
+            bash -eo pipefail /tmp/kernel-gate.sh
           fi
 
       # ---------------------------------------------------------------
@@ -500,7 +506,7 @@ jobs:
           export BASE_DAILY="$PWD/base/daily.img" BASE_GPU="$PWD/base/gpu.img"
           export K="$REL/${R}-kernel.bin" KU="$REL/${R}-kernel-unstripped.bin"
           printf '%s' "$FLASH_BUILD_CMD" > /tmp/flash-build.sh
-          bash -e /tmp/flash-build.sh
+          bash -eo pipefail /tmp/flash-build.sh
           ls -la "$REL"
 
       # ---------------------------------------------------------------
@@ -514,9 +520,9 @@ jobs:
           cd hackios
           export IDFILE="$REL/${R}-kernel-id.txt"
           printf '%s' "$KERNEL_ID_CMD" > /tmp/kernel-id.sh
-          bash -e /tmp/kernel-id.sh
+          bash -eo pipefail /tmp/kernel-id.sh
           printf '%s' "$ID_GATES" > /tmp/id-gates.sh
-          bash -e /tmp/id-gates.sh
+          bash -eo pipefail /tmp/id-gates.sh
           echo "${R} 复证门禁全绿。"
 
       # ---------------------------------------------------------------
@@ -532,7 +538,7 @@ jobs:
           cd hackios
           if [ -n "$PRE_RELEASE_CMD" ]; then
             printf '%s' "$PRE_RELEASE_CMD" > /tmp/pre-release.sh
-            bash -e /tmp/pre-release.sh
+            bash -eo pipefail /tmp/pre-release.sh
           fi
           ( cd "$REL" && sha256sum $CHECKSUM_FILES ) > "$REL/SHA256SUMS"
           printf '%s\n' "$README_BODY" > "$REL/README.txt"

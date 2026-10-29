@@ -1421,3 +1421,17 @@ r28l flashboot → oem run；**等 ~2-3 分钟过风暴首发窗再抓 logdump**
 **新律入册**：凡 `uses:` 步接收文件清单，必须先问清单的相对基准面是哪个目录——输入契约相对谁、action 从谁解析，两者不同时由前置 bash 步显式翻译，禁止直接透传。
 
 **离线复验（scripts/r41_universal_dryrun.py 的接棒者 = 渲染步⑥真块实跑）**：15 项全绿——YAML 无重复键/12 步/24 输入/7 run 块 bash -n；步⑥真块在假 workspace（8 件齐 + base 转发替身 + kernel-sha 占位）实跑退出 0，GITHUB_ENV 产出 8 行 release/ 前缀 glob 且 8/8 在根可解析；**负样本一：旧接法裸名在根 0/8 命中（run#2 死点复现）**；负样本二：缺件时步⑥以"资产缺失"退出非零；⑥b 接线/⑥c 裸名直链两断言全过。
+
+## R41 通用工作流修正 #4（2026-10-29，springboard run#3 / run 40853122934 验尸）：子 bash 占位符空串 + pipefail 吞崩溃
+
+**战况**：步⑥ 预检（run#2 修复的产物）首次开火即立功——`release 资产缺失: release/r41-kernel-gate.txt`，比 action 的笼统报错提前且点名。这一缺件揭出了比 run#2 更深的连环伤：**门禁三在步③就崩了，且崩溃被吞，步③假绿**。
+
+**死点机理（两洞叠加）**：
+1. **占位符导出面**：门禁三模板 `python3 tools/r41_kernel_gate.py --r40-kernel "$BASE_KERNEL" --r41-kernel "$K" --report ...` 经 /tmp/kernel-gate.sh 交给**子 bash** 执行。`BASE_KERNEL` 显式 export（作者知道子进程要环境变量）、`REL/R` 是 job 级 env 天然导出，唯独 `K` 是步内**普通赋值**——门禁一/二由步 shell 自己展开 "$K"（pre_gate.py "$K"）所以全过，门禁三在子 bash 里 $K 展开成**空串** ⇒ `open('')` FileNotFoundError，工具秒崩。
+2. **管道吞崩溃**：模板以 `python3 ... | tee gate-run.txt` 收尾且步内无 pipefail——管道状态 = tee 的 0 ⇒ 步③带着 0 字节的 gate-run.txt **假绿**继续跑。铁证：日志中 `r41-kernel-gate-run.txt` 0 字节 + 步③内 traceback。
+
+**修正**：③ 内 `K=` 改 `export K=`（附机理注释）；**全部 7 处**模板调用（②base-id/②base-id-gates/③kernel-gate/④flash-build/⑤kernel-id/⑤id-gates/⑥pre-release）`bash -e` → `bash -eo pipefail`——门禁工具崩溃 = 步当场死，不再有 tee 垫背。占位符导出面全查一遍：②的 BASE_DAILY/BASE_GPU/BASE_FLASHBOOT/BASE_IDFILE、④的 K/KU、⑤的 IDFILE、③的 BASE_KERNEL/K 均已 export，KSHA/REL/R 为 job 级——无第二只漏网之鱼。
+
+**新律入册（模板占位符定律的第二条）**：凡模板经临时文件交子 bash 执行，其占位符**逐一**核对可见性——export 或 job 级 env 二选一，普通赋值=子进程空串；凡模板内含管道（tee 收尾是常态），调用必须 `bash -eo pipefail`——管道尾命令的 0 不是工具的 0。
+
+**离线复验（scripts/r41_univ_globfix_verify.py，21 项）**：全绿——结构断言（③ 无裸 K= 赋值/全仓 0 处 bash -e /tmp/ 恰 7 处 pipefail）+ run#2 全套 15 项回归 + **子 bash 展开双态**：K 不在环境 ⇒ 模板收到空串（run#3 bug 复现，open('') 崩）；K 在环境 ⇒ open() 拿到真路径。另：本地容器曾回滚到 R35 快照一次（worklog 首次入册的老坑：** convict 之前先 fetch**——远端未失，reset --hard origin/main 即愈）。
