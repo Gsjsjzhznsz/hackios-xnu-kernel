@@ -1441,7 +1441,7 @@ r28l flashboot → oem run；**等 ~2-3 分钟过风暴首发窗再抓 logdump**
 **CI 收官**：run#4 8.5 分钟全绿——通用工作流 springboard.yml 首个成功轮（run#1 派发 422 / run#2 发布 glob 基准面 / run#3 占位符空串+pipefail，三修四跑）。Release r41-springboard 八资产齐（双镜像/flashboot/md1/gate 报告/SHA256SUMS/README/toolchain）。镜像复验（tools/r41-kernel-id.py）：GPU 内核判 R41、cmdline = R39 组 verbatim、卷 = R39/R40（5b9bbbcb）、loader = 4bf828e4 verbatim；日常镜像 sha b0f9f6df 逐字节 == r40（控制组律成立）。**发布内核 sha = f17119fb**（CI gate 报告六律全绿）；run#3 的 7a2564bd 同源不同 UUID——不可复现律应验，判读时不得跨 run 钉 sha。
 
 **真机判决（用户 logdump 4546 行，单 boot 全程至用户态 00:03:17）**：
-- **M1 = 未触发**：全篇 0 处 "frame dropped"——R41 快照通道武装完毕但前提（首次丢帧）从未发生；loader 记录 27 次内核主动 flush，存储通道本身工作正常。
+- **M1 = 未触发**：全篇 0 处 "frame dropped"——R41 快照通道武装完毕但前提（首次丢帧）从未发生；loader 记录 27 次落盘（2 秒报 16 + 内核主动 11，后者含 4-6 秒窗的 #4-#13 密集段——快照通道的存储腿工作正常）。
 - **M2 = 未到窗**：WiFi 仅内核横幅一行，radio 任务没有拿到窗口（用户态卡死在 SB 之前）。
 - **M3 = 绿**：显示 scanout 三缓冲在场、logo 经 redwood-gl 帧 1-4 真渲染、触摸/按键全程存活。
 - **R40 的 GPU 停摆墙未复现**（也可能未到达——SB 从未开始绘制）。
