@@ -526,6 +526,7 @@ jobs:
           CHECKSUM_FILES: ${{ inputs.checksum_files }}
           README_BODY: ${{ inputs.release_readme }}
           PRE_RELEASE_CMD: ${{ inputs.pre_release_cmd }}
+          RELEASE_FILES: ${{ inputs.release_files }}
         run: |
           set -eu
           cd hackios
@@ -536,6 +537,22 @@ jobs:
           ( cd "$REL" && sha256sum $CHECKSUM_FILES ) > "$REL/SHA256SUMS"
           printf '%s\n' "$README_BODY" > "$REL/README.txt"
           echo "README + SHA256SUMS + 转发资产就位"
+          # 教训（springboard run#2 验尸，run 40849635001）：softprops/action-gh-release 的 files
+          # glob 是相对 workspace 根解析的，而输入契约是"裸名，相对 release/"——裸名必然
+          # 零命中，fail_on_unmatched_files 把它变成致命错。此处把每行翻译成 release/ 前缀
+          # glob 经 GITHUB_ENV 传给 ⑥b；并预检每项真实存在，缺件直接在 ⑥ 报名（比 action
+          # 的笼统 Pattern does not match 好定位）。⑥c 的直链仍用裸名（URL 不带 release/）。
+          RELEASE_GLOBS=$(printf '%s\n' "$RELEASE_FILES" | sed -e '/^[[:space:]]*$/d' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's#^#release/#')
+          printf '%s\n' "$RELEASE_GLOBS" | while IFS= read -r g; do
+            [ -e "$GITHUB_WORKSPACE/$g" ] || { echo "release 资产缺失: $g（应在 $REL/ 下）"; exit 1; }
+          done
+          {
+            echo "RELEASE_GLOBS<<UNIV_RELEASE_GLOBS_EOF"
+            printf '%s\n' "$RELEASE_GLOBS"
+            echo "UNIV_RELEASE_GLOBS_EOF"
+          } >> "$GITHUB_ENV"
+          echo "Release globs（相对 workspace 根）:"
+          printf '%s\n' "$RELEASE_GLOBS"
           df -h /
 
       - name: "⑥b/⑧ 发布 Release（直链交付，${{ inputs.release_tag }}）"
@@ -545,7 +562,9 @@ jobs:
           name: ${{ inputs.release_name }}
           body: ${{ inputs.release_body }}
           fail_on_unmatched_files: true
-          files: ${{ inputs.release_files }}
+          # run#2 教训：action 的 glob 相对 workspace 根解析；输入是裸名（相对 release/），
+          # 不可直接投喂——用 ⑥ 翻译出的 release/ 前缀 glob（GITHUB_ENV）。
+          files: ${{ env.RELEASE_GLOBS }}
 
       # ---------------------------------------------------------------
       - name: "⑥c/⑧ 直链汇总（跑完看这里，复制即用）"

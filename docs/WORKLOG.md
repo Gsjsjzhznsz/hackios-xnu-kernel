@@ -1409,3 +1409,15 @@ r28l flashboot → oem run；**等 ~2-3 分钟过风暴首发窗再抓 logdump**
 ## 通用工作流落地（2026-10-29）：springboard.yml 唯一化（45 → 1）+ harness 干跑全绿
 
 （接上节立法记录；提交内容 = springboard.yml 新增 + r6–r41 45 个旧轮次工作流全删 + README CI 段/仓库结构表改写。harness 五步干跑 + YAML 纪律检查全绿的证据链见上节。）
+
+## R41 通用工作流修正 #3（2026-10-29，springboard run#2 / run 40849635001 验尸）：发布步 glob 基准面错位
+
+**战况**：前 11 步首次全绿——步③真内核构建（sha 7a2564bd）+ 门禁一/二/三、步④手术（GPU 镜像 b52fdb48 / 日常镜像 b0f9f6df==r40 逐字节，控制组律成立）、步⑤判读+复证门禁——全部通过，死在 **步⑥b 发布**：`softprops/action-gh-release@v2` 报 `Pattern 'raphael-xnu-r41-flash.img' does not match any files.`，`fail_on_unmatched_files: true` 把它变成致命错。
+
+**根因**：基准面错位。action 的 files glob 相对 **workspace 根**解析，而 `release_files` 输入契约是"**裸名，相对 release/**"——镜像等八件全在 `<workspace>/release/` 下，裸名在根下零命中。工作流前文（SHA256SUMS、直链）都按"相对 release/"语义写，只有 ⑥b 把裸名直接投给了 action，两套基准面无人翻译。
+
+**修正**：步⑥ 内把输入逐行翻译成 `release/` 前缀 glob（GITHUB_ENV heredoc 传 `RELEASE_GLOBS`，不占 25 输入上限），⑥b 改用 `${{ env.RELEASE_GLOBS }}`；⑥ 增加逐项存在性预检，缺件直接报名退出（比 action 的笼统 Pattern 报错好定位）。⑥c 直链保持裸名（release URL 不带 release/ 目录）。
+
+**新律入册**：凡 `uses:` 步接收文件清单，必须先问清单的相对基准面是哪个目录——输入契约相对谁、action 从谁解析，两者不同时由前置 bash 步显式翻译，禁止直接透传。
+
+**离线复验（scripts/r41_universal_dryrun.py 的接棒者 = 渲染步⑥真块实跑）**：15 项全绿——YAML 无重复键/12 步/24 输入/7 run 块 bash -n；步⑥真块在假 workspace（8 件齐 + base 转发替身 + kernel-sha 占位）实跑退出 0，GITHUB_ENV 产出 8 行 release/ 前缀 glob 且 8/8 在根可解析；**负样本一：旧接法裸名在根 0/8 命中（run#2 死点复现）**；负样本二：缺件时步⑥以"资产缺失"退出非零；⑥b 接线/⑥c 裸名直链两断言全过。
