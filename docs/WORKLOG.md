@@ -1448,3 +1448,20 @@ r28l flashboot → oem run；**等 ~2-3 分钟过风暴首发窗再抓 logdump**
 - **新墙 = lsd SIGBUS ×78 连续崩溃循环**：00:01:59.712 backboardd 阻塞请求 LaunchServices 数据库 → .713 lsd[29] 立即 SIGBUS；此后每秒一崩至记录尾（00:03:17）；backboardd 自身映射同库也报 "Database mapping failed"。**唯一崩溃者**（其余全部守护进程零异常）；SpringBoard[7] 00:00:48 拉起后活着但全程沉默（无绘制无退出）。
 - **判读**：两进程同一文件同死 ⇒ 矛头指向内核侧文件映射页填充路径（vnode pager / mmap 页入），csstore/mapdb 为首个受害者；SB 的沉默与 backboardd 的重试同源。R40 的 GPU 墙与本墙互相独立，boot 间服务调度次序决定先撞哪面。
 - **R42 预注册（pager 轮）**：内核在 SIGBUS 交付点记录文件身份（vnode 路径/偏移/长度/返回值）——一次 boot 定罪到具体文件；嫌疑三选一：mmap 页入未实现簇读 / csstore 稀疏或压缩场景下 extent 读零填充 / 文件尺寸报告错误（lsd 映射越 EOF 必 SIGBUS）。修复落点在定罪后开刀。
+
+## R42 开工（2026-10-29，pager 取证轮从预注册到派发）：vm_fault 唯一失败出口的定罪钩
+
+**R42 的一刀（内核三件）**：R41 真机判决定罪的新墙（lsd SIGBUS ×78 + backboardd 同库映射失败 = 两进程一个文件）⇒ 取证轮。落点选择有据：`vm_fault_internal()` 的**最终 return**（osfmk/vm/vm_fault.c ~L6331）是全内核一切用户态页填充失败的**唯一漏斗出口**——越 EOF 检查失败、pager data_request 失败、无 entry 三种嫌疑全部流经此处（pager 层钩不住"越 EOF"情形，因它在调 pager 之前就死了）。三件：
+1. **新文件** `files/osfmk/vm/redwood_fault_convict.c`：`redwood_fault_convict(map, vaddr, kr)`——kalloc 先行（Z_WAITOK 不得持锁睡眠）→ map 读锁 → lookup entry（store 层 lookup **不自加锁**，vm_map.c 实证）→ 影子链自顶向下逐级加锁（collapse 的加锁次序，防竞态 UAF）→ 找带 pager 的最深对象 → `vnode_pager_get_object_name()` 取文件名（实现经 osfmk/vm/bsd_vm.c→vnode_pager_get_name→safe_getpath；**持对象锁调它是既有先例**：vm_fault.c 的 CODE SIGNING 拒绝路径同构）→ 全锁释放后 printf + flush。判词格式 `redwood-pager: verdict N: pid …[lsd] address … kr … file "…" fileoff … size …` ×4 种分支 + chain 行 ×1；**节流**：前 3 判词自带 flush（R41 通道），此后每 16 次一跳——lsd 的 1/s 重生循环下全 boot 约 7 次 flush，不啃穿 logdump 分区。
+2. **钩子**：redwood.patch 追加 vm_fault.c 单 hunk（26 行）——出口处 `kr != KERN_SUCCESS && map != kernel_map` 调定罪函数（函数内 extern，单 hunk 最小 diff）。
+3. **标记换替**：MiniIOMobileFramebuffer.cpp `r41_frame_drop_report_mark` → `r42_pager_forensics_mark`，同长 56 字节（"R42: the fault names the file that died, pager forensics"）。
+
+**六律改形（R42 段落律新形）**：R41 的"payload 段 fileoff/filesize 逐字节不动"对 R42 **不可满足**——R41 加一调用藏进 __TEXT padding（delta 0 是实证结果），R42 加一整个函数 ⇒ __TEXT 必然增长。新律：段名序列不变 + __TEXT 增长 <16 KiB + 其余 payload 段**尺寸不变、fileoff 平移恰等于 __TEXT 增长** + __LINKEDIT 吸收余量（delta = shift + linkedit_delta）。strings 律的允许增益集扩为 {R42 标记, redwood-pager:* 格式串, Darwin 戳}。
+
+**上游接口实证清单**（全部对 xnu-8796.121.2 原文核过）：`vm_map_lookup_entry` 不自加锁（vm_map_store_rb 走裸树）；`vnode_pager_get_object_name` 声明在 **osfmk**/vm/vm_protos.h（osfmk 直调合法，vm_fault.c 同文件先例）；printf→内核 msgbuf→loader 环（loader_return.c 头注释 + R40/R41 设备实证）；kalloc.h 拉 zalloc.h（Z_WAITOK）；printf 声明在 kern/misc_protos.h。
+
+**工具三件**：r42_kernel_gate.py（六律新形 + PAGER_LITERAL x4 断言）、r42-kernel-id.py（KNOWN +R41=f17119fb；新内核分支加 pager 字面量 x4 + R41/R40 双退役断言）、r42_flash_build.py（基准全换 r41 release 锚点：daily b0f9f6df / gpu 0d715343 / kernel entry f17119fb）。springboard.yml 默认值 21 处换代 R42（空参派发=重发 R42）。
+
+**离线证明（scripts/r42_univ_round_proof.py，13 项全绿）**：YAML 健康（24 输入/7 run 块 bash -n/默认值=R42 逐项）+ 源码三件互证 + **全链 apply（redwood.patch + files/ 在上游真树副本落地，vm_fault 钩子/标记/convict 三验）** + 工具 py_compile ×3 + **合成内核六律 GREEN**（R41 形基准 + R42 形新件：__TEXT +0x200、中段平移、标记换替、x4 判词、掩码 strings）+ **四负样本各被对的律点名**（外来构建改段尺寸→段落律；R41 标记未退役→标记律；判词 x3→谱系律；__TEXT 越带→16KiB 律）+ 手术工具合成底板打包自证 + 判读工具双镜像判词（GPU=R42+R39 组 verbatim；日常=R33 控制组）+ 判词词对齐律（workflow 门禁 8 个 grep 词与工具真实判定词互证）。合成的三次返工全被门禁自己逮住（漏 R33 第 4 标记/段布局重叠/双计偏移）——工具的牙口在离线阶段就已验过。
+
+**新律入册（取证轮落点律）**：取证钩必须埋在**失败汇合的唯一出口**，不埋在可疑路径的某一处——越 EOF 类失败根本不进 pager，pager 层钩子必然漏；出口钩要自带锁安全论证（map 读锁 + 影子链 collapse 序加锁 + 取名持锁的既有先例）与节流（重生循环会把无节流的取证变成日志洪水）。

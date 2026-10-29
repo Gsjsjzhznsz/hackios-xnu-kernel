@@ -3238,3 +3238,29 @@ index 3ebc295117a3..de101eafc83b 100755
  def find_non_ascii(s):
      for c in s:
          if ord(c) >= 0x80: return True
+diff --git a/osfmk/vm/vm_fault.c b/osfmk/vm/vm_fault.c
+
+--- a/osfmk/vm/vm_fault.c
++++ b/osfmk/vm/vm_fault.c
+@@ -6328,6 +6328,21 @@ done:
+ 		DEBUG4K_FAULT("map %p original %p vaddr 0x%llx -> 0x%x\n", map, original_map, (uint64_t)trace_real_vaddr, kr);
+ 	}
+ 
++	/*
++	 * R42: the pager forensics (files/osfmk/vm/redwood_fault_convict.c).
++	 * This is the ONE exit every user page-fill failure leaves through,
++	 * and a failed fault here is what a SIGBUS is made of above: the R41
++	 * run's device verdict put one crasher on the boot (com.apple.lsd
++	 * SIGBUS x78, backboardd failing on the same store), so the fault
++	 * names the file it died on -- one boot convicts the exact file.
++	 * Kernel-map faults stay out; the helper throttles itself.
++	 */
++	if (kr != KERN_SUCCESS && map != kernel_map) {
++		extern void redwood_fault_convict(vm_map_t, vm_map_offset_t, kern_return_t);
++
++		redwood_fault_convict(map, real_vaddr, kr);
++	}
++
+ 	return kr;
+ }
+ 
