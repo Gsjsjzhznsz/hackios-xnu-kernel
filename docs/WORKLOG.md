@@ -1306,3 +1306,41 @@ r28l flashboot → oem run；**等 ~2-3 分钟过风暴首发窗再抓 logdump**
 - **本地全链 dry-run（桩 Metal 件 + 真 R34 底板）**：卷构建 81 文件 byte-identical 证明绿 → 打包双镜像 re-prove 绿 → r35-kernel-id 双镜像判读全对（daily=R13 谱系+零 token；gpu=R35 卷+metal=1 恰一）→ R34 底板回溯判读（R34 形 NOTE + R34 卷识别）全对。dry-run 修出两 bug：inject.conf 记录对比误用 manifest dict（应为 sha256 对比）、R13_VOLUME 常量缺位——离线验证的价值实证。
 
 **WiFi R36 材料就位**：helium/raphael-bringup 的 fork 资产 `hakios.mpss.c`（6395 行）/`hakios.wifi.c`（5666 行）/`hakios.qmi.c`（963 行）确认可达（git ls-tree 实证）；docs/RAPHAEL-WIFI-PORT-PLAN.md 的 R35→R36 编号让位 Metal 轮，MPSS 装载轮顺延为 R36（wifi_step 1..8 梯：SMEM→PAS 4→APCS→SMP2P→GLINK→QRTR→RMTFS→TFTP）。
+
+## R36-R39 轮次轨迹 + R39 logdump 全文验尸：GPU 无声卡死（CP_RB_RPTR 停滞）定案 + R40 取证轮（2026-10-29）
+
+**轮次轨迹**：R36 卡 3 色测试屏 → R37 黑屏 → R38 卡白苹果 → **R39 黑屏 + logdump（r39-gpu-logdump-own.txt，5353 行全文验尸）**。R36–R39 四轮全部由本 fork 的 r36..r39 工作流构建发行（origin/main 提交 2585032 = R38 显示轮+WiFi 栈轮、07243c8 = R39 GLES-only 锁屏轮；r39 run 40795022275 SUCCESS，内核 = R38 源码等价重建）。**出处勘误（2026-10-29 R40 轮修正）**：本节初稿判 "R39 内核 = 参考仓库 HeliumStudio-Dev HEAD（5772246）构建"——错。三重字符串证据（`raphael-display: three scanout buffers…`、`the run is about to end…`、`raphael needs WCN3990 SNOC/ath10k…`）当时只在 repo_helium 找到，是因为**本地 clone 停在 ba749ae（R35）**，而 R38 提交 2585032 已把参考仓库的显示/WiFi 代码**原样移植**进本树（raphael_adreno.c/redwood_display.c/redwood_wifi.c，字符串随移植逐字入境）；参考仓库 HEAD 与本地 r39 tag 同日无涉。教训入册：**定罪字符串前先 `git fetch`——stale 树上的"仅存在于"全是冤案**。cmdline = R33 组 + `metal=1 fb_scan=1 wifi=1 wifi_bdf=bd_f11cn.bin`（R39 组原样）。
+
+**R39 症状阶梯判读修正**：黑屏 ≠ 系统死。带时间戳内核日志证明系统本体全活到 163s+（buttons 每轮统计、GPU 传感器 34.6→38.0℃、内存每分钟报、慢核 71s 上线）。**用户 117.7s 短按电源灭屏属正常**（swap 29 清层 = 灭屏黑帧）；致命的是其后渲染再也无法上屏。
+
+**死因链（精确到秒）**：
+- [63.0-63.9s] SpringBoard 首批帧：swap 1-5（RedwoodGPU submission 1-4 记 GPU 工时）、flip 1/2/3 latch（`frames++ < 3` 限流——**flip 4+ 成功也静默，"flip 停摆"为假象，排除**）。
+- [114.1s] swap 6/7 清层（灭屏前奏）；[117.7s] 电源短按 135ms；[120.0s] selector 12 + swap 8 成功（2 submissions 全记工时）。
+- [120.9-123.3s] SpringBoard 密集渲染：锁屏/图标 surface 连创（surface 5-18、图标缓存 180x180 批量）。
+- **[123.89s] swap 30 起：`the GPU is not done with surface 4 after 500 ms; frame dropped`——surface 3/4 的渲染 fence 永久停滞**，swap 30-38 循环丢帧至 163s。
+- 反证排除三项：ring 满（"the ring is full" 未出现）、≥5s 无限等待超时（GPU_PATIENCE_MS=5000 的 "no answer" 未出现）、fault 类中断（重启快照 `RBBM_INT_0_STATUS = 0`）。
+- **[163.7s] 用户强制重启**，关机路径（hakios_gpu_stop→gpu_block_stop，行 3182）快照：`status 0xff9485, interrupts 0, ring read up to 1488 of 2439; the GMU sees it busy: 0x70ff9484`——CP 读指针 1488 处无声卡死（非页错/保护错），GMU 认为 GPU 忙。GMU slumber 无应答（fw_init_result 0xbabeface）、SMMU 拆表遇拒绝（status 0x80000402 @ 0x3500，L2 非己表）——关机拆解期的正常噪声。
+- **取证缺口（R39 死得不明不白的直接原因）**：swap 路径 SWAP_GPU_MS=500 < gpuWait 的 1000ms report 门 ⇒ 30+ 次 500ms 超时全部静默；`surface->drawn = request->fence`（hakios.gpu.cpp:976）指向的停滞 fence 只被 500ms 等待盯着，永远够不到取证线。
+
+**WiFi 侧（R39 双判）**：①启动零阻塞——R38 白苹果的"WiFi 早期探测阻塞"嫌疑解除（hakios.wifi.c 探测到固件缺失即干净退出，com.redwood.wifi/net_test 正常 spawn 退出）；②固件缺位确认：`no fw/modem.mdt in the small image: put the phone's /vendor/firmware_mnt/image/modem.mdt into fw-wifi/`——**WiFi 下一步 = 固件进镜像**（参考仓库 README 3.2-3.4：adb pull /vendor/firmware_mnt/image → modem.mdt + modem.b00-31 + wlanmdsp.mbn + bd_f11cn.bin → fw-raphael/；NV 四分区 modemst1/2+fsg+fsc 需 Root 只读备份）。参考仓库 aa21593 已真机验证 WPA2/WPA3 网页访问。
+
+**R40（取证轮，零行为变更 + WiFi 固件轮并行）**：
+- 补丁（repo_helium MiniIOMobileFramebuffer.cpp）：`show()` 的 !complete 分支首次触发 `hakios_gpu_report("frame dropped")`——R40 复现时 logdump 将携带 CP_HW_FAULT/CP_PROTECT_STATUS/IB1+IB2 剩余/RBBM_STATUS 全快照，一次定位 CP 停滞原因（WFI 死等/抢占/ME 状态机）。
+- WiFi：用户侧提取固件 → 构建镜像带 `wifi=1 wifi_bdf=bd_f11cn.bin` + 固件文件 → 内核栈真跑（wifi_step 分步梯可诊）。
+- 若 R40 复现：按快照修根因出 R41；若不复现：WiFi 单独验收。
+
+## R40 GPU 取证轮（2026-10-29）：首次丢帧即出全快照 + WiFi 固件走 flashboot
+
+**依据（R39 验尸的取证缺口）**：swap 路径 `SWAP_GPU_MS=500` < `redwood_gpu_report` 的 gpuWait 1000ms 报告门 ⇒ surface 3/4 的 30+ 次 500ms 超时全部静默（CP 停在 1488/2439、RBBM_INT_0_STATUS=0、GMU 认忙，却无一行快照）。R40 = 一文件补丁 + 零行为变更。
+
+**改动**：
+- `MiniIOMobileFramebuffer.cpp show()` 的 `!complete` 分支：首次丢帧调 `redwood_gpu_report("frame dropped")` ⇒ CP_HW_FAULT/CP_PROTECT_STATUS/RBBM_STATUS/IB1+IB2 剩余全快照；`__attribute__((used))` 的 R40 标记串（kernel-id 按它点名换代件，XNULIVE4 先例）。
+- `tools/r40_kernel_gate.py`：R40-vs-R39 内核门（shadiff 内容等价门本轮**不可用**——本轮就该差一个补丁）：①尺寸带 0<d<64KiB；②strings 增量恰为 {R40 标记, Darwin 版本行}、损失全为 Darwin 行；③字节簇 ≤32 区 ≤256KiB；④R33 谱系 4 + R38 标记 5 + XNULIVE4 全在场。
+- `tools/r40_flash_build.py`：单条目手术——GPU 镜像只换 kernel，loader/cmdline/md1/usb 从 r39 基座原字节提取骑乘（4bf828e4/24ec4e42/5b9bbbcb 硬校验）；日常镜像 = r39 逐字节。
+- `tools/r40_flashboot_build.py`：**WiFi 固件走 flashboot（md0）**——R39 log 的 "no fw/modem.mdt" + 固件实重 81.6MB vs 64MB payload 窗 ⇒ 随行小卷装不下，resident 镜像是唯一载体（`oem ramdisk` 后 stage 上限 0xffffffff；choose_window 布局数学：top≈226MB ≪ 数 GB 窗口）。mkapfs `--plain fw`（redwood_image.c 的原位读取形态）；firmware-5.bin + 0-rmtfs-ram 按参考 README 3.4 配方本地生成；NV 四分区缺席可接受（链停在 RMTFS 有名行，L2 预注册）；**私有件不进库不进 release**。
+- `tools/r40-kernel-id.py`：KNOWN 收编 R39 kernel/loader/volume 三 sha；R40 判词 = R33 谱系 + R38 标记 + R40 标记 ×1。
+- `.github/workflows/r40-springboard.yml`：8 步——**loader 重建与卷构建两步砍掉**（r39 原字节骑乘，少两个 CI 故障源）；底板三件 SHA 硬校验 = r39 release 官方字节；验证链：YAML 12 步/名字 218 字符/同映射重复键 CLEAN/7 run 块 bash -n/3 PY heredoc 编译全过。
+
+**本地全链干跑（替身内核 = r39 字节 + 标记串）**：kernel_gate +58B/1 簇/strings {标记} 全绿；flash_build payload 24.1MB/64MB、daily sha == r39 release 的 b0f9f6df、re-prove 过；kernel-id 双镜像判读全对（daily=R33/R13/无 token，gpu=R40 判词/R39 loader/卷/cmdline）。**flashboot 实构建**：用户固件包（fw-raphael.tar.gz：modem.mdt+b00–b31+wlanmdsp.mbn+bd_f11cn.bin，34 件）→ 35 文件 80.9MB 全 plain（仅 launchd 走压缩），roundtrip 逐字节证明，NV 缺席告警符合预期。
+
+**R40 判读树 L（预注册）**：L1 = 黑屏复现 ⇒ logdump 必含 `adreno: gpu: frame dropped: submission …` 两行快照 ⇒ R41 定点修；无一次丢帧 ⇒ GPU 观察通过结案。L2 = WiFi 双态：原样 flashboot ⇒ R39 的 firmware-missing 行（原地踏步，正常）；固件版 ⇒ `SM8150 MPSS/ath10k is being brought up` ⇒ 走 6..15 步停在 RMTFS（NV 缺席，预期停点）；意外联网 ⇒ 收获轮。L3 = `raphael-display: three scanout buffers` 在场 + frames 越过 4 ⇒ 显示无回归。

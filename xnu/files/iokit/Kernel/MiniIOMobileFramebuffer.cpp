@@ -56,6 +56,12 @@ extern "C" uint64_t redwood_display_next_frame_ns(void);
 extern "C" int raphael_display_init(uint32_t width, uint32_t height, uint32_t stride);
 extern "C" void *raphael_display_back(bool preserve);
 extern "C" bool raphael_display_present(void);
+extern "C" void redwood_gpu_report(const char *why);
+
+/* R40's own record, and the kernel-id tool's name for this build (the used-marker
+ * tradition: loader_return.c's XNULIVE4 is the precedent). */
+__attribute__((used)) static const char r40_frame_drop_report_mark[] =
+    "R40: the first dropped frame buys the full core snapshot";
 static IOLock *gScanoutLock;
 
 /* IOConnectCallMethod selectors of the framebuffer user client (iOS 16.5) */
@@ -1020,6 +1026,16 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
                 }
         }
         if (!complete) {
+                /* A 500 ms swap wait sits below gpuWait's 1000 ms report bar, so a stalled core
+                 * used to die silently (R39: the CP stopped at 1488 of 2439 with RBBM_INT_0_STATUS
+                 * 0 and nothing on the log but the drops).  The first dropped frame buys the full
+                 * core snapshot instead: CP_HW_FAULT, CP_PROTECT_STATUS, RBBM_STATUS, the IB1+IB2
+                 * remainders -- one logdump convicts. */
+                static bool told;
+                if (!told) {
+                        told = true;
+                        redwood_gpu_report("frame dropped");
+                }
                 IOLockLock(fSwapLock);
                 fSwapFirst = (fSwapFirst + 1) % SWAP_QUEUE;
                 fSwapsWaiting--;
