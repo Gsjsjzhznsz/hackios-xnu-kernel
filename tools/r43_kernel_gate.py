@@ -30,8 +30,9 @@ magnitude), re-pointed at the R42 release kernel:
   3. lineage:  every R33 generation marker, every R38 display/Wi-Fi mark, the
                XNULIVE4 channel mark and the "frame dropped" literal ride in
                r43; the forensic literal "redwood-pager: verdict" rides x6
-               (the four R42 verdict formats + the two R43 busy formats) and
-               x0 in the base.
+               (the four R42 verdict formats + the two R43 busy formats)
+               and x4 in the base (the base itself is the R42 release, which
+               carries the four R42 verdict formats).
   4. segments: the LC_SEGMENT_64 name sequence is identical; __TEXT must not
                shrink and stays under 16 KiB of growth; every OTHER payload
                segment keeps its file size and shifts by exactly the __TEXT
@@ -133,9 +134,9 @@ def main():
         lines.append(s)
 
     osha, nsha = hashlib.sha256(old).hexdigest(), hashlib.sha256(new).hexdigest()
-    say('r41 kernel: %d B, sha256 %s' % (len(old), osha))
+    say('r42 base kernel: %d B, sha256 %s' % (len(old), osha))
     assert osha == R42_KERNEL, 'the r42 base kernel is %s, not the release byte %s' % (osha, R42_KERNEL)
-    say('r42 kernel: %d B, sha256 %s' % (len(new), nsha))
+    say('r43 kernel: %d B, sha256 %s' % (len(new), nsha))
 
     lc_end_o, segs_o, sym_o = macho_layouts(old)
     lc_end_n, segs_n, sym_n = macho_layouts(new)
@@ -164,11 +165,15 @@ def main():
         assert mark in new, 'the R38 mark is missing: %s' % mark.decode()
     assert new.count(XNULIVE4) >= 1, 'the XNULIVE4 channel mark is missing'
     assert new.count(REPORT_LITERAL) == 2, 'the forensic literal "frame dropped" x%d != 2 (the swap-timeout IOLog format string + the report literal)' % new.count(REPORT_LITERAL)
-    assert old.count(REPORT_LITERAL) == 2, 'the r41 base lost one of its two "frame dropped" occurrences'
+    assert old.count(REPORT_LITERAL) == 2, 'the r42 base lost one of its two "frame dropped" occurrences'
     assert new.count(PAGER_LITERAL) == 6, 'the forensic literal "redwood-pager: verdict" x%d != 6 (the four R42 verdict formats + the two R43 busy formats)' % new.count(PAGER_LITERAL)
-    assert old.count(PAGER_LITERAL) == 0, 'the r41 base already carries the pager literal?'
+    # THE RUN-8 LESSON (40917994778): this assert shipped as "old.count == 0" --
+    # the R42-era copy-paste.  But old IS the R42 release kernel, and the R42
+    # round is exactly where the four pager verdict formats landed: the base
+    # carries x4, and this round's law is 4 -> 6, never 0 -> 6.
+    assert old.count(PAGER_LITERAL) == 4, 'the r42 base should carry the pager literal x4 (the four R42 verdict formats), got x%d' % old.count(PAGER_LITERAL)
     say('lineage law: R33 generation 4 + R38 display/WiFi 5 + XNULIVE4 + the "frame dropped" literal'
-        ' all ride; the "redwood-pager: verdict" literal rides x6')
+        ' all ride; the "redwood-pager: verdict" literal rides x6 (x4 in the r42 base + the two new busy formats)')
 
     # 4. segment census (the R42 shape: __TEXT grows, the rest shifts, sizes pinned)
     names_o = [s[0] for s in segs_o]

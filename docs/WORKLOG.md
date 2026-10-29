@@ -1537,3 +1537,15 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 **R43 立案（panic 修复轮，单文件单刀）**：redwood_fault_convict.c 的 map 锁改 **try-lock**——lck_rw_try_lock_shared 失败（含同线程已持任何模式）即放弃深查、交最小判词或静默返回，**绝不阻塞、绝不递归**；同时对 no-map-entry 判词做形状去重（同 (pid,kr,变体) 只报首例 + 计数，160 条洪水 → 数条）。取词语义与断言路径须对 xnu-8796 原文核对（lck_rw_try_lock 的 shared 分支不得携带 owner==self 断言——STRUCT-MEMBERS 律同款纪律）。lsd 死因二次取证留 R44：若 R43 后 SpringBoard 存活、logdump 变长，先看 lsd 完整死亡序列再决定钩子是否搬去 minisandbox 拒绝出口。
 
 **新律入册（唯一出口律的对偶）**：埋钩在"一切失败的唯一出口"是对的（取证完备性），但**唯一出口同时是调用方状态最多样的出口**——钩子在其中持有的每一假设（"此刻无人持锁"）都必须枚举为假的可能；探针只许用 try 类原语，try 败即退——取证代码自己死 = 取证结束。
+
+## R43 run#8 验尸（2026-10-30，run 40917994778）：门禁 lineage 律的陈旧断言——R42 轮复制件漏重锚
+
+**死亡点**：步骤 ③/⑧ 内核构建 + 门禁，`tools/r43_kernel_gate.py:169` —— `assert old.count(PAGER_LITERAL) == 0, 'the r41 base already carries the pager literal?'`。构建本体全绿（新内核已出炉、KSHA 已定），死在六律第三律的**基线侧**断言上。
+
+**根因**：0f38500 重锚 R42→R43 时改了三处（base sha 断言 `osha == R42_KERNEL`、marker 律 R43-in/R42-retired、新侧 pager 字面量 x6），**漏了第四处**——`old.count(PAGER_LITERAL) == 0` 是 R42 轮门禁（彼时 old = r41 基线，确实 x0）的原句复制。而 R43 的 old = **R42 发布内核**，R42 轮恰恰是四个 pager 判词格式落地的轮次——基线自带 x4。本轮的法律是 **4 → 6**，不是 0 → 6。docstring 里的"x0 in the base"同病同源，一并修。
+
+**修刀（单文件 tools/r43_kernel_gate.py）**：`old.count(PAGER_LITERAL) == 0` → `== 4`（注释刻入 run-8 教训）；docstring x0 → x4；顺带清三处陈旧标签（'r41 kernel'/'r42 kernel' 的 say 标签实指 R42 基线/R43 新内核，"frame dropped" 断言消息里的 'r41 base'）。
+
+**离线三重复验（scripts/r43_run8_gate_verify.py）**：A) 从收割的 r42 GPU 镜像抽出真基线内核（sha 逐字节 = ef204f28，17,009,200 B），实测 pager 字面量 **x4** = 修后断言值；B) byte-identical 对仍被 size 律拒绝（law 1 先于 law 3 开火，负例不倒）；C) 合成合法对（同长标记换装 + 两条 Darwin 版本行覆写为 pager 字面量，delta-0）走完全部六律到 **GATE GREEN**——修后的 169 行在真基线上被真实执行过。全工具链同病扫描：r43-kernel-id.py:210（新侧 x6）、r43_flash_build.py:127（内核侧 x6）、springboard.yml pre_gate_py（x6）/base_id_gates（基线判 R42）——全部正确，陈旧断言仅此一处。
+
+**新律入册（重锚律）**：把门禁从 N 轮重锚到 N+1 轮时，**基线侧的每一个字面量计数都是一条必须重新推导的律**，不是可以继承的家具——复制件幸存者恰恰是那个值变了（0→4）的断言。重锚完成的标志是：对真基线字节逐条跑过基线侧断言（本轮 A 步从真镜像抽内核实测 x4 即此律的执行），而非仅对新侧做负例烟测（run 0f38500 的离线烟测只打到 law 1，未及 law 3——**负例烟测的覆盖必须包含每一条改过的断言**）。
