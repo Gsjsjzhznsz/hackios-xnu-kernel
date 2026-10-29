@@ -29,15 +29,51 @@ def run(args, **kw):
     return subprocess.run([str(x) for x in args], check=True, **kw)
 
 
+MIRRORS = {
+    # run 40920542879 lesson: the single-URL 180 s budget is a network lottery --
+    # the 241 MB FreeBSD src.txz needs ~3.5 min at 1.2 MB/s, and run#10's CDN node
+    # was that slow (killed at 89 %).  Every candidate below is sha-verified by
+    # archive() AFTER download, so a wrong-path mirror fails loudly, never silently.
+    'freebsd': [
+        'https://download.freebsd.org/releases/amd64/15.1-RELEASE/src.txz',
+        'https://mirror.leaseweb.com/freebsd/releases/amd64/15.1-RELEASE/src.txz',
+    ],
+}
+
+
+def fetch(name, tmp):
+    """Resume-capable, retrying, stall-aware download; mirrors round-robin per attempt."""
+    urls = MIRRORS.get(name, [SOURCES[name][1]])
+    for attempt in range(4):
+        url = urls[attempt % len(urls)]
+        have = tmp.stat().st_size if tmp.exists() else 0
+        print(f'fetch {name}: attempt {attempt + 1}/4 from {url} (resume at {have} B)', flush=True)
+        # -C - resumes the .partial; --max-time 600 gives a 241 MB archive 2.5x the
+        # observed worst rate; the stall detector aborts a dead stream (<10 KB/s for
+        # 60 s) into the next attempt instead of burning the whole budget.
+        r = subprocess.run(['curl', '--fail', '--location', '--connect-timeout', '30',
+                            '--max-time', '600', '--speed-limit', '10240', '--speed-time', '60',
+                            '-C', '-', url, '-o', str(tmp)], check=False)
+        if r.returncode == 0:
+            return
+        print(f'fetch {name}: curl exit {r.returncode}, next attempt', flush=True)
+    raise RuntimeError(f'download failed after 4 attempts: {urls[0]} -> {tmp}')
+
+
 def archive(name):
     filename, url, sha = SOURCES[name]
     p = CACHE / filename
-    if not p.exists():
-        tmp = p.with_suffix(p.suffix + '.partial')
-        run(['curl', '--fail', '--location', '--max-time', '180', url, '-o', tmp])
-        tmp.replace(p)
-    if hashlib.file_digest(p.open('rb'), 'sha256').hexdigest() != sha:
-        raise RuntimeError(f'Checksum mismatch: {p}')
+    if p.exists() and hashlib.file_digest(p.open('rb'), 'sha256').hexdigest() == sha:
+        return p
+    tmp = p.with_suffix(p.suffix + '.partial')
+    if tmp.exists() and hashlib.file_digest(tmp.open('rb'), 'sha256').hexdigest() == sha:
+        tmp.replace(p)  # a complete-but-unrenamed partial: -C - would 416-loop on it
+        return p
+    fetch(name, tmp)
+    if hashlib.file_digest(tmp.open('rb'), 'sha256').hexdigest() != sha:
+        tmp.unlink(missing_ok=True)  # poison the partial: no resume ever reuses bad bytes
+        raise RuntimeError(f'Checksum mismatch: {tmp}')
+    tmp.replace(p)
     return p
 
 
