@@ -1389,3 +1389,23 @@ r28l flashboot → oem run；**等 ~2-3 分钟过风暴首发窗再抓 logdump**
 **新教训入册**：门禁是"对工具输出的断言"，不是"对世界的断言"——判定词改一个字，门禁就从不信任变成假阴性；步②修门禁时必须同步审下游所有同族 grep（本轮步⑤同毒，一次拔除省一轮 CI）。
 
 **重派发**：run 40845645409（72c3924，dispatch 204 后 12s 确认 in_progress）。
+
+## R41 CI 修正 #2（2026-10-29，run 40845645409 验尸）：尺寸律第三次教训 + 通用工作流立法
+
+**死点**：步③内核构建末尾的门禁三——`AssertionError: the r41 kernel is not bigger than r40 (delta 0) -- the patch did not land?`。**补丁其实全上齐了**：门禁一/二全过（R33 谱系 + R38 标记 + 取证字面量 ×2 + R41 标记 ×1 + R40 标记零残留），新内核 sha 6d2463c9 ≠ dc03efe0——字节全变，**字节数恰好不变**（17,008,864 B == r40）。机理：同长标记换代贡献零增量，新增的 loader_log_flush 调用目标早已 extern（无新符号），一个 call 塞进 __TEXT 既有对齐填充 ⇒ 文件尺寸不动。R40 实测 +128B 是因为 R40 有新 static 的符号表条目；R41 一个都没有。
+
+**根因（老毒第三次）**：尺寸律 `delta > 0` 起草于替身字节（替身模拟了 LINKEDIT 增长），不是编译器的律。R40 教训（"替身验证不会重现真编译器"）的复读——同一课，第三种死法。
+
+**修正**：r41_kernel_gate 律一改两条——①新 sha ≠ 底板 sha（字节必须不同 = 补丁确实落上）；②|delta| < 64KiB（δ=0 是真构建的预期结果，注释里写明机理）。**修完立刻拿 run 的真字节（r41-diag artifact 的 6d2463c9）重跑全门禁：六律全绿**——尺寸 δ=0/标记/谱系/段表（18 段全同、载荷逐字节相同、LINKEDIT +0==δ）/掩码 strings（增恰 {R41 标记+2 Darwin 行}，失恰 {R40 标记+Darwin 行}，标记在真 rodata 0x2a116）/符号数 72986→72986。负样本：r40 冒充 r41 被新律一正确拒绝。
+
+**通用工作流立法（用户规则变更：推翻"一轮一个工作流文件"）**：
+- `.github/workflows/springboard.yml` = **唯一工作流**，45 个旧轮次文件（r6–r41）全部删除。
+- 轮次差异全部收进 dispatch 输入（26 项）：round/release_tag/release_name、底板三件直链+SHA（+三条目 sha 可选钉）、base_id_cmd/base_id_gates（底板判读可选）、pre_gate_py（门禁一/二）、kernel_gate_cmd（门禁三）、flash_build_cmd（手术）、kernel_id_cmd/id_gates（判读+复证）、pre_release_cmd（转发/台账）、release_readme/release_body、checksum_files/release_files。默认值 = 当前 R41 轮 ⇒ 空参 dispatch = 重发 R41。
+- 固定骨架：①磁盘/工具链审计 → ②取树+取底板三件（SHA 硬校验，统一名 base/{daily,gpu,flashboot}）+ 通用 XNUP 条目提取（可选 sha 钉）+ 底板判读（可选）→ ②c/d/e 随轮缓存 → ③内核构建（BUILD_DSYM=0+pipefail）+ 门禁一/二/三（可选钩子）→ 诊断 artifact（恒传）→ ④手术模板 → ⑤判读+复证门禁模板 → ⑥SHA256SUMS+README（printf 不走 heredoc，防注入/防 EOF 相撞）→ ⑥b Release（files = 输入）→ ⑥c 直链汇总。
+- 教训入册：模板占位符（$K/$REL/$R/$KSHA/$BASE_*/$IDFILE）在各自 run 块内 export，模板经临时文件 `bash -e` 执行——轮次文本永不接触 YAML 结构。
+
+**通用工作流离线证明（harness = 从 YAML 本体抽取 run 块渲染后实跑，scripts/r41_universal_dryrun.py）**：步②全链（真实网络下载 r40 三件 + sha 钉全中 + 三条目提取全中 + 底板判读门禁全绿）；步④替身内核产双镜像；步⑤判读 + 复证门禁全绿；步⑥转发/SHA256SUMS(4 行)/README 全就位；步⑥c 11 条直链。YAML 12 步/26 输入/重复键 CLEAN/7 run 块 bash -n。步③（真构建）只能在 CI 验证——但其内容是 r41 工作流步③的逐字移植 + 两个可选钩子。
+
+## 通用工作流落地（2026-10-29）：springboard.yml 唯一化（45 → 1）+ harness 干跑全绿
+
+（接上节立法记录；提交内容 = springboard.yml 新增 + r6–r41 45 个旧轮次工作流全删 + README CI 段/仓库结构表改写。harness 五步干跑 + YAML 纪律检查全绿的证据链见上节。）

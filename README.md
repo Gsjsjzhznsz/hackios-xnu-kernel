@@ -53,14 +53,14 @@ fastboot oem  run                              # 等 SpringBoard（约 1-2 分�
 
 ## 构建（CI 一键）
 
-Actions → `R35 · SpringBoard 一键流水线` → Run workflow（默认参数即可）。流水线做的事：
+Actions → `SpringBoard 通用流水线` → Run workflow（唯一工作流，所有轮共用：轮次差异全部走 dispatch 输入——底板三件直链+SHA、轮门禁脚本、手术/判读命令模板、Release 文本；默认参数 = 重发当前轮）。流水线固定做：
 
-1. 工具链钉死（L1ghtmann v19.0.0-L2 具名 tag + 每轮全新缓存键、无 restore 链——R28i 对 lsd SIGBUS 构建漂移的定罪回应）
-2. 从本树源码构建内核并断言字节复现（sha == R33 的 420f4b71…——R35 不动内核，差一字节即环境漂移/误改，硬门禁）
-3. GL+Metal 构建（userland pin de5ef58 + Mesa 25.0.7 → GL 三件 + libredwood-gl.dylib + RedwoodMetal.bundle + metal_props/metal_test/metal_drv_test，八件全部 Mach-O 断言）
-4. 卷构建（提取 R34 谱系卷 → GL/Metal 增量 + Extensions 链接 + inject.conf +1 行注入 → mkapfs 重建 → selftest 往返 + 81 文件逐字节证明）
-5. 外科手术：日常镜像 = r34 逐字节原样；GPU 镜像换 ramdisk 条目 = GL+Metal 卷 + cmdline 追加 metal=1（装载器 v7 / kernel / DTB 逐字节原样，SHA 硬校验）
-6. 发布 Release（双镜像 + 启动卷 + 卷 + 卷清单 manifest + SHA256SUMS + README 判读树 + 工具链审计表）
+1. 工具链钉死（L1ghtmann v19.0.0-L2 具名 tag + 随轮全新缓存键、无 restore 链——R28i 对 lsd SIGBUS 构建漂移的定罪回应）
+2. 底板三件直链下载 + SHA 对官方字节硬校验 + XNUP 条目提取（loader/kernel/ramdisk，可选 sha 校验）+ 底板判读（可选）
+3. 从本树源码构建内核（BUILD_DSYM=0 + pipefail 纪律）→ 门禁一/二（pre_gate_py 输入：谱系 + 换代件标记逐字在字节里）→ 门禁三（轮 gate 工具输入：对底板内核的逐律对比）
+4. 外科手术（flash_build_cmd 输入模板：日常镜像/控制组 + GPU 镜像按轮换条目）
+5. 轮判读 + 复证门禁（kernel_id_cmd + id_gates 输入；教训：门禁必须 grep 工具的真实判定词，run 40838276403）
+6. 发布 Release（release_files 输入：双镜像 + 启动卷 + md1 + 判读/门禁报告 + SHA256SUMS + README + 工具链审计表）
 
 本地构建：`xnu/apply.sh` → `xnu-deps/setup.sh` → `xnu-build.sh -k`（详见 `xnu/README.md`）；GL+Metal 件 `tools/r35_gl_metal_build.sh`；卷 `tools/r35_volume_build.py`；打包 `tools/r35_flash_build.py`；离线血统判定 `tools/r35-kernel-id.py <image> --expect-volume-sha <sha>`。
 
@@ -71,7 +71,7 @@ Actions → `R35 · SpringBoard 一键流水线` → Run workflow（默认参数
 | `xnu/files/bsd/dev/raphael_adreno.c` | raphael GPU/TrustZone 探测树（step 1–22，本项目的核心实验场） |
 | `xnu/files/bsd/dev/raphael_adsp_fw.h` | 内嵌的 adsp `.mdt`（T2 对照的体积来源，零卷变量） |
 | `xnuloader/` | 看护装载器（USB `xl` 命令族、logdump 落盘、`oem run/ramdisk/logdump`） |
-| `.github/workflows/r2X-*.yml` | 各轮一键流水线（R6–R28j 全保留，轮次即历史） |
+| `.github/workflows/springboard.yml` | **唯一工作流**：SpringBoard 通用流水线（所有轮共用，轮次差异 = dispatch 输入；旧 r6–r41 每轮一文件已废弃删除——2026-10-29 用户规则：不再一轮一文件） |
 | `tools/r2X-*.py/.sh` | 各轮的血统判定与外科手术打包工具 |
 | `docs/WORKLOG.md` | 项目工作日志（全轮次证据链） |
 | `docs/FLASH-R*.md` | 各轮刷机与判读指南 |
@@ -111,6 +111,6 @@ fastboot stage raphael-r28j-flashboot.apfs
 fastboot oem  run
 ```
 
-See the [releases](https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases) for the current round's images, the J1–J5 verdict tree, and the logdump reading discipline. The workflow (`R28j · SpringBoard 一键流水线`) builds the round from source with a pinned toolchain, gates every generation marker, and publishes the surgically packed images.
+See the [releases](https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases) for the current round's images, the verdict tree, and the logdump reading discipline. The workflow (`SpringBoard 通用流水线`, the ONE universal pipeline) builds each round from source with a pinned toolchain, gates every generation marker, and publishes the surgically packed images; a round = a dispatch form (inputs), not a new workflow file.
 
 **Legal**: no Apple files are in either repository; the IPSW is fetched from Apple's own CDN onto your machine. HackiOS is an independent research project, not affiliated with or endorsed by Apple Inc. Authorized debugging on your own devices only.

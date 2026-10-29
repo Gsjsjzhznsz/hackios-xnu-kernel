@@ -1,0 +1,566 @@
+name: "SpringBoard 通用流水线（唯一工作流：所有轮共用。轮次差异 = dispatch 输入：底板三件直链+SHA / 轮门禁脚本 / 手术与判读命令模板 / Release 文本。输出命名 = <round>-*；发布 tag = release_tag）"
+on:
+  workflow_dispatch:
+    inputs:
+      round:
+        description: "轮次短名（r41/r42/…）：缓存键、产物与资产文件名的唯一来源"
+        required: true
+        default: "r41"
+      release_tag:
+        description: "Release tag（直链的一部分）"
+        required: true
+        default: "r41-springboard"
+      release_name:
+        description: "Release 标题"
+        required: true
+        default: "R41 · 纯血 hackios SpringBoard · flush 轮（快照自己落盘；内核 = R40 + 一调用补丁；其余 = r40 原字节；WiFi 固件+NV 走 flashboot 用户侧重建）"
+      kernel_repo:
+        description: "hackios 内核树 fork（含 xnu/ + tools/）"
+        required: true
+        default: "Gsjsjzhznsz/hackios-xnu-kernel"
+      wifi_stack:
+        description: "WiFi 对象进内核（诊断开关：0 = 不带 ath10k.o 构建）"
+        required: false
+        default: "1"
+      base_daily_url:
+        description: "底板日常镜像直链（SHA 必填；本轮日常镜像的来源）"
+        required: true
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r40-springboard/raphael-xnu-r40-flash.img"
+      base_daily_sha:
+        description: "底板日常镜像 sha256（对官方字节硬校验）"
+        required: true
+        default: "b0f9f6df4ea13ad9d45048e7ff15e33d7b2fcb67204d01964b1014517ca8a60b"
+      base_gpu_url:
+        description: "底板 GPU 镜像直链（外科手术的底板）"
+        required: true
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r40-springboard/raphael-xnu-r40-gpu-flash.img"
+      base_gpu_sha:
+        description: "底板 GPU 镜像 sha256"
+        required: true
+        default: "43612c85abcef7de457ce1b97d04bb32dc2c8e1da9152edcc659decfbae18c1f"
+      base_flashboot_url:
+        description: "底板启动卷直链（原样转发进 Release）"
+        required: true
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r40-springboard/raphael-r40-flashboot.apfs"
+      base_flashboot_sha:
+        description: "底板启动卷 sha256"
+        required: true
+        default: "14485e7c5ce125ef516168445c2500ac04ca5e40a908c2aef516b2d92c24ba0c"
+      base_loader_sha:
+        description: "底板 GPU 镜像内 loader.efi 条目 sha256（提取校验；空 = 只提取不校验）"
+        required: false
+        default: "4bf828e425e4b59d3668461ff89ef290dfbf3215cceec903f1662255fe45a3db"
+      base_kernel_sha:
+        description: "底板 GPU 镜像内 kernel 条目 sha256（提取校验 + 门禁基线）"
+        required: false
+        default: "dc03efe0d0e837cf694808dbeda0be4197ac9e701d0420ac098f61c7ced77028"
+      base_ramdisk_sha:
+        description: "底板 GPU 镜像内 ramdisk 条目 sha256"
+        required: false
+        default: "5b9bbbcb6b5ede61d734bf8144fc639d4e419a22bb81e7d6cf93141f4fbe8746"
+      base_id_cmd:
+        description: "底板判读命令（可选；空 = 跳过。占位符：$BASE_DAILY $BASE_GPU $BASE_IDFILE）"
+        required: false
+        default: "python3 tools/r41-kernel-id.py \"$BASE_DAILY\" \"$BASE_GPU\" | tee \"$BASE_IDFILE\""
+      base_id_gates:
+        description: "底板判读门禁（bash；占位符：$BASE_IDFILE。空 = 跳过）"
+        required: false
+        default: |
+          grep -c "the kernel entry is R33" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::日常底板的内核必须判为 R33（控制组）"; exit 1; }
+          grep -c "the kernel entry is R40" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::GPU 底板的内核必须判为 R40"; exit 1; }
+          grep -q "the cmdline is the R39 GPU form verbatim" "$BASE_IDFILE" || { echo "::error::GPU 底板的 cmdline 不是 R39 组原样"; exit 1; }
+          grep -c "the cmdline is the daily image WITHOUT" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::日常底板的 cmdline 应无任何 gpu token"; exit 1; }
+          # 门禁必须 grep 工具的真实判定词，不能写起草者假设的那句（run 40838276403 教训）：
+          grep -c "the ramdisk entry is R39/R40" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::GPU 底板的小卷不是 R39/R40 卷（5b9bbbcb）"; exit 1; }
+          grep -c "the ramdisk entry is R13..R33" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::日常底板的小卷不是 R13 谱系"; exit 1; }
+      pre_gate_py:
+        description: "门禁一/二（python，argv[1]=新内核路径）：谱系 + 换代件标记逐字在字节里"
+        required: false
+        default: |
+          import sys
+          b = open(sys.argv[1], 'rb').read()
+          def n(s): return b.count(s.encode())
+          assert n('R33: the kernel generation line') == 2, 'R33 generation line x%d != 2' % n('R33: the kernel generation line')
+          assert n('R33: the resident round') == 1 and n('SCMDMP: R33 begins') == 1, 'R33 lineage markers broken'
+          assert n('R32: the kernel generation line') == 0, 'a stale R32 stamp rides'
+          assert n('R40: the first dropped frame buys the full core snapshot') == 0, 'the retired R40 marker still rides'
+          for mark, why in [
+              ('raphael-display: three scanout buffers, VIG0/CTL0, hardware TE', 'the display round (adreno side)'),
+              ('display: raphael command TE:', 'the TE phase measurement (display.c)'),
+              ('page flips retained (fb_scan=1)', 'the fb_scan boot-arg'),
+              ('wifi: raphael needs WCN3990 SNOC/ath10k and MPSS service 0x45', 'the raphael Wi-Fi branch'),
+              ('raphael-display: flip did not latch at TE, restoring boot framebuffer', 'the flip fallback'),
+              ('R41: the snapshot buys its own ride onto the storage too', 'THE R41 flush-round marker'),
+          ]:
+              assert n(mark) == 1, '%s x%d != 1 (%s)' % (mark, n(mark), why)
+          assert n('frame dropped') == 2, 'the forensic literal x%d != 2 (the IOLog format string + the report literal)' % n('frame dropped')
+          assert n('XNULIVE4') >= 1, 'the R38 loader-framebuffer channel mark is missing (x%d)' % n('XNULIVE4')
+          assert n('wifi_step') >= 1, 'the wifi boot-arg surface is missing'
+          print('门禁一/二全过：R33 谱系 4 项 + R38 显示/WiFi/通道 5 项 + 取证字面量 2 处 + R41 标记 1 项 + R40 标记零残留')
+      kernel_gate_cmd:
+        description: "门禁三命令模板（可选；占位符：$BASE_KERNEL $K $KU $KSHA $REL $R）"
+        required: false
+        default: "python3 tools/r41_kernel_gate.py --r40-kernel \"$BASE_KERNEL\" --r41-kernel \"$K\" --report \"$REL/${R}-kernel-gate.txt\" | tee \"$REL/${R}-kernel-gate-run.txt\""
+      flash_build_cmd:
+        description: "④ 手术命令模板（必填；占位符：$BASE_DAILY $BASE_GPU $K $REL $R）"
+        required: true
+        default: "python3 tools/r41_flash_build.py --daily \"$BASE_DAILY\" --gpu \"$BASE_GPU\" --kernel \"$K\" --out-daily \"$REL/raphael-xnu-${R}-flash.img\" --out-gpu \"$REL/raphael-xnu-${R}-gpu-flash.img\" | tee \"$REL/${R}-pack.txt\""
+      kernel_id_cmd:
+        description: "⑤ 判读命令模板（必填；占位符：$REL $R $KSHA）"
+        required: true
+        default: "python3 tools/r41-kernel-id.py \"$REL/raphael-xnu-${R}-flash.img\" \"$REL/raphael-xnu-${R}-gpu-flash.img\" --expect-loader-sha 4bf828e425e4b59d3668461ff89ef290dfbf3215cceec903f1662255fe45a3db --expect-kernel-sha \"$KSHA\" --expect-volume-sha 5b9bbbcb6b5ede61d734bf8144fc639d4e419a22bb81e7d6cf93141f4fbe8746 | tee \"$IDFILE\""
+      id_gates:
+        description: "⑤ 复证门禁（bash；占位符：$IDFILE。教训：必须 grep 工具的真实判定词，run 40838276403）"
+        required: true
+        default: |
+          grep -c "loader  sha256" "$IDFILE" | grep -qx 2 || { echo "::error::双镜像都要读到 loader 条目"; exit 1; }
+          grep -c "the kernel entry is R41" "$IDFILE" | grep -qx 1 || { echo "::error::GPU 镜像内核判词不是 R41（本轮 flush 构建）"; exit 1; }
+          grep -c "the kernel entry is R33" "$IDFILE" | grep -qx 1 || { echo "::error::日常镜像内核必须仍是 R33（控制组）"; exit 1; }
+          grep -c "the cmdline is the R39 GPU form verbatim" "$IDFILE" | grep -qx 1 || { echo "::error::GPU 镜像 cmdline 不是 R39 组原样（R41 零 cmdline 改动）"; exit 1; }
+          grep -c "the cmdline is the daily image WITHOUT" "$IDFILE" | grep -qx 1 || { echo "::error::日常镜像必须无任何 gpu token（控制组原样）"; exit 1; }
+          grep -c "the ramdisk entry is R39/R40" "$IDFILE" | grep -qx 1 || { echo "::error::GPU 镜像小卷不是 R39/R40 卷（5b9bbbcb）"; exit 1; }
+          grep -c "the ramdisk entry is R13..R33" "$IDFILE" | grep -qx 1 || { echo "::error::日常镜像小卷不是 R13 谱系"; exit 1; }
+      pre_release_cmd:
+        description: "⑥ 前置命令模板（可选；转发/台账等；占位符：$BASE_FLASHBOOT $BASE_GPU $REL $R）"
+        required: false
+        default: |
+          cp base/flashboot.apfs "$REL/raphael-${R}-flashboot.apfs"
+          cp base/md1-root.apfs "$REL/${R}-md1-root.apfs"
+          cat "$REL/${R}-kernel-sha.txt" >> "$REL/toolchain-versions.txt"
+          {
+            echo "${R} lineage (loader/cmdline/md1 = the base release's bytes re-packed; only the kernel moved)"
+            sha256sum "$REL/raphael-${R}-flashboot.apfs" "$REL/${R}-md1-root.apfs"
+          } >> "$REL/toolchain-versions.txt"
+      release_readme:
+        description: "README.txt 全文（逐字进 Release 资产）"
+        required: true
+        default: |
+          ============================================================
+           R41 · 纯血 hackios SpringBoard 交付包（raphael / K20 Pro）
+           —— flush 轮：快照自己落盘（R40 真机采集定案的取证缺口补上）
+              （内核 = R40 源码 + 一调用补丁；loader/cmdline/卷 = r40
+               release 原字节；WiFi 固件+NV 走 flashboot，用户侧重建）
+          ============================================================
+          ⚠️⚠️⚠️ 启动卷只 stage 一个文件 ⚠️⚠️⚠️
+            （R14 事故纪律不变：md1 备份不要 stage，flash.img 已内嵌全量小卷）
+          主镜像   : raphael-xnu-r41-flash.img（= r40 逐字节原样：本轮控制组）
+          GPU 镜像 : raphael-xnu-r41-gpu-flash.img（cmdline =
+                      touchscreen=1 buttons=1 cpus=8 ufs=2 bootcpu=7
+                      root_apfs=ufs_userdata gpu=1 adreno=22 adreno_pause=0
+                      adreno_watch=0 adreno_keep=1 metal=1
+                      fb_scan=1 wifi=1 wifi_bdf=bd_f11cn.bin
+                      = R39/R40 组原样，零改动）
+                      装载器 = r40 release 原字节（4bf828e4…，指纹门禁）
+                      内核   = R41 flush 构建（R40 源码 + 一调用补丁 +
+                               同长 R41 标记；r41_kernel_gate 六律全绿）
+                      卷     = r40 release 原字节（5b9bbbcb…）
+                      usb/DTB = r40 原字节
+          启动卷   : raphael-r41-flashboot.apfs（= r40 官方字节，原样转发；
+                     固件+NV 版见下【WiFi 固件 kit】）
+          小卷 md1 : r41-md1-root.apfs（= r40 官方字节，原样转发）
+          【R41 的一刀，与依据】
+          R40 真机采集（2649 行）定案：loader 的 2 秒 notes 到 ~34s 收摊
+          （NOTE_SECONDS），此后 logdump 分区只收"内核主动 flush"——而内核
+          只有 adreno 探针的危险调用与退出手势的拆除会发起。R40 的采集停在
+          内核时刻 ~44s（backboardd 显示初始化边缘），远在 ~124s 的停摆案发
+          窗之前：redwood_gpu_report 的快照打在 ring 里、死在 ring 里
+          （R39 的记录能到 165s，全靠退出手势的拆除 flush）。
+          R41 补丁：redwood_gpu_report 打完快照即调 loader_log_flush()
+          ⇒ 首次丢帧的全快照自己落盘，不再依赖退出手势。零行为变更：
+          只在已发生的失败路径上加一次存储请求（三个调用点全被 static 门
+          控，每 boot 至多一次）。
+          【设备侧采集协议（重要——R40 的教训写成步骤）】
+          1. fastboot flash boot raphael-xnu-r41-gpu-flash.img; fastboot reboot
+          2. 让内核跑 ≥ 4 分钟（越过 ~124s 的案发窗；R39 停摆首发在 123.9s）
+          3. 黑屏在展时（loader 一直在 USB 上守着，内核不需要配合）：
+               fastboot oem screenshot        # 把当前 front buffer 暂存
+               fastboot getvar screen         # 几何（宽/高/stride）
+               fastboot upload > shot.raw     # 面板实拍（原始帧）
+             这张图直接回答"黑屏 = 面板真黑，还是内容在面板上而背光/合成
+             出了问题"。
+          4. 五指按住屏幕 1.5 秒 = 退回 loader（拆除路径自带 flush，双保险）
+          5. 二次 boot 抓 logdump（run_ios.sh 的流程，或 fastboot oem logdump）
+          【判读树 M（logdump 全文入账后判）】
+          M1 = 若黑屏复现（"frame dropped" 行再现）⇒ logdump 必含
+               "adreno: gpu: frame dropped: submission N is the last, the
+               core has done M; ring: read up to X, written up to Y; status
+               Z, interrupts W; command processor: fault F, interrupts I,
+               protection P" + "in the first command buffer at …, N words to
+               go" 两行（R41 的 flush 保证它落盘）⇒ 快照全文送回 = R42 定点
+               修的输入（或 gpu_recover=1 轮）。
+               若整轮无一次 "frame dropped" ⇒ GPU 观察通过（R39 卡死非稳
+               态），显示线转向别因（shot.raw + 亮度/合成路径）。
+          M2 = WiFi：固件+NV 全量版 flashboot（用户侧 kit 重建 + stage）⇒
+               "wifi: SM8150 MPSS/ath10k is being brought up beside the
+               system's start" ⇒ 链走 6..15 步；NV 四分区在场（modemst1/2/
+               fsg/fsc 已交付）预期越过 RMTFS——意外联网 = 收获轮直接验收；
+               新停点 = 新输入。
+          M3 = 回归护栏："raphael-display: three scanout buffers" 在场 +
+               frame 计数越过 4 + flip 行持续 ⇒ 显示无回归；系统本体活
+               （buttons 统计/温度/内存每分钟报）。
+          回滚 = 刷回 r40 GPU 镜像。
+          【WiFi 固件 kit（用户侧，私有件不进库不进 release）】
+          # 电脑上：fw-raphael/ = 你从手机提取的目录（上游 README 3.2）
+          # + nv-modemst1/2、nv-fsg、nv-fsc 四件（需 Root，上游 README 3.3）
+          git clone --depth 1 https://github.com/Gsjsjzhznsz/hackios-xnu-kernel r41kit
+          git clone --depth 1 https://github.com/Gsjsjzhznsz/hackios-xnu-userland r41kit-userland
+          python3 r41kit/tools/r40_flashboot_build.py \
+            --base raphael-r41-flashboot.apfs --fw fw-raphael/ \
+            --apfs-dir r41kit-userland/tools/apfs \
+            --out raphael-r41-flashboot-fw.apfs \
+            --manifest r41-flashboot-manifest.json
+          # 产出 raphael-r41-flashboot-fw.apfs（~108MB），stage 它替代上面的
+          # 启动卷（oem ramdisk -> download -> oem run 同 r39 流程）。
+          【手机端（bootloader）】
+          fastboot flash boot raphael-xnu-r41-gpu-flash.img
+          （启动卷 stage 一次：raphael-r41-flashboot.apfs 或固件+NV 版）
+          ⚠️ 含 Apple 版权内容，仅供个人研究；下载完成后请尽快删除本 Release。
+      release_body:
+        description: "GitHub Release 正文"
+        required: true
+        default: |
+          raphael (K20 Pro) R41 交付包：**flush 轮**。
+
+          R40 真机采集定案（2649 行入账）：loader 的 2 秒 notes 到 ~34s
+          收摊，此后 logdump 分区只收"内核主动 flush"——而内核只有 adreno
+          探针的危险调用与退出手势的拆除会发起。R40 的采集停在内核时刻
+          ~44s，远在 ~124s 的停摆案发窗之前：redwood_gpu_report 的快照打
+          在 ring 里、死在 ring 里。（R39 的记录能到 165s，全靠退出手势
+          的拆除 flush——五指长按 1.5s 的设计通道立功了。）
+
+          R41 一刀：redwood_gpu_report 打完快照即调 loader_log_flush()
+          ⇒ 首次丢帧的全快照自己落盘，不再依赖退出手势。零行为变更
+          （三个调用点全被 static 门控，每 boot 至多一次；只在已发生的
+          失败路径加一次存储请求）。内核 = R40 源码 + 一调用补丁 + 同长
+          R41 标记（R40 标记退役；r41_kernel_gate 六律：尺寸带/标记/谱系/
+          段表不动仅 LINKEDIT 增长/掩码 strings/符号数不减）；
+          loader/cmdline/卷/usb = r40 release 原字节骑乘；日常镜像 = r40
+          逐字节（控制组）。
+
+          WiFi 线并行推进：固件+NV 全量走 flashboot（md0，stage 上限 4GB
+          装得下 ~108MB；64MB payload 窗口装不下），cmdline 零改动。NV 四
+          分区（modemst1/2/fsg/fsc）已交付 ⇒ 预期越过 RMTFS（M2 预注册）。
+
+          判读树 M 见 README（M1 快照/GPU 结案、M2 WiFi、M3 回归护栏）+
+          设备侧采集协议（oem screenshot 实拍 + 五指退出 + ≥4 分钟观察窗）。
+          回滚 = 刷回 r40 GPU 镜像。
+
+          ⚠️ 含 Apple 版权内容，仅供个人研究；下载完成后请尽快删除本 Release。
+      checksum_files:
+        description: "进 SHA256SUMS 的文件名（空格分隔，相对 release/；通常是双镜像+启动卷+md1）"
+        required: true
+        default: "raphael-xnu-r41-flash.img raphael-xnu-r41-gpu-flash.img raphael-r41-flashboot.apfs r41-md1-root.apfs"
+      release_files:
+        description: "进 Release 的文件（每行一个，相对 release/）"
+        required: true
+        default: |
+          raphael-xnu-r41-flash.img
+          raphael-xnu-r41-gpu-flash.img
+          raphael-r41-flashboot.apfs
+          r41-md1-root.apfs
+          r41-kernel-gate.txt
+          SHA256SUMS
+          README.txt
+          toolchain-versions.txt
+permissions:
+  contents: write
+concurrency:
+  group: springboard-${{ inputs.round }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 200
+    env:
+      REL: ${{ github.workspace }}/release
+      R: ${{ inputs.round }}
+      THEOS: /home/runner/theos     # (literal: GitHub Actions' env: block expands nothing)
+      CCACHE_DIR: ${{ github.workspace }}/hackios/.ccache
+    steps:
+      # ---------------------------------------------------------------
+      - name: "①/⑧ 磁盘准备与依赖（内核工具链）"
+        run: |
+          set -eu
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+                       /usr/local/share/boost /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential python3-dev clang lld ccache \
+                       flex bison m4 perl python3 autoconf automake libtinfo6 xz-utils uuid-dev 7zip \
+                       ripgrep >/dev/null
+          command -v clang && command -v ccache && command -v 7z && command -v rg
+          # dsymutil：Ubuntu 的 apt clang 不往 /usr/bin 放它（R11 run 39973048286 的教训）
+          DS=$(command -v dsymutil || clang --print-prog-name=dsymutil 2>/dev/null || true)
+          [ -x "$DS" ] || DS=$(ls /usr/lib/llvm-*/bin/dsymutil 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$DS" ] && [ -x "$DS" ]; then
+            sudo ln -sf "$DS" /usr/bin/dsymutil
+          else
+            printf '#!/bin/sh\nexit 0\n' | sudo tee /usr/bin/dsymutil >/dev/null && sudo chmod +x /usr/bin/dsymutil
+          fi
+          mkdir -p "$REL"
+          {
+            echo "$R toolchain audit (recorded $(date -u +%FT%TZ))"
+            echo "--- runner image ---"
+            cat /etc/os-release | grep -E '^(PRETTY_NAME|VERSION)=' || true
+            echo "--- apt clang (the kernel's host compiler) ---"
+            clang --version | head -2
+            lld --version 2>/dev/null || true
+          } | tee "$REL/toolchain-versions.txt"
+          df -h /
+
+      # ---------------------------------------------------------------
+      # ② 取树 + 取底板三件（SHA 对官方字节硬校验，统一存 base/{daily,gpu,flashboot}）
+      #    + 底板条目提取（loader/kernel/ramdisk，可选 sha 校验）+ 底板判读（可选）。
+      - name: "②/⑧ 取树 + 取底板三件 + 条目提取（SHA 硬校验）+ 底板判读"
+        env:
+          U_DAILY: ${{ inputs.base_daily_url }}
+          S_DAILY: ${{ inputs.base_daily_sha }}
+          U_GPU: ${{ inputs.base_gpu_url }}
+          S_GPU: ${{ inputs.base_gpu_sha }}
+          U_FB: ${{ inputs.base_flashboot_url }}
+          S_FB: ${{ inputs.base_flashboot_sha }}
+          S_LOADER: ${{ inputs.base_loader_sha }}
+          S_KERNEL: ${{ inputs.base_kernel_sha }}
+          S_RAMDISK: ${{ inputs.base_ramdisk_sha }}
+          BASE_ID_CMD: ${{ inputs.base_id_cmd }}
+          BASE_ID_GATES: ${{ inputs.base_id_gates }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "https://github.com/${{ inputs.kernel_repo }}.git" hackios
+          cd hackios
+          echo "→ 内核树 @ $(git log -1 --format='%h %s')"
+          mkdir -p base
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o base/daily.img      "$U_DAILY"
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o base/gpu.img        "$U_GPU"
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o base/flashboot.apfs "$U_FB"
+          # 硬校验：三件资产必须等于输入钉死的官方字节
+          sha256sum base/daily.img base/gpu.img base/flashboot.apfs | tee base/SHA256SUMS.base
+          test "$(sha256sum base/daily.img | cut -d' ' -f1)" = "$S_DAILY" || { echo "::error::日常底板 sha 不符"; exit 1; }
+          test "$(sha256sum base/gpu.img   | cut -d' ' -f1)" = "$S_GPU"   || { echo "::error::GPU 底板 sha 不符"; exit 1; }
+          test "$(sha256sum base/flashboot.apfs | cut -d' ' -f1)" = "$S_FB" || { echo "::error::启动卷底板 sha 不符"; exit 1; }
+          echo "底板三件全部等于输入钉死的官方字节"
+          # 底板条目提取（通用 XNUP 解析）：loader.efi / kernel / ramdisk + 可选 sha 校验
+          python3 - base/gpu.img <<'PY'
+          import gzip, hashlib, os, struct, sys
+          img = open(sys.argv[1], 'rb').read()
+          page = struct.unpack_from('<I', img, 36)[0]; k_size = struct.unpack_from('<I', img, 8)[0]
+          blob = gzip.decompress(img[page:page + k_size]); x = blob.find(b'XNUP')
+          assert x > 0, 'no XNUP payload in the base gpu image'
+          size = struct.unpack('<I', blob[x + 4:x + 8])[0]; i = x + 8
+          want = {'loader.efi': os.environ.get('S_LOADER', ''), 'kernel': os.environ.get('S_KERNEL', ''),
+                  'ramdisk': os.environ.get('S_RAMDISK', '')}
+          names = {'loader.efi': 'base/loader.efi', 'kernel': 'base/kernel.bin', 'ramdisk': 'base/md1-root.apfs'}
+          seen = set()
+          while i + 24 <= x + 8 + size and blob[i] != 0:
+              name = blob[i:i + 16].rstrip(b'\0').decode(); esz = struct.unpack('<I', blob[i + 16:i + 20])[0]
+              if name in want:
+                  data = blob[i + 24:i + 24 + esz]
+                  got = hashlib.sha256(data).hexdigest()
+                  exp = want[name]
+                  if exp:
+                      assert got == exp, 'the base %s is %s, not the pinned %s' % (name, got, exp)
+                  open(names[name], 'wb').write(data)
+                  print('base %s 提取：%d B, sha %s%s' % (name, len(data), got, '（= 钉死官方字节）' if exp else '（未钉，仅记录）'))
+                  seen.add(name)
+              i += 24 + ((esz + 15) & ~15)
+          assert seen == set(want), 'the base gpu image misses entries: %s' % (set(want) - seen)
+          PY
+          # 底板判读（可选；模板占位符在此导出）
+          if [ -n "$BASE_ID_CMD" ]; then
+            export BASE_DAILY="$PWD/base/daily.img" BASE_GPU="$PWD/base/gpu.img" BASE_FLASHBOOT="$PWD/base/flashboot.apfs"
+            BASE_IDFILE="$PWD/base-id.txt"
+            export BASE_IDFILE
+            printf '%s' "$BASE_ID_CMD" > /tmp/base-id.sh
+            bash -e /tmp/base-id.sh
+            if [ -n "$BASE_ID_GATES" ]; then
+              printf '%s' "$BASE_ID_GATES" > /tmp/base-id-gates.sh
+              bash -e /tmp/base-id-gates.sh
+              echo "底板判读门禁全绿。"
+            fi
+          fi
+
+      # ---------------------------------------------------------------
+      # R28i 工具链纪律（原样继承）：缓存键随轮次、无 restore 链，重建确定性。
+      - name: "②c/⑧ 缓存：theos（工具链 + iPhoneOS16.5.sdk；随轮全新键、无 restore 链）"
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/theos
+          key: ${{ inputs.round }}-theos-v19L2-v1
+      - name: "②d/⑧ 缓存：xnu-deps（Apple 开源件 + host 工具 + SDK 链接树；随轮全新键、无 restore 链）"
+        uses: actions/cache@v4
+        with:
+          path: hackios/xnu-deps
+          key: ${{ inputs.round }}-xnu-deps-v1
+      - name: "②e/⑧ ccache（随轮 clean build——零回填，只存不用）"
+        uses: actions/cache@v4
+        with:
+          path: hackios/.ccache
+          key: ${{ inputs.round }}-ccache-${{ github.run_id }}
+
+      # ---------------------------------------------------------------
+      # ③ 内核构建 + 门禁（门禁一/二 = pre_gate_py 输入；门禁三 = kernel_gate_cmd 输入）。
+      #    BUILD_DSYM=0 + pipefail（R34/R35/R38/R40 四轮教训全数继承）。
+      - name: "③/⑧ 内核构建 + 门禁（theos v19.0.0-L2 + xnu/apply.sh + xnu-deps + mk-ath10k.py → WIFI_OBJECT + BUILD_DSYM=0）"
+        env:
+          WIFI_STACK: ${{ inputs.wifi_stack }}
+          PRE_GATE_PY: ${{ inputs.pre_gate_py }}
+          KERNEL_GATE_CMD: ${{ inputs.kernel_gate_cmd }}
+        run: |
+          set -euo pipefail
+          # pipefail（run 40826230850 教训）：门禁 | tee 管道会吞掉门禁的退出码，
+          # 门禁在 CI 上崩溃后构建照常跑完——门禁必须能杀死构建。
+          if [ ! -x "$THEOS/toolchain/linux/iphone/bin/ld64" ]; then
+            rm -rf "$THEOS"
+            git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
+            mkdir -p "$THEOS/toolchain"
+            curl -fL --retry 3 --retry-delay 5 -sS https://github.com/L1ghtmann/llvm-project/releases/download/main-update_3-eabca92/iOSToolchain-x86_64.tar.xz | tar -xJ -C "$THEOS/toolchain/"
+          fi
+          "$THEOS/toolchain/linux/iphone/bin/ld64" --version | tee -a "$REL/toolchain-versions.txt" || true
+          if [ ! -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include" ]; then
+            rm -rf "$THEOS/sdks/iPhoneOS16.5.sdk" /tmp/theos-sdks
+            git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/theos-sdks
+            git -C /tmp/theos-sdks sparse-checkout set iPhoneOS16.5.sdk
+            mkdir -p "$THEOS/sdks"
+            mv /tmp/theos-sdks/iPhoneOS16.5.sdk "$THEOS/sdks/"
+            rm -rf /tmp/theos-sdks
+          fi
+          test -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include" || { echo "::error::iPhoneOS16.5.sdk 就位失败"; exit 1; }
+          df -h /
+          cd hackios
+          xnu/apply.sh
+          XNU_HOST_CLANG="$THEOS/toolchain/linux/iphone/bin/clang"
+          export XNU_HOST_CLANG
+          test -x "$XNU_HOST_CLANG" || { echo "::error::theos 工具链 clang 缺位"; exit 1; }
+          "$XNU_HOST_CLANG" --version | tee -a "$REL/toolchain-versions.txt"
+          grep -q "eabca92" "$REL/toolchain-versions.txt" || { echo "::error::内核编译器不是钉死的 theos clang"; exit 1; }
+          bash xnu-deps/setup.sh || { echo "::error::setup.sh 失败"; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
+          export XNU_CCACHE=1 CCACHE_COMPILERCHECK=content XNU_WRAPPER_LOG="$PWD/xnu-clang-args.log"
+          : > "$XNU_WRAPPER_LOG"
+          ccache -C >/dev/null 2>&1 || true
+          ccache -M 2G >/dev/null 2>&1 || true
+          # WiFi 对象：mk-ath10k.py 钉版下载 → 编 ath10k.o → WIFI_OBJECT 进内核链接
+          export CC="$XNU_HOST_CLANG"
+          if [ "$WIFI_STACK" = "1" ]; then
+            python3 tools/mk-ath10k.py
+            A=xnu-deps/build/ath10k/out/ath10k.o
+            test -s "$A" || { echo "::error::ath10k.o 没有产出"; exit 1; }
+            echo "→ ath10k.o: $(sha256sum "$A" | cut -d' ' -f1) ($(stat -c %s "$A") B)"
+            export WIFI_OBJECT="$PWD/$A"
+          else
+            echo "→ 诊断轮：不带 ath10k.o（wifi_stack=0）"
+          fi
+          ./xnu-build.sh -j4 -k BUILD_DSYM=0 \
+            || echo "（make 退出码 $?——上游文档：链接后的检查，内核若已产出即成功）"
+          K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
+          ls -la "$K" || { echo "::error::内核没有产出"; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
+          KU=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped
+          cp -f "$K" "$REL/${R}-kernel-stripped.bin" || true
+          cp -f "$KU" "$REL/${R}-kernel-unstripped.bin" || true
+          AS=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/config/allsymbols
+          [ -f "$AS" ] && cp -f "$AS" "$REL/${R}-allsymbols.txt" || true
+          KSHA=$(sha256sum "$K" | cut -d' ' -f1)
+          echo "KSHA=$KSHA" >> "$GITHUB_ENV"
+          echo "$KSHA  $R-kernel" > "$REL/${R}-kernel-sha.txt"
+          cp "$K" "$REL/${R}-kernel.bin"
+          # --- 门禁一/二（可选）：谱系 + 换代件标记逐字在字节里
+          if [ -n "$PRE_GATE_PY" ]; then
+            echo "→ 门禁一/二：谱系与换代件标记"
+            printf '%s' "$PRE_GATE_PY" > /tmp/pre_gate.py
+            python3 /tmp/pre_gate.py "$K"
+          fi
+          # --- 门禁三（可选）：本轮 gate 工具对底板内核
+          if [ -n "$KERNEL_GATE_CMD" ]; then
+            echo "→ 门禁三：轮 gate（新内核 vs 底板内核）"
+            export BASE_KERNEL="$PWD/base/kernel.bin"
+            printf '%s' "$KERNEL_GATE_CMD" > /tmp/kernel-gate.sh
+            bash -e /tmp/kernel-gate.sh
+          fi
+
+      # ---------------------------------------------------------------
+      - name: "诊断产物（wrapper argv 日志 + 内核字节，失败也上传）"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.round }}-diag
+          path: |
+            hackios/xnu-clang-args.log
+            hackios/xnu-deps/exporthdrs.log
+            release/${{ inputs.round }}-kernel-stripped.bin
+            release/${{ inputs.round }}-kernel-unstripped.bin
+            release/${{ inputs.round }}-allsymbols.txt
+          if-no-files-found: ignore
+
+      # ---------------------------------------------------------------
+      # ④ 打双启动镜像（外科手术命令 = 输入模板；底板 = base/ 三件）
+      - name: "④/⑧ 打双启动镜像（外科手术：GPU 镜像按轮模板换条目）"
+        env:
+          FLASH_BUILD_CMD: ${{ inputs.flash_build_cmd }}
+        run: |
+          set -euo pipefail
+          cd hackios
+          export BASE_DAILY="$PWD/base/daily.img" BASE_GPU="$PWD/base/gpu.img"
+          export K="$REL/${R}-kernel.bin" KU="$REL/${R}-kernel-unstripped.bin"
+          printf '%s' "$FLASH_BUILD_CMD" > /tmp/flash-build.sh
+          bash -e /tmp/flash-build.sh
+          ls -la "$REL"
+
+      # ---------------------------------------------------------------
+      # ⑤ 门禁复证：判读命令模板 + 复证门禁输入（教训：grep 工具的真实判定词）。
+      - name: "⑤/⑧ 轮判读 + 复证门禁（双镜像）"
+        env:
+          KERNEL_ID_CMD: ${{ inputs.kernel_id_cmd }}
+          ID_GATES: ${{ inputs.id_gates }}
+        run: |
+          set -euo pipefail
+          cd hackios
+          export IDFILE="$REL/${R}-kernel-id.txt"
+          printf '%s' "$KERNEL_ID_CMD" > /tmp/kernel-id.sh
+          bash -e /tmp/kernel-id.sh
+          printf '%s' "$ID_GATES" > /tmp/id-gates.sh
+          bash -e /tmp/id-gates.sh
+          echo "${R} 复证门禁全绿。"
+
+      # ---------------------------------------------------------------
+      # ⑥ SHA256 + README（输入全文）+ 轮前置命令（转发/台账）+ Release
+      - name: "⑥/⑧ SHA256 + README + 转发 + Release（${{ inputs.release_tag }}）"
+        env:
+          CHECKSUM_FILES: ${{ inputs.checksum_files }}
+          README_BODY: ${{ inputs.release_readme }}
+          PRE_RELEASE_CMD: ${{ inputs.pre_release_cmd }}
+        run: |
+          set -eu
+          cd hackios
+          if [ -n "$PRE_RELEASE_CMD" ]; then
+            printf '%s' "$PRE_RELEASE_CMD" > /tmp/pre-release.sh
+            bash -e /tmp/pre-release.sh
+          fi
+          ( cd "$REL" && sha256sum $CHECKSUM_FILES ) > "$REL/SHA256SUMS"
+          printf '%s\n' "$README_BODY" > "$REL/README.txt"
+          echo "README + SHA256SUMS + 转发资产就位"
+          df -h /
+
+      - name: "⑥b/⑧ 发布 Release（直链交付，${{ inputs.release_tag }}）"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: ${{ inputs.release_name }}
+          body: ${{ inputs.release_body }}
+          fail_on_unmatched_files: true
+          files: ${{ inputs.release_files }}
+
+      # ---------------------------------------------------------------
+      - name: "⑥c/⑧ 直链汇总（跑完看这里，复制即用）"
+        env:
+          RELEASE_FILES: ${{ inputs.release_files }}
+        run: |
+          set -eu
+          echo "════════════ 全部下载直链 ════════════"
+          {
+            printf '%s\n' "$RELEASE_FILES"
+            echo "SHA256SUMS"
+            echo "README.txt"
+            echo "toolchain-versions.txt"
+          } | while read -r f; do
+            [ -n "$f" ] || continue
+            echo "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/$f"
+          done
