@@ -1354,3 +1354,24 @@ r28l flashboot → oem run；**等 ~2-3 分钟过风暴首发窗再抓 logdump**
 **修正（bae5ac4）**：门禁六律按真 CI 字节（下载 run 的 r40-diag artifact，stripped 内核 dd5b7d43）重写并本地全绿——①尺寸带 0<d<64KiB（实测 +128B 全在 __LINKEDIT）；②R40 标记 ×1；③R33 谱系 4 + R38 标记 5 + XNULIVE4；④**段表律**（真字节教出来的新律）：18 段名序列全同、全部载荷段 fileoff/filesize 逐字节相同、__LINKEDIT 增量 == 文件增量（外来构建必动载荷段）；⑤**掩码 strings 律**：头表+符号表区先清零再扫描，增量恰为 {R40 标记, 补丁自己的 "frame dropped" 报告字面量, 2 条 Darwin 戳}、损失全为 Darwin 戳，标记钉在真 rodata（0x2a116）不在掩码区；⑥符号数不减（72984→72986）。负样本：r39 冒充 r40 被正确拒绝。步③④⑤全部 `set -euo pipefail`（flash-build 与 kernel-id 的 `| tee` 同病同治）。
 
 **新教训入册**：①替身验证不会重现真编译器的布局级联——"从未见过真构建输出的门禁律默认有毒"，上 CI 前必须拿真 artifact 字节复验（R30"从未跑过的代码默认有毒"的门禁版）；②管道里的门禁必须 pipefail，否则门禁只是装饰；③GitHub API 下 artifact 要手动处理 302 并在重定向请求里去掉 Authorization 头（blob storage 拒绝带签名的二次请求）。
+
+## R41 flush 轮（2026-10-29，先于刷机立字）：快照自己落盘
+
+**R40 真机采集（2649 行）定案的两个事实**：
+1. **采集缺口坐实**：loader 的 2 秒 notes 到 ~34s 收摊（`NOTE_SECONDS` 后 watch 核只中断屏蔽地看），此后 logdump 分区只收"内核主动 flush"（loader_return.c 的 XNULIVE3 flush_seq/flush_ack 通道）——而内核只有 adreno 探针的危险调用（`put_the_log_away`）与退出手势的拆除会发起。R40 的采集停在内核时刻 ~44s（Darwin 84s；Darwin = mono + ~40.5s，本 boot 的 USB 下载偏移），恰在 backboardd 显示初始化边缘——远在 ~124s 的停摆案发窗之前：**redwood_gpu_report 的快照打在 ring 里、死在 ring 里**。
+2. **退出手势立功入册**：R39 的记录之所以能到 165.05s（拆表/CX collapse 半途），是操作员五指长按 1.5s 的退出手势跑了 `redwood_adreno_stop()` → 拆除路径的 `put_the_log_away()` 多次 whole-ring flush——设计上的"回 loader 通道"意外兼任了唯一的晚期采集通道。R39 尾部 `adreno: 0:` 序列 = 手势拆除（`redwood_input.c` 的 EXIT_FINGERS=5/EXIT_HOLD_MS=1500），不是自动故障。
+
+**R41 内核（一调用补丁 + 同长标记）**：
+- `redwood_gpu_report()` 打完两行快照即 `(void)loader_log_flush();`——三个调用点全被 static 门控（`gGPUReported`/`told`），每 boot 至多一次、只在已发生的失败路径；答案不检查（丢一次 flush 不得变成丢一次实验）。
+- 标记同长换代：`R41: the snapshot buys its own ride onto the storage too`（56 B == R40 标记长度）⇒ __TEXT/__rodata 尺寸不动，段表律可存活；R40 标记退役（源码零残留）。
+
+**R41 三件套**：r41_kernel_gate（六律重指 r40 release 内核 dc03efe0：尺寸带/双向标记/谱系含取证字面量 ×2——真 r40 字节实测 IOLog 格式串与报告字面量各一/段表/掩码 strings（增={R41 标记,Darwin}，失={R40 标记,Darwin}）/符号数不减）；r41_flash_build（r40 release 单条目手术，4bf828e4/dc03efe0/5b9bbbcb 硬钉，cmdline verbatim，日常= r40 逐字节）；r41-kernel-id（KNOWN += R40；R41 判词 = R41 标记 ×1 **且** R40 标记 ×0）；r41-springboard.yml（底板 = r40 release SHA 硬校验；pipefail 纪律骑乘；诊断 artifact 恒上传内核——门禁真字节翻车时的 R40 恢复路径）。
+
+**离线验证全绿（22 项）**：YAML 12 步/重复键 CLEAN；7 run 块 bash -n；heredoc 编译；门禁替身绿（同长标记 + LINKEDIT 增长且 load command 同步——替身初版没更新段 filesize 字段被律四正确拒绝，真实链接器会更新）；负样本拒绝（原 r40 冒充 r41）；源码标记审计（`frame dropped` ×2 实钉、`THE GPU STAYS ON` 源 ×2/二进制 ×1——redwood_adreno.c 为在册非参与件）。
+
+**预注册（先于刷机立字）——R41 M 判读树**：
+- **设备侧采集协议（R40 的教训写成步骤）**：①boot R41 GPU 镜像，让内核跑 ≥4 分钟（越过 ~124s 案发窗）；②黑屏在展时 `fastboot oem screenshot` + `fastboot getvar screen` + `fastboot upload > shot.raw`——loader 一直在 USB 上守着，内核不需要配合，面板实拍直接回答"面板真黑 vs 内容在面板上而背光/合成出问题"；③五指长按 1.5s 退回 loader（拆除 flush 双保险）；④二次 boot 抓 logdump。
+- **M1** = 黑屏复现（"frame dropped" 再现）⇒ logdump **必含** `adreno: gpu: frame dropped: …` 两行快照（R41 的 flush 保证落盘）⇒ 快照送回 = R42 定点修（或 gpu_recover=1 轮）。整轮无一次 "frame dropped" ⇒ GPU 观察通过（R39 卡死非稳态），显示线转向 shot.raw + 亮度/合成路径。
+- **M2** = WiFi：NV 全量固件版 flashboot（modemst1/2/fsg/fsc 已由设备提取交付，尺寸律全过、三分区互差为活副本特征）⇒ `SM8150 MPSS/ath10k is being brought up` ⇒ 链走 6..15 步越过 RMTFS；意外联网 = 收获轮；新停点 = 新输入。
+- **M3** = 回归护栏：three scanout buffers + frames > 4 + flip 行持续 + 系统本体活。
+- 回滚 = 刷回 r40 GPU 镜像。
