@@ -1375,3 +1375,17 @@ r28l flashboot → oem run；**等 ~2-3 分钟过风暴首发窗再抓 logdump**
 - **M2** = WiFi：NV 全量固件版 flashboot（modemst1/2/fsg/fsc 已由设备提取交付，尺寸律全过、三分区互差为活副本特征）⇒ `SM8150 MPSS/ath10k is being brought up` ⇒ 链走 6..15 步越过 RMTFS；意外联网 = 收获轮；新停点 = 新输入。
 - **M3** = 回归护栏：three scanout buffers + frames > 4 + flip 行持续 + 系统本体活。
 - 回滚 = 刷回 r40 GPU 镜像。
+
+## R41 CI 修正（2026-10-29，run 40838276403 验尸）：门禁必须 grep 工具的真实判定词
+
+**死点**：步②（取 r40 资产 + 基座条目提取）尾部的 ramdisk 门禁——`grep -c "the ramdisk entry is R40"` 得 0（要求恰 1）而退出。此前所有硬校验与判读**全对**：底板三件 SHA == r40 release 官方字节；loader/kernel/ramdisk 三条目提取 sha 逐一命中官方（4bf828e4/dc03efe0/5b9bbbcb）；kernel 判词 R33（日常控制组）/R40（GPU 底板）、cmdline 判词 R39 组 verbatim / 日常无 gpu token 全过——唯独卷判读文本不合门禁预期。
+
+**根因（文本失配，非数据失配）**：r41-kernel-id.py 的 `KNOWN_RAMDISK[5b9bbbcb]` 判定词是双名 **"R39/R40"**（这批卷字节是 R39 底探针集，R40 GPU 镜像原样重装——工具如实双名）；而门禁起草时想当然写了 `the ramdisk entry is R40`——"is R39/R40" 里不存在子串 "is R40"，grep 必 0。同毒第二处预埋在步⑤（`r41-kernel-id.txt` 产品复证）——本轮一并拔除，否则步②修完死步⑤、内核白构建 15 分钟。
+
+**修正（72c3924）**：两处门禁改 grep `the ramdisk entry is R39/R40`，行内注释钉死教训：**门禁必须 grep 工具的真实判定词，不能写起草者假设的那句**。工具侧不改——"R39/R40" 双名是对字节谱系的如实陈述。
+
+**本地全链复验（真 r40 release 字节，20 项全绿）**：同长换标替身内核（R40 标记→R41 标记，56B==56B）过 r41_flash_build 全部输入断言 → 双镜像产出（日常 == b0f9f6df 逐字节，控制组律自证）；r41-kernel-id 对底板与产品双输出跑真实判定 → 修正后的步②/步⑤ grep 集全数命中；**负样本**：旧 pattern 在两份判定输出上恰 0 命中——run 40838276403 的死点原样复现并证明治愈。YAML 12 步/重复键 CLEAN/7 run 块 bash -n。
+
+**新教训入册**：门禁是"对工具输出的断言"，不是"对世界的断言"——判定词改一个字，门禁就从不信任变成假阴性；步②修门禁时必须同步审下游所有同族 grep（本轮步⑤同毒，一次拔除省一轮 CI）。
+
+**重派发**：run 40845645409（72c3924，dispatch 204 后 12s 确认 in_progress）。
