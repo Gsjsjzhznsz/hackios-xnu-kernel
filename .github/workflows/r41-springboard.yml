@@ -130,7 +130,9 @@ jobs:
           grep -c "the kernel entry is R40" base-id.txt | grep -qx 1 || { echo "::error::r40 GPU 底板的内核必须判为 R40（dc03efe0…）"; exit 1; }
           grep -q "the cmdline is the R39 GPU form verbatim" base-id.txt || { echo "::error::r40 GPU 底板的 cmdline 不是 R39 组原样"; exit 1; }
           grep -c "the cmdline is the daily image WITHOUT" base-id.txt | grep -qx 1 || { echo "::error::r40 日常底板的 cmdline 应无任何 gpu token"; exit 1; }
-          grep -c "the ramdisk entry is R40" base-id.txt | grep -qx 1 || { echo "::error::r40 GPU 底板的小卷不是 R40 卷"; exit 1; }
+          # r41-kernel-id 对 5b9bbbcb 卷的判定词是双名 R39/R40（r40 GPU 镜像原样重装 R39 卷字节）——
+          # 门禁必须 grep 工具的真实判定词，不能想当然写 R40（run 40838276403 的死点）。
+          grep -c "the ramdisk entry is R39/R40" base-id.txt | grep -qx 1 || { echo "::error::r40 GPU 底板的小卷不是 R39/R40 卷（5b9bbbcb）"; exit 1; }
           grep -c "the ramdisk entry is R13..R33" base-id.txt | grep -qx 1 || { echo "::error::r40 日常底板的小卷不是 R13 谱系"; exit 1; }
 
       # ---------------------------------------------------------------
@@ -295,7 +297,7 @@ jobs:
           grep -c "the kernel entry is R33" "$REL/r41-kernel-id.txt" | grep -qx 1 || { echo "::error::日常镜像内核必须仍是 R33（控制组）"; exit 1; }
           grep -c "the cmdline is the R39 GPU form verbatim" "$REL/r41-kernel-id.txt" | grep -qx 1 || { echo "::error::GPU 镜像 cmdline 不是 R39 组原样（R41 零 cmdline 改动）"; exit 1; }
           grep -c "the cmdline is the daily image WITHOUT" "$REL/r41-kernel-id.txt" | grep -qx 1 || { echo "::error::日常镜像必须无任何 gpu token（控制组原样）"; exit 1; }
-          grep -c "the ramdisk entry is R40" "$REL/r41-kernel-id.txt" | grep -qx 1 || { echo "::error::GPU 镜像小卷不是 R40 卷"; exit 1; }
+          grep -c "the ramdisk entry is R39/R40" "$REL/r41-kernel-id.txt" | grep -qx 1 || { echo "::error::GPU 镜像小卷不是 R39/R40 卷（5b9bbbcb）"; exit 1; }
           grep -c "the ramdisk entry is R13..R33" "$REL/r41-kernel-id.txt" | grep -qx 1 || { echo "::error::日常镜像小卷不是 R13 谱系"; exit 1; }
           echo "r41 复证门禁全绿。"
 
