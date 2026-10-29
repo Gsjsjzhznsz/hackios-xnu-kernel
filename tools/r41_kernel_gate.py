@@ -22,9 +22,13 @@ release kernel, with two deltas the R41 patch dictates:
     (R40 introduced it; R41 keeps it), so it leaves the gained-set and joins the
     both-files assertions instead.
 
-  1. size:      r41 > r40 and the delta stays under 64 KiB (R40's real build was
-                +128 B, ALL of it __LINKEDIT growth; R41 adds one call -- the call
-                target loader_log_flush is already extern'd, so no new symbol)
+  1. size:     the bytes MUST differ (same bytes = the patch did not land) and the
+               delta stays under 64 KiB. DELTA 0 IS THE EXPECTED REAL-BUILD OUTCOME:
+               the same-length marker swap contributes nothing and the one added call
+               (loader_log_flush, already extern'd -- no new symbol) fits inside
+               __TEXT padding, so the file size does not move (run 40845645409 was
+               killed by the older '> 0' half of this law; the R40 real build's +128 B
+               came from its NEW statics' symtab entries, which R41 has none of)
   2. marker:    the R41 marker is in r41 exactly once and in r40 zero times; the
                 R40 marker is in r41 ZERO times (retired)
   3. lineage:   every R33 generation marker, every R38 display/Wi-Fi mark, the
@@ -137,11 +141,15 @@ def main():
     lc_end_o, segs_o, sym_o = macho_layouts(old)
     lc_end_n, segs_n, sym_n = macho_layouts(new)
 
-    # 1. size
+    # 1. size (the R40 lesson, third edition: a law drafted on synthetic bytes must
+    #    survive the REAL build -- the real r41 build is byte-different at delta 0,
+    #    run 40845645409; '> 0' was the drafter's assumption, not the compiler's law)
     delta = len(new) - len(old)
-    assert delta > 0, 'the r41 kernel is not bigger than r40 (delta %d) -- the patch did not land?' % delta
-    assert delta < 65536, 'the size delta %d B exceeds the 64 KiB patch band' % delta
-    say('size law:    +%d B (the patch band is 0 < d < 64 KiB)' % delta)
+    assert nsha != osha, 'the r41 kernel is byte-identical to r40 (sha %s) -- the patch did not land?' % nsha
+    assert abs(delta) < 65536, 'the size delta %d B exceeds the 64 KiB patch band' % delta
+    say('size law:    bytes differ (new sha), delta %+d B -- the band is |d| < 64 KiB;'
+        ' delta 0 is the expected real-build outcome (one call fits __TEXT padding,'
+        ' the same-length marker swap contributes nothing)' % delta)
 
     # 2. the markers
     assert new.count(R41_MARKER) == 1, 'the R41 marker rides x%d, want exactly 1' % new.count(R41_MARKER)
@@ -209,7 +217,7 @@ def main():
         % (sym_o['nsyms'], sym_n['nsyms'], sym_o['strsize'], sym_n['strsize']))
 
     say('GATE GREEN: the r41 kernel IS the r40 kernel plus one flush call'
-        ' (payload layout pinned, only the symbol table grew, the marker swapped same-length).')
+        ' (bytes differ, payload layout pinned, size delta %+d, the marker swapped same-length).' % delta)
     if args.report:
         with open(args.report, 'w') as f:
             f.write('\n'.join(lines) + '\n')
