@@ -5499,6 +5499,19 @@ redwood_gpu_report(const char *why)
         printf("adreno: gpu:   in the first command buffer at %#llx, %u words to go; in the second at %#llx, %u to go\n",
             (uint64_t)rd(gpu.base + CP_IB1_BASE + 4) << 32 | rd(gpu.base + CP_IB1_BASE), rd(gpu.base + CP_IB1_REM_SIZE),
             (uint64_t)rd(gpu.base + CP_IB2_BASE + 4) << 32 | rd(gpu.base + CP_IB2_BASE), rd(gpu.base + CP_IB2_REM_SIZE));
+        /*
+         * R41: the snapshot is only as good as its ride to the storage.  The loader's own
+         * capture stops when its notes end (NOTE_SECONDS), and after that the logdump
+         * partition takes the log only from a kernel-asked flush (loader_return.c's flush
+         * channel) -- which before this round only the adreno probe's dangerous calls and
+         * the exit gesture's teardown ever made (R39's record reached the storage only
+         * through the exit teardown's flushes; R40's own capture on the device ends before
+         * the stall it was built for, so its report would have died in the ring).  Every
+         * caller of this report is gated by a static, so this runs once per boot at most,
+         * and only on an already-failing path; a lost flush must not become a lost
+         * experiment, so the answer is not checked (loader_return.c).
+         */
+        (void)loader_log_flush();
         step = 0;
         if (space_faulted(&core_space)) {
                 wr(smmu.base + context + SMMU_CB_FSR, SMMU_FSR_ALL);    /* so that the next one shows */
