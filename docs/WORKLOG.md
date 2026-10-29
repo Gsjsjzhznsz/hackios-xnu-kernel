@@ -1516,3 +1516,24 @@ r28l flashboot → oem run；**等 ~2-3 分钟过风暴首发窗再抓 logdump**
 **R42 修复链全记录**：fcd1133（立项）→ run#5 红 → 2bf6fde（conf 注册行，链接器墙倒）→ run#6 红 → 2f92ef0（vme_offset/VME_OBJECT，编译器墙倒）→ run#7 红 → 13d4fca（门禁段落律去预测化，最后一墙倒）→ run#8 绿。死亡点轨迹：链接器 → 编译器 → 门禁——三层门逐一诚实，三律逐轮入册（构建接纳律 / STRUCT-MEMBERS 律 / 门禁预测律）。
 
 **下一步（用户侧）**：刷 raphael-xnu-r42-gpu-flash.img（fastboot flash boot）→ ≥4 分钟观察窗（lsd 1/s 重生循环自然喂判词，前 3 判词自带 flush）→ 五指长按 1.5s 退回 loader → 二次 boot 抓 logdump 回传。判读树：MR1 = `redwood-pager: verdict N:` 定罪文件（文件名 = R43 开刀对象）；MR2 = SIGBUS 复现而判词缺席 → 变体行（no map entry / no pager in the chain / kept its name）定假设之罪；MR3 = 回归护栏（零丢帧/GL logo/触控/WiFi 窗口不回退）；MR4 = WiFi。
+
+## R42 真机判读（2026-10-29，logdump 5600 行）：取证钩活了、lsd 假设被证伪、钩子自己引发了内核 panic
+
+**三棵判读树落地：**
+- **MR1 未达成**：160 条判词（编号 = 累计 fault 计数，79.2s → 148.0s）**没有一条定罪 lsd**——被告全是 init[4/18/23/33]、launchd[1]、xpcproxy[9/20/29/36]，形状清一色 `kr 0x1: no map entry`，地址高 32 位异常（0xff700001/0xffc00001，非法用户地址，probe 被正常拒绝 = 良性；打印形状存疑，R43 核对 printf 参数序）。这些 fault 钩子在场外看不见它们的年代就一直存在，只是 R42 第一次看见了。
+- **MR2 命中（假设证伪）**：lsd SIGBUS 重生循环**照旧**（pid 34→111，00:03:04 时已 "crashed 65 times in a row"，每次 **7 ms 内**死亡：running → exited due to SIGBUS | sent by exc handler），而 160 条判词里**零条 lsd**——lsd 的死法**根本不经过 vm_fault_internal 的失败出口**。R41 的嫌疑清单（页入未实现/extent 零填充/尺寸报告错）三选一全错方向。log 内两处自家历史注记点名真凶候选：`minisandbox: the CPU monitor's override goes to every process (the refusal was fatal to lsd -- R28d)`——**7 ms 死亡 + SIGBUS by exc handler + 无 fault 判词**，与 sandbox/CPU-monitor 拒绝路径（Mach exception → exc handler → SIGBUS）完全吻合；backboardd 的 "Database mapping failed" 是 lsd 死的下游效应而非同因。
+- **MR3 破防**：R41 的零丢帧纪录破——9 处 `frame dropped`（swap 30-38，"the GPU is not done with surface 3/4 after 500 ms"，123.9s 起）；RedwoodGPU 统计 34 submissions in 37,568 ms（提交队列堵死）→ 164.9s adreno 复位路径（"THE SMMU REFUSED the 3D core"）→ END OF LOG。黑屏链 = GPU hang（123.9s 起渲染停摆）→ 复位路径 → panic 终局。
+- **MR4 无回归**：WiFi 固件缺失依旧（"modem/WLAN firmware is missing from the RAM image"，用户侧固件未入 RAM 镜像，非本轮问题）。
+
+**黑屏终局主犯 = 内核 PANIC，panicked task = pid 7 SpringBoard**：
+```
+panic(cpu 1 caller 0xfffffff0072d32c0): lock_rw.c:877 Assertion failed:
+lock->lck_rw_owner != self->ctid : Lock already held state=0x4a0000, owner=0xfffffff3eb94cc10
+```
+owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_internal 的失败出口调 redwood_fault_convict() → 钩子 lck_rw_lock_shared(map 锁) → 但调用者已在**持同一把 map 锁**的路径上（wire/COW/fork-exec wiring 类路径在持锁状态下进 fault；SpringBoard 的 IOSurface wiring 是当场捕获的现场：surface 19/21/22/23 就在 panic 窗口创建）→ 同线程递归拿锁 → 断言死。R42 立项的锁安全论证（map 读锁 + 影子链 collapse 序 + 取名持锁先例）论证了**与 lookup/影子链的协调**，**漏了"调用者自身已在持锁"的调用方状态枚举**——而失败出口的调用方锁状态恰恰不可枚举（这正是把钩埋在"一切失败汇合的唯一出口"的代价：唯一出口的唯一性也意味着调用方状态的多样性）。
+
+**R42 真机收获盘点**：取证钩全链在真机活了（钩子触发、判词编号、节流 16 一跳、前 3 判词自带 flush、判词进 logdump）——**基础设施全绿，只是第一批"被告"不是我们要的**；160 条 no-map-entry 判词顺带证明了节流参数可用。
+
+**R43 立案（panic 修复轮，单文件单刀）**：redwood_fault_convict.c 的 map 锁改 **try-lock**——lck_rw_try_lock_shared 失败（含同线程已持任何模式）即放弃深查、交最小判词或静默返回，**绝不阻塞、绝不递归**；同时对 no-map-entry 判词做形状去重（同 (pid,kr,变体) 只报首例 + 计数，160 条洪水 → 数条）。取词语义与断言路径须对 xnu-8796 原文核对（lck_rw_try_lock 的 shared 分支不得携带 owner==self 断言——STRUCT-MEMBERS 律同款纪律）。lsd 死因二次取证留 R44：若 R43 后 SpringBoard 存活、logdump 变长，先看 lsd 完整死亡序列再决定钩子是否搬去 minisandbox 拒绝出口。
+
+**新律入册（唯一出口律的对偶）**：埋钩在"一切失败的唯一出口"是对的（取证完备性），但**唯一出口同时是调用方状态最多样的出口**——钩子在其中持有的每一假设（"此刻无人持锁"）都必须枚举为假的可能；探针只许用 try 类原语，try 败即退——取证代码自己死 = 取证结束。
