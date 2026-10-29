@@ -1482,3 +1482,37 @@ r28l flashboot → oem run；**等 ~2-3 分钟过风暴首发窗再抓 logdump**
 - **真树定向 apply-check**：从 apple-oss-distributions/xnu tag xnu-8796.121.2 拉 osfmk/conf/files 上游原文（363 行，`-361,3` 三行逐字节对齐），单文件 hunk `git apply --check` PASS + 实应用后清单尾部即新注册行。其余 73 hunk 的 apply 能力由红 run 本身背书（apply.sh 曾全绿）。
 
 **新律入册（构建接纳律）**：向内核树新增源文件，注册行与文件本体是**同一刀的两半**——文件进 files/ 的同一提交里必须让 conf 清单认领它；离线证明必须覆盖"构建系统接纳"（注册完整性 + 链接符号闭环），门禁合成内核证明不了链接器看不见的东西。链接器是最后一道 也是最诚实的门：它报 undefined 时，缺的从来不是声明，是编译单元。
+
+## R42 run#6 验尸（2026-10-29，40893195847 红）：编译器点名成员词表——conf 修复生效，死点前移一级
+
+**死亡现场**：步③构建在编译 `redwood_fault_convict.c` 时死——`no member named 'offset' in 'vm_map_entry'`、`no member named 'object' in 'vm_map_entry'`。相对 run#5 的链接死，死亡点**严格前移**（链接器→编译器）：conf 注册修复生效，文件已进编译。
+
+**根因**：文件是照"理想化 vm_map_entry"写的，而 xnu-8796 的真实表示是 packed 形态——(1) offset 成员真名 **`vme_offset`**（位域，声明跨行：类型在上一行）；(2) **没有 `entry->object` union**——对象打包在 `vme_object_or_delta` 里，唯一合法出口是 `VME_OBJECT()` accessor（vm_map.h 内 static inline `_VME_OBJECT`，含 VM_OBJECT_UNPACK + assert !is_sub_map，调用点已先查 is_sub_map 并 return，同 vm_fault.c 用法）；`vme_start/end/prev/next` 过关纯属它们是 `links.*` 的宏别名。附修：`get_bsdtask_info` 隐式声明转文件内 extern（proc_selfpid 先例）。
+
+**复验（scripts/r42_struct_members_proof.py，GREEN，机械化）**：从上游原文（apple-oss-distributions xnu-8796.121.2 的 vm_map.h 1774 行 / vm_object.h 1166 行）提取 `struct vm_map_entry` 39 成员（含跨行位域行：成员行可带前导注释、类型在上一行）与 `struct vm_object` 30 成员，文件内每个 `entry->`/`object->` 访问必须落进词表。提取器自身也被上游原文校准两次（正则对 `ln[1:]` 又用 `^\+` 的恒空集合 bug；跨行位域漏提取）。
+
+**新律入册（STRUCT-MEMBERS 律）**：触及结构体内部的轮，证明必须交出结构体**自身词表**——从上游头文件机械提取成员集逐个核对，不靠记忆。接口与声明核过了，成员名没有核；clang 的诚实不亚于链接器，两者都必须在 runner 收费之前在线下答完。
+
+## R42 run#7 验尸（2026-10-29，40895517421 红）：门禁自己成了最后一堵墙——构建全绿，死的是"__TEXT 必须增长"断言
+
+**死亡现场**：内核产出（17,009,200 B，diag 副本 sha 61d2c2de），门禁 1/2 过，死在门禁 3 段落律断言 `shift > 0 -- the new function did not land?`——实测 delta = 0。链接器墙与编译器墙双双已倒。
+
+**根因**：整轮增量装进了 __TEXT 页对齐尾部的 padding（R41 真实结局重演），+336 B 全是 __LINKEDIT 符号/串增长（nsyms 72986 → 72993，新函数的符号）。run#7 立项时改写的段落律（"R42 加一整个函数 ⇒ __TEXT 必然增长"）编码的是**对本轮量级的预测**，而预测死于构建找到更便宜的合法形态。
+
+**修复**：段落律改成只断言一切合法形态共有的性质——`shift >= 0` + 16 KiB 带 + 中段平移链（各 payload 段尺寸钉死、平移量彼此一致）+ `__LINKEDIT 吸收余量`（delta = shift + linkedit_delta，delta=0 时自动成立：336 == delta − 0）。对**真镜像对**离线复验（非合成）：r41 GPU release 镜像（0d715343）经 r42_flash_build.unpack 解出内核 f17119fb × run#7 diag 内核 61d2c2de，修后门禁六律全绿（size/marker/lineage/segment/strings/symtab）。
+
+**新律入册（门禁预测律）**：门禁断言若编码了对构建的**预测**（"它必须增长"），它死于构建找到更便宜合法形态的那一天；只断言对每个合法形态都为真的性质——不缩、尺寸钉死、平移自洽、LINKEDIT 归账——永不断言本轮的预期量级。
+
+## R42 收官（2026-10-29，run 40900710871 SUCCESS，13d4fca）：Release r42-springboard 发布，pager 取证轮交付
+
+**发布**：run 40900710871（15:21:24Z 起，13d4fca = 门禁段落律新形）**SUCCESS**，Release **r42-springboard** 八资产 8/8（raphael-xnu-r42-flash.img 8,163,439 B / raphael-xnu-r42-gpu-flash.img 12,664,943 B / raphael-r42-flashboot.apfs 4,194,304 B / r42-md1-root.apfs 7,016,448 B / r42-kernel-gate.txt / SHA256SUMS / README.txt / toolchain-versions.txt），下载件 sha 与 SHA256SUMS 逐字节吻合。
+
+**六律绿（真发布对）**：r41 内核 f17119fb（17,008,864 B）× r42 内核 **ef204f28**（17,009,200 B，**+336 B**）——size 律（带内 +336）；marker 律（R42 标记 x1 / R41 标记退役 x0）；lineage 律（R33 gen4 + R38 display/WiFi 5 + XNULIVE4 + "frame dropped" 全在 + **"redwood-pager: verdict" 字面量 x4**）；**segment 律新形实测 = 18 段名序列不变 + __TEXT +0 B（整轮装进页尾 padding）+ 其余 payload 段 +0 平移 + __LINKEDIT +336 B 恰归账**；strings 律（+8/−3，标记落 0x29f36 真 rodata）；symtab 律（nsyms 72986→72993，strtab 0x202ce0→0x202d68）。**GATE GREEN**。
+
+**双镜像复验（tools/r42-kernel-id.py）**：GPU 镜像 = loader R39..R42 4bf828e4 verbatim + 内核判 **R42**（ef204f28，R40/R41 双退役成立）+ 卷 5b9bbbcb verbatim + cmdline R39 GPU 形 verbatim（fb_scan=1 + wifi=1 wifi_bdf=bd_f11cn.bin）；日常镜像 = 控制组原字节（b0f9f6df 逐字节，R33 内核 420f4b71 + v7 loader，cmdline 无 GPU/WiFi token）。
+
+**发布内核 sha 记录**：`ef204f284b5825d3598d7b2630159945dbb11e990f0eac75bcbff30f3f15c021`（17,009,200 B；日常控制组 b0f9f6df 不变）。
+
+**R42 修复链全记录**：fcd1133（立项）→ run#5 红 → 2bf6fde（conf 注册行，链接器墙倒）→ run#6 红 → 2f92ef0（vme_offset/VME_OBJECT，编译器墙倒）→ run#7 红 → 13d4fca（门禁段落律去预测化，最后一墙倒）→ run#8 绿。死亡点轨迹：链接器 → 编译器 → 门禁——三层门逐一诚实，三律逐轮入册（构建接纳律 / STRUCT-MEMBERS 律 / 门禁预测律）。
+
+**下一步（用户侧）**：刷 raphael-xnu-r42-gpu-flash.img（fastboot flash boot）→ ≥4 分钟观察窗（lsd 1/s 重生循环自然喂判词，前 3 判词自带 flush）→ 五指长按 1.5s 退回 loader → 二次 boot 抓 logdump 回传。判读树：MR1 = `redwood-pager: verdict N:` 定罪文件（文件名 = R43 开刀对象）；MR2 = SIGBUS 复现而判词缺席 → 变体行（no map entry / no pager in the chain / kept its name）定假设之罪；MR3 = 回归护栏（零丢帧/GL logo/触控/WiFi 窗口不回退）；MR4 = WiFi。
