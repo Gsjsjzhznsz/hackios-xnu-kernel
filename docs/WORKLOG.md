@@ -1465,3 +1465,20 @@ r28l flashboot → oem run；**等 ~2-3 分钟过风暴首发窗再抓 logdump**
 **离线证明（scripts/r42_univ_round_proof.py，13 项全绿）**：YAML 健康（24 输入/7 run 块 bash -n/默认值=R42 逐项）+ 源码三件互证 + **全链 apply（redwood.patch + files/ 在上游真树副本落地，vm_fault 钩子/标记/convict 三验）** + 工具 py_compile ×3 + **合成内核六律 GREEN**（R41 形基准 + R42 形新件：__TEXT +0x200、中段平移、标记换替、x4 判词、掩码 strings）+ **四负样本各被对的律点名**（外来构建改段尺寸→段落律；R41 标记未退役→标记律；判词 x3→谱系律；__TEXT 越带→16KiB 律）+ 手术工具合成底板打包自证 + 判读工具双镜像判词（GPU=R42+R39 组 verbatim；日常=R33 控制组）+ 判词词对齐律（workflow 门禁 8 个 grep 词与工具真实判定词互证）。合成的三次返工全被门禁自己逮住（漏 R33 第 4 标记/段布局重叠/双计偏移）——工具的牙口在离线阶段就已验过。
 
 **新律入册（取证轮落点律）**：取证钩必须埋在**失败汇合的唯一出口**，不埋在可疑路径的某一处——越 EOF 类失败根本不进 pager，pager 层钩子必然漏；出口钩要自带锁安全论证（map 读锁 + 影子链 collapse 序加锁 + 取名持锁的既有先例）与节流（重生循环会把无节流的取证变成日志洪水）。
+
+## R42 run#5 验尸（2026-10-29，40885924498 红）：新增内核源文件未注册 conf 清单——链接器点名 undefined symbol
+
+**死亡现场**：步③构建 6 分钟后在最终链接步死——`LD mach.development.bcm2837.unstripped` → `Undefined symbols for architecture arm64: "_redwood_fault_convict", referenced from: _vm_fault_internal in vm_fault.o` → `ld: symbol(s) not found` → "内核没有产出"。apply.sh 全绿（74 changed + 118 new files），编译阶段零 error——`-k` 模式把死期推到链接。
+
+**根因**：R42 是**史上第一个新增"需要 conf 注册的内核源文件"的轮**。`files/osfmk/vm/redwood_fault_convict.c` 由 apply.sh `cp -a` 落树，但 XNU 只编译 conf 清单（osfmk/conf/files 等）登记的文件——注册行缺席 ⇒ 文件不编译 ⇒ vm_fault 钩子的 extern 无定义 ⇒ 链接死。此前轮次的"新增"只有两种：改 Apple 既有文件（无需注册）、被 `#include` 进别的编译单元的库源（libdeflate/libzbitmap 四件，无需注册）、或覆盖上游同名文件（Apple 自带注册行，kpc.c/tunables.s 属此）。离线 13/13 证明验的是"patch 应用 + 合成内核过门禁"——从未问"构建系统认不认这个文件"。
+
+**修复**：redwood.patch 的 osfmk/conf/files hunk 追加 `+osfmk/vm/redwood_fault_convict.c	standard`（minicrypto 三件同列先例），hunk 头 `+361,6` → `+361,7`（手改，字节级 tab 对齐）。
+
+**复验四律（scripts/r42_conf_registry_proof.py，GREEN）**：
+- **HUNK-MATH**：全 patch 193 hunk 头行数与体行数自洽（防手改错行数）。
+- **R42-REG（本轮新律）**：fcd1133 新增的每个可编译物（.c/.cpp/.s）必须出现在 patch 的 `+` 注册行里——上游树是纯 Apple tag，故"我们加过的全部注册"必然都在 patch `+` 行中，此断言不需上游树。
+- **REG-EXPLAINED**：未注册文件必须可解释——#include 消化（4 件实锤）或历史遗留（redwood_adreno/buttons/goodix = 上游 POCO X5 Pro 死文件被 raphael_* 替代；kpc/tunables.s = 覆盖件），r22 引入、R22→R41 全绿链背书，降 warn。
+- **LINK-CLOSED**：patch 新增的每个 extern 必须在**已注册**文件里有非 static 定义（static 不解 extern 引用；死文件里的定义不链接）。`redwood_fault_convict() → osfmk/vm/redwood_fault_convict.c（已注册）` ✓。
+- **真树定向 apply-check**：从 apple-oss-distributions/xnu tag xnu-8796.121.2 拉 osfmk/conf/files 上游原文（363 行，`-361,3` 三行逐字节对齐），单文件 hunk `git apply --check` PASS + 实应用后清单尾部即新注册行。其余 73 hunk 的 apply 能力由红 run 本身背书（apply.sh 曾全绿）。
+
+**新律入册（构建接纳律）**：向内核树新增源文件，注册行与文件本体是**同一刀的两半**——文件进 files/ 的同一提交里必须让 conf 清单认领它；离线证明必须覆盖"构建系统接纳"（注册完整性 + 链接符号闭环），门禁合成内核证明不了链接器看不见的东西。链接器是最后一道 也是最诚实的门：它报 undefined 时，缺的从来不是声明，是编译单元。

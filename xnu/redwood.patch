@@ -2727,13 +2727,14 @@ diff --git a/osfmk/conf/files b/osfmk/conf/files
 index 9d98c50094a0..9e3476124e54 100644
 --- a/osfmk/conf/files
 +++ b/osfmk/conf/files
-@@ -361,3 +361,6 @@ osfmk/corecrypto/ccsha256_ltc_di.c	standard
+@@ -361,3 +361,7 @@ osfmk/corecrypto/ccsha256_ltc_di.c	standard
  
  osfmk/prng/prng_random.c	standard
  osfmk/prng/entropy.c   standard
 +osfmk/minicrypto/mc_digests.c	standard
 +osfmk/minicrypto/mc_provider.c	standard
 +osfmk/minicrypto/mc_aes.c	standard
++osfmk/vm/redwood_fault_convict.c	standard
 diff --git a/osfmk/conf/files.arm64 b/osfmk/conf/files.arm64
 index c40d57bcc677..1b7a1fcdfcdf 100644
 --- a/osfmk/conf/files.arm64
