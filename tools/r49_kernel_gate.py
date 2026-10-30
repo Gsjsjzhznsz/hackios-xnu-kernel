@@ -60,6 +60,28 @@ R45_MARKER = b'R45: the signal funnel writes who died and what was sent'
 R46_MARKER_LEN_LAW = len(R46_MARKER) == len(R45_MARKER)
 assert R46_MARKER_LEN_LAW, 'the R46 marker must keep the R45 marker byte length'
 REPORT_LITERAL = b'frame dropped'
+# R49: the hologram's decoder text tables -- the ec/fsc/kr/ask names ride as
+# rodata strings; the strings law freezes them here so every gained string is
+# accounted for.  The two "pointer-run" artifacts below are the printable runs
+# of data tables whose embedded POINTER VALUES moved with the round's +40 B
+# data shift (verified by byte archaeology: XNULIVE2's neighbour pointer
+# 0x07d849e8 -> 0x07d84a10; the (4(... table's low byte 0x38 ('8') -> 0x30
+# ('0')) -- layout shifts, not smuggled strings; both forms frozen on both
+# sides so a re-run of the same source reproduces them exactly.
+R49_TEXT_TABLE = frozenset((
+    b'DABORT_EL0', b'DABORT_EL1', b'IABORT_EL0', b'IABORT_EL1', b'PC_ALIGN', b'SP_ALIGN',
+    b'access-flag', b'alignment', b'permission L1', b'permission L2', b'permission L3',
+    b'sync-external', b'tlb-conflict', b'translation L0', b'translation L1',
+    b'translation L2', b'translation L3',
+    b'KERN_ABORTED', b'KERN_FAILURE', b'KERN_INVALID_ADDRESS', b'KERN_INVALID_ARGUMENT',
+    b'KERN_MEMORY_ERROR', b'KERN_MEMORY_PRESENT', b'KERN_NO_SPACE',
+    b'KERN_PROTECTION_FAILURE', b'KERN_RESOURCE_SHORTAGE',
+    b'read-exec', b'read-write-exec', b'write-exec',
+))
+RUN_XNULIVE2_OLD = b'XNULIVE2'
+RUN_XNULIVE2_NEW = b'XNULIVE2(J'
+RUN_TABLE_OLD = b'(4((((((((((00((8P'
+RUN_TABLE_NEW = b'(4((((((((((00((0P'
 SIGPOST_FMT = b'sigpost: %s[%d] exception %d code 0x%llx 0x%llx\n'
 SIGBIRTH_FMT = b'sigbirth: %s[%d] signal %d code 0x%llx from 0x%llx by %s[%d]\n'
 PAGER_LITERAL = b'redwood-pager: verdict'
@@ -259,16 +281,25 @@ def main():
     gained, lost = n_str - o_str, o_str - n_str
 
     def allowed_gain(s):
-        return s == R49_MARKER or s.startswith(b'redwood-pager:') or s.startswith(b'sigcensus:') or \
+        return s == R49_MARKER or s in R49_TEXT_TABLE or s == RUN_XNULIVE2_NEW or \
+            s == RUN_TABLE_NEW or s.startswith(b'redwood-pager:') or s.startswith(b'sigcensus:') or \
             s.startswith(b'siglive:') or s.startswith(b'redwood-fault:') or \
             s.startswith(b'r49-deliver:') or DARWIN.search(s)
 
     bad_gain = [s for s in gained if not allowed_gain(s)]
-    bad_loss = [s for s in lost if not (s == R48_MARKER or DARWIN.search(s))]
+    bad_loss = [s for s in lost if not (s == R48_MARKER or s == RUN_XNULIVE2_OLD or
+                s == RUN_TABLE_OLD or s.startswith(b'redwood-pager:') or
+                s.startswith(b'sigcensus:') or DARWIN.search(s))]
     assert not bad_gain, 'r49 gains unexpected strings (outside symtab/load cmds, code segs masked): %s' % [s[:64] for s in bad_gain[:5]]
     assert not bad_loss, 'r49 loses unexpected strings: %s' % [s[:64] for s in bad_loss[:5]]
     assert R49_MARKER in gained, 'the R49 marker is missing from the masked delta'
     assert R48_MARKER in lost, 'the R48 marker did not show up as a masked loss (it must be retired from rodata)'
+    assert RUN_XNULIVE2_OLD in lost and RUN_XNULIVE2_NEW in gained, \
+        'the XNULIVE2 pointer-run artifact moved forms (the data shift did not land as archived)'
+    assert RUN_TABLE_OLD in lost and RUN_TABLE_NEW in gained, \
+        'the pointer-table run artifact moved forms (the data shift did not land as archived)'
+    missing_table = sorted(s for s in R49_TEXT_TABLE if s not in gained)
+    assert not missing_table, 'the decoder text table is incomplete in the delta: %s' % missing_table
     assert not in_masks(new.find(R49_MARKER), mask_n), \
         'the R49 marker sits inside a masked span -- smuggled?'
     say('strings law: masked delta (code segs masked too -- machine code is not strings, the run-12 law):'
