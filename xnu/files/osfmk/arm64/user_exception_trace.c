@@ -194,6 +194,100 @@ sigpost_trace(exception_type_t exception, mach_exception_data_t code, mach_msg_t
 	    count > 0 ? (unsigned long long)code[0] : 0, count > 1 ? (unsigned long long)code[1] : 0);
 }
 
+
+/*
+ * R46: the signal BIRTH ledger.  The R45 boot answered the funnel question
+ * and opened a deeper one: zero sigpost lines under the recorder proven
+ * live, enabled and sitting at bsd_exception() -- while the wave GREW
+ * (144 deaths: lsd x108 + analyticsd x28 + backboardd x8, a fresh victim
+ * set every boot) and SpringBoard composed its first real frames (flip 2/3,
+ * the white apple -- a stage R43/R44 never reached).  Silence at the funnel
+ * means nothing crossed it: no signal was ever DELIVERED.  And the base
+ * source now kills the R45 terminal theory: proc_terminate() sends only
+ * memorystatus_on_terminate(p)'s verdict (SIGKILL/SIGTERM) -- no
+ * user-supplied signal number rides proc_info.  The one birth funnel that
+ * explains BOTH silences (usertrap AND sigpost) is the ux_handler: a
+ * faulting thread's Mach exception caught by the task's own exception-
+ * handler thread (the logdump's "exc handler[own pid]" is literal -- the
+ * handler IS in the dying process), translated by ux_exception()
+ * (EXC_BAD_ACCESS with KERN_PROTECTION_FAILURE -> SIGBUS) and posted with
+ * threadsignal(.., TRUE) -- a path that never calls psignal, never produces
+ * a bsd_exception(EXC_SOFT_SIGNAL) delivery, and never reaches
+ * exception_triage.  So the recorder moves UPSTREAM to the births: one
+ * throttled line per signal born -- the target, the signal, the code, the
+ * birth site (the caller's return address, unslid, straight against the
+ * release symtab) and who is running.  Wired (redwood.patch) at psignal,
+ * psignal_with_reason, psignal_uthread (pthread_kill -- the one
+ * user-directed thread funnel) and threadsignal (the ux_handler's own
+ * mouth, handle_ux_exception+0x10c in the R45 autopsy).
+ * psignal_locked / psignal_try_thread / psignal_vfork /
+ * psignal_thread_with_reason stay unhooked: their signal numbers are
+ * compile-time constants (SIGILL/SIGKILL/SIGTRAP/SIGVTALRM/SIGPROF/
+ * SIGXCPU), none can carry the wave; proc_terminate rides through its own
+ * psignal call (the birth line's site reads _proc_terminate, the "by"
+ * field names the requester).  The same systrace switch silences the whole
+ * family; the budget is a FRESH (name, signal) table -- a launchd SIGCHLD
+ * storm must not eat the wave's lines the way a per-name table would.
+ */
+void sigbirth_trace(struct proc *p, thread_t thread, int signum, uint64_t code, void *from);
+
+static struct {
+	char name[32];
+	int signal;
+	unsigned count;
+} sigbirth_budget[24];
+static unsigned sigbirth_budget_count;
+
+static bool
+sigbirth_admitted(const char *name, int signal)
+{
+	unsigned i;
+
+	for (i = 0; i < sigbirth_budget_count; i++) {
+		if (sigbirth_budget[i].signal == signal &&
+		    strncmp(sigbirth_budget[i].name, name, sizeof(sigbirth_budget[i].name)) == 0) {
+			break;
+		}
+	}
+	if (i == sizeof(sigbirth_budget) / sizeof(sigbirth_budget[0])) {
+		return false;
+	}
+	if (i == sigbirth_budget_count) {
+		strlcpy(sigbirth_budget[i].name, name, sizeof(sigbirth_budget[i].name));
+		sigbirth_budget[i].signal = signal;
+		sigbirth_budget_count++;
+	}
+	sigbirth_budget[i].count++;
+	return sigbirth_budget[i].count <= 4 || sigbirth_budget[i].count % 16 == 0;
+}
+
+void
+sigbirth_trace(struct proc *p, thread_t thread, int signum, uint64_t code, void *from)
+{
+	task_t task;
+	struct proc *who, *self;
+
+	if (!user_exception_trace_enabled) {
+		return;
+	}
+	who = p;
+	if (who == NULL && thread != NULL) {
+		task = get_threadtask(thread);
+		if (task == NULL || task == kernel_task) {
+			return;
+		}
+		who = get_bsdtask_info(task);
+	}
+	if (who == NULL || !sigbirth_admitted(proc_name_address(who), signum)) {
+		return;
+	}
+	self = get_bsdtask_info(current_task());
+	printf("sigbirth: %s[%d] signal %d code 0x%llx from 0x%llx by %s[%d]\n",
+	    proc_name_address(who), proc_pid(who), signum, (unsigned long long)code,
+	    (unsigned long long)(uintptr_t)from,
+	    self ? proc_name_address(self) : "?", self ? proc_pid(self) : -1);
+}
+
 /*
  * A program calls abort(): say which, and from where. The reason is usually an exception nobody
  * caught, or an assertion; the text of it goes to the program's standard error (boot-arg applog=1

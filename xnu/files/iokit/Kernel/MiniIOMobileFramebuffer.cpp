@@ -58,12 +58,12 @@ extern "C" void *raphael_display_back(bool preserve);
 extern "C" bool raphael_display_present(void);
 extern "C" void redwood_gpu_report(const char *why);
 
-/* R45's own record, and the kernel-id tool's name for this build (the used-marker
+/* R46's own record, and the kernel-id tool's name for this build (the used-marker
  * tradition: loader_return.c's XNULIVE4 is the precedent).  Same byte length as the
- * R44 marker it replaces, so the round's diff stays the sigpost funnel edits in
+ * R45 marker it replaces, so the round's diff stays the sigbirth funnel edits in
  * __TEXT plus this string -- the payload layout the gate pins does not move. */
-__attribute__((used)) static const char r45_sigpost_mark[] =
-    "R45: the signal funnel writes who died and what was sent";
+__attribute__((used)) static const char r46_sigbirth_mark[] =
+    "R46: the signal birth ledger names every hand that feeds";
 static IOLock *gScanoutLock;
 
 /* IOConnectCallMethod selectors of the framebuffer user client (iOS 16.5) */

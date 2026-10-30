@@ -840,7 +840,7 @@ index 88adf2dda936..2b2f528d2273 100644
  	 * We first evaluate policies that may deny the granting of
  	 * privilege unilaterally.
 diff --git a/bsd/kern/kern_sig.c b/bsd/kern/kern_sig.c
-index ae4a5f33df1e..986b517dfd18 100644
+index ae4a5f33df1e4bc7ffe39c5ff32b5b0de3e03f5e..9766953c7341f9534d6e9f2be72593749ae3e4c3 100644
 --- a/bsd/kern/kern_sig.c
 +++ b/bsd/kern/kern_sig.c
 @@ -1099,6 +1099,14 @@ __pthread_kill(__unused proc_t p, struct __pthread_kill_args *uap,
@@ -858,6 +858,63 @@ index ae4a5f33df1e..986b517dfd18 100644
  	struct uthread *uth;
  
  	target_act = (thread_t)port_name_to_thread(uap->thread_port,
+@@ -1783,6 +1791,9 @@ threadsignal(thread_t sig_actthread, int signum, mach_exception_code_t code, boo
+ 	if ((mask & threadmask) == 0) {
+ 		return;
+ 	}
++#if defined(__arm64__)
++	sigbirth_trace(NULL, sig_actthread, signum, code, __builtin_return_address(0));
++#endif
+ 	sig_task = get_threadtask(sig_actthread);
+ 	p = (proc_t)(get_bsdtask_info(sig_task));
+ 
+@@ -2552,15 +2563,36 @@ sigout_unlocked:
+ 	}
+ }
+ 
++#if defined(__arm64__)
++/*
++ * R46 sigbirth: every signal's birth is written down -- the target, the
++ * signal, the code, the birth site (the caller's return address, unslid)
++ * and who is running; see osfmk/arm64/user_exception_trace.c.  psignal and
++ * psignal_with_reason are the process-directed funnels (kill(2), the
++ * resource policy, proc_terminate's own verdict); psignal_uthread below is
++ * pthread_kill; threadsignal below that is the Mach-exception conversion
++ * (the ux_handler's mouth, and the one funnel that can birth a SIGBUS
++ * without psignal).
++ */
++extern void sigbirth_trace(struct proc *p, thread_t thread, int signum,
++    uint64_t code, void *from);
++#endif
++
+ void
+ psignal(proc_t p, int signum)
+ {
++#if defined(__arm64__)
++	sigbirth_trace(p, NULL, signum, 0, __builtin_return_address(0));
++#endif
+ 	psignal_internal(p, NULL, NULL, 0, signum, NULL);
+ }
+ 
+ void
+ psignal_with_reason(proc_t p, int signum, struct os_reason *signal_reason)
+ {
++#if defined(__arm64__)
++	sigbirth_trace(p, NULL, signum, 0, __builtin_return_address(0));
++#endif
+ 	psignal_internal(p, NULL, NULL, 0, signum, signal_reason);
+ }
+ 
+@@ -2591,6 +2623,9 @@ psignal_vfork(proc_t p, task_t new_task, thread_t thread, int signum)
+ void
+ psignal_uthread(thread_t thread, int signum)
+ {
++#if defined(__arm64__)
++	sigbirth_trace(NULL, thread, signum, 0, __builtin_return_address(0));
++#endif
+ 	psignal_internal(PROC_NULL, TASK_NULL, thread, PSIG_THREAD, signum, NULL);
+ }
+ 
 diff --git a/bsd/kern/kpi_socket.c b/bsd/kern/kpi_socket.c
 index 003cfb074a99..c597065f24f1 100644
 --- a/bsd/kern/kpi_socket.c
