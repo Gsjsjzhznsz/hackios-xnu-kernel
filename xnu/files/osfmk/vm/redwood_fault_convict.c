@@ -50,13 +50,45 @@
  * R43_VERBOSE_EVERY-th failure keeps a heartbeat and the running count,
  * and the rest only tick the counter.  Everything is static, nothing is
  * tunable from the command line: this is a forensics round, not a policy.
+ *
+ * R49: THE HOLOGRAM.  The R48 boot settled the census: 128,204 user
+ * aborts rode handle_user_abort (the floor census) while the triage
+ * funnel at exception_triage_thread saw ZERO of them (traps 0/0), and
+ * 1,059 vm_fault failures left this exit -- only 69 of them verbose
+ * (the old 3/16 budget), in two shapes: kr 0x1 KERN_INVALID_ADDRESS on
+ * addresses carrying a garbage top half (0xff7000010122c000 and friends,
+ * the low 48 bits a plausible user address, across init/launchd/xpcproxy
+ * during the exec storm) and kr 0x2 KERN_PROTECTION_FAILURE on read-only
+ * Assets.car pages (SpringBoard's CoreGlyphs above all).  Pristine
+ * sleh.c says a FAILED USER fault must deliver through exception_triage
+ * -- so either these were never user aborts (kernel copyio EFAULTs on
+ * user pointers, a path with no delivery and no triage), or something
+ * between the fault and the delivery eats them.  The R49 knife names the
+ * hand on every verdict: the requested access rides in (caller_prot,
+ * the vm_fault_internal parameter the hook now forwards), each verdict
+ * line names its kr, the no-map-entry verdict prints the map's shape
+ * (entry count, span, first entry bounds, the address's top16/low48
+ * decomposition) and the entry-found verdicts print the entry's own
+ * protection against the ask, and every verbose verdict is preceded by
+ * the faulting thread's upcb line (pc/lr/sp -- the USER state: for a
+ * kernel copyio abort this is the syscall's userland caller, for a user
+ * abort the faulting instruction itself).  The user-abort side of the
+ * question is answered by the sleh.c exit census (redwood_user_fault_*,
+ * user_exception_trace.c): failed user faults tick redwood_user_fault_
+ * deliver on their way to exception_triage, so the singer's arithmetic
+ * (verdicts - delivered) names the kernel-side share.  The budget lifts
+ * with the detail: the first twelve verdicts print in full and one in
+ * every eight after, still try-locked, still flushed.
  */
+#include <arm/thread.h>
 #include <kern/kalloc.h>
 #include <kern/misc_protos.h>
 #include <kern/task.h>
+#include <kern/thread.h>
 #include <machine/atomic.h>
 #include <mach/kern_return.h>
 #include <mach/mach_types.h>
+#include <mach/machine/thread_status.h>
 #include <mach/vm_param.h>
 #include <vm/vm_fault.h>
 #include <vm/vm_kern.h>
@@ -70,18 +102,57 @@ extern char *proc_name_address(void *p);        /* the bsd proc's name buffer */
 extern void *get_bsdtask_info(task_t task);     /* bsd/sys/proc.h (declared here: an osfmk file keeps to its own externs, the file's own precedent above) */
 
 #define R43_PATH_MAX            1024
-#define R43_VERBOSE_FIRST       3
-#define R43_VERBOSE_EVERY       16
+#define R43_VERBOSE_FIRST       12
+#define R43_VERBOSE_EVERY       8
 #define R43_SHADOW_MAX          4
 
 static int r43_fault_verdicts;
 
-void redwood_fault_convict(vm_map_t map, vm_map_offset_t vaddr, kern_return_t kr);
+/* R49: every vm_fault failure that reaches this exit, counted for the
+ * singer's arithmetic (r49_verdicts - delivered = the kernel-side share
+ * of the failures, the share that never rode a user abort).  Non-static:
+ * the adreno minute line reads it. */
+unsigned long long r49_verdicts;
+
+void redwood_fault_convict(vm_map_t map, vm_map_offset_t vaddr, kern_return_t kr, vm_prot_t fault_type);
+
+static const char *
+kr_name(kern_return_t kr)
+{
+        switch (kr) {
+        case KERN_INVALID_ADDRESS:      return "KERN_INVALID_ADDRESS";
+        case KERN_PROTECTION_FAILURE:   return "KERN_PROTECTION_FAILURE";
+        case KERN_NO_SPACE:             return "KERN_NO_SPACE";
+        case KERN_INVALID_ARGUMENT:     return "KERN_INVALID_ARGUMENT";
+        case KERN_FAILURE:              return "KERN_FAILURE";
+        case KERN_MEMORY_ERROR:         return "KERN_MEMORY_ERROR";
+        case KERN_MEMORY_PRESENT:       return "KERN_MEMORY_PRESENT";
+        case KERN_ABORTED:              return "KERN_ABORTED";
+        case KERN_RESOURCE_SHORTAGE:    return "KERN_RESOURCE_SHORTAGE";
+        default:                        return "?";
+        }
+}
+
+static const char *
+fault_type_text(vm_prot_t prot)
+{
+        switch (prot & (VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXECUTE)) {
+        case VM_PROT_READ:                              return "read";
+        case VM_PROT_WRITE:                             return "write";
+        case VM_PROT_EXECUTE:                           return "exec";
+        case VM_PROT_READ | VM_PROT_WRITE:              return "read-write";
+        case VM_PROT_READ | VM_PROT_EXECUTE:            return "read-exec";
+        case VM_PROT_WRITE | VM_PROT_EXECUTE:           return "write-exec";
+        case VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXECUTE: return "read-write-exec";
+        case 0:                                         return "none";
+        default:                                        return "mixed";
+        }
+}
 
 void
-redwood_fault_convict(vm_map_t map, vm_map_offset_t vaddr, kern_return_t kr)
+redwood_fault_convict(vm_map_t map, vm_map_offset_t vaddr, kern_return_t kr, vm_prot_t fault_type)
 {
-        vm_map_entry_t          entry;
+        vm_map_entry_t          entry, first;
         vm_object_t             object;
         vm_object_t             chain[R43_SHADOW_MAX];
         vm_object_offset_t      sizes[R43_SHADOW_MAX];
@@ -96,6 +167,7 @@ redwood_fault_convict(vm_map_t map, vm_map_offset_t vaddr, kern_return_t kr)
         int                     n, pid;
         bool                    verbose;
 
+        (void) os_atomic_add(&r49_verdicts, 1, relaxed);
         pid = proc_selfpid();
         n = os_atomic_add(&r43_fault_verdicts, 1, relaxed);
         verbose = (n <= R43_VERBOSE_FIRST) || ((n % R43_VERBOSE_EVERY) == 0);
@@ -105,6 +177,23 @@ redwood_fault_convict(vm_map_t map, vm_map_offset_t vaddr, kern_return_t kr)
 
         if (get_bsdtask_info(current_task()) != NULL) {
                 procname = proc_name_address(get_bsdtask_info(current_task()));
+        }
+
+        /* R49: the hologram's user-state line, before any lock or sleep.
+         * The upcb holds the thread's USER state even while the kernel
+         * aborts inside copyio -- so this line names the userland hand:
+         * the faulting instruction for a user abort, the syscall's
+         * caller for a kernel copyio abort. */
+        {
+                thread_t thread = current_thread();
+                const arm_saved_state_t *state = get_user_regs(thread);
+
+                if (state != NULL && is_saved_state64(state)) {
+                        printf("redwood-fault: verdict %d context: pc 0x%llx lr 0x%llx sp 0x%llx (the upcb's user state: the faulting instruction, or the syscall's caller when the abort was kernel-side)\n",
+                            n, (uint64_t) get_saved_state_pc(state),
+                            (uint64_t) get_saved_state_lr(state),
+                            (uint64_t) get_saved_state_sp(state));
+                }
         }
 
         /* the name buffer before any lock: Z_WAITOK may sleep, and the locks
@@ -122,8 +211,8 @@ redwood_fault_convict(vm_map_t map, vm_map_offset_t vaddr, kern_return_t kr)
          * from caller states this probe cannot enumerate (wire paths hold
          * the map lock across their faults); busy = skip the deep look */
         if (!vm_map_try_lock_read(map)) {
-                printf("redwood-pager: verdict %d: pid %d[%s] address 0x%llx kr 0x%x: map lock busy, deep look skipped\n",
-                    n, pid, procname, (uint64_t) vaddr, kr);
+                printf("redwood-pager: verdict %d: pid %d[%s] address 0x%llx kr 0x%x (%s) ask %s: map lock busy, deep look skipped\n",
+                    n, pid, procname, (uint64_t) vaddr, kr, kr_name(kr), fault_type_text(fault_type));
                 if (buf != NULL) {
                         kfree_data(buf, R43_PATH_MAX * 2);
                 }
@@ -131,9 +220,26 @@ redwood_fault_convict(vm_map_t map, vm_map_offset_t vaddr, kern_return_t kr)
                 return;
         }
         if (!vm_map_lookup_entry(map, vaddr, &entry) || entry->is_sub_map) {
+                /* R49: the map's shape, while the read lock still holds --
+                 * how many entries the map really has, where its span and
+                 * first entry sit, and the faulting address split into the
+                 * plausible low 48 bits and the top 16 (the R48 boot's
+                 * 0xff7000010122c000 pattern: the low half a user address,
+                 * the top half garbage). */
+                first = (vm_map_entry_t) map->hdr.links.next;
+                if (first == (vm_map_entry_t) &map->hdr.links) {
+                        first = VM_MAP_ENTRY_NULL;
+                }
                 vm_map_unlock_read(map);
-                printf("redwood-pager: verdict %d: pid %d[%s] address 0x%llx kr 0x%x: no map entry\n",
-                    n, pid, procname, (uint64_t) vaddr, kr);
+                printf("redwood-pager: verdict %d: pid %d[%s] address 0x%llx kr 0x%x (%s) ask %s: no map entry"
+                    " (the map holds %d entries spanning 0x%llx..0x%llx; its first entry covers 0x%llx..0x%llx;"
+                    " low48 0x%llx, top16 0x%llx)\n",
+                    n, pid, procname, (uint64_t) vaddr, kr, kr_name(kr), fault_type_text(fault_type),
+                    map->hdr.nentries, (uint64_t) map->min_offset, (uint64_t) map->max_offset,
+                    first != VM_MAP_ENTRY_NULL ? (uint64_t) first->vme_start : 0,
+                    first != VM_MAP_ENTRY_NULL ? (uint64_t) first->vme_end : 0,
+                    (uint64_t) (vaddr & 0xffffffffffffULL),
+                    (uint64_t) ((vaddr >> 48) & 0xffffULL));
                 if (buf != NULL) {
                         kfree_data(buf, R43_PATH_MAX * 2);
                 }
@@ -184,8 +290,8 @@ redwood_fault_convict(vm_map_t map, vm_map_offset_t vaddr, kern_return_t kr)
                         vm_object_unlock(chain[--walk_depth]);
                 }
                 vm_map_unlock_read(map);
-                printf("redwood-pager: verdict %d: pid %d[%s] address 0x%llx kr 0x%x: chain lock busy at depth %d, deep look skipped\n",
-                    n, pid, procname, (uint64_t) vaddr, kr, lock_busy_at);
+                printf("redwood-pager: verdict %d: pid %d[%s] address 0x%llx kr 0x%x (%s) ask %s: chain lock busy at depth %d, deep look skipped\n",
+                    n, pid, procname, (uint64_t) vaddr, kr, kr_name(kr), fault_type_text(fault_type), lock_busy_at);
                 if (buf != NULL) {
                         kfree_data(buf, R43_PATH_MAX * 2);
                 }
@@ -202,21 +308,31 @@ redwood_fault_convict(vm_map_t map, vm_map_offset_t vaddr, kern_return_t kr)
         vm_map_unlock_read(map);
 
         /* the report, after every lock is gone (printf takes the message
-         * buffer's lock; the flush asks the loader to write the log out) */
+         * buffer's lock; the flush asks the loader to write the log out).
+         * R49: the entry's own protection rides against the ask -- a kr 0x2
+         * (KERN_PROTECTION_FAILURE) with ask write and entry r.. names the
+         * hand at once; the entry's span shows how deep inside it the
+         * address fell. */
         for (int i = 0; i <= named - 1; i++) {
                 printf("redwood-pager:   chain %d: size 0x%llx pager %d (shadowed by %d)\n",
                     i, (uint64_t) sizes[i], pagers[i] != NULL, i + 1);
         }
         if (named < 0) {
-                printf("redwood-pager: verdict %d: pid %d[%s] address 0x%llx kr 0x%x fileoff 0x%llx: no pager in the chain\n",
-                    n, pid, procname, (uint64_t) vaddr, kr, (uint64_t) fileoff);
+                printf("redwood-pager: verdict %d: pid %d[%s] address 0x%llx kr 0x%x (%s) ask %s entry 0x%llx..0x%llx prot 0x%x/%x fileoff 0x%llx: no pager in the chain\n",
+                    n, pid, procname, (uint64_t) vaddr, kr, kr_name(kr), fault_type_text(fault_type),
+                    (uint64_t) entry->vme_start, (uint64_t) entry->vme_end,
+                    entry->protection, entry->max_protection, (uint64_t) fileoff);
         } else if (name_kr != KERN_SUCCESS || pathname[0] == '\0') {
-                printf("redwood-pager: verdict %d: pid %d[%s] address 0x%llx kr 0x%x fileoff 0x%llx size 0x%llx: the pager kept its name (kr 0x%x)\n",
-                    n, pid, procname, (uint64_t) vaddr, kr, (uint64_t) fileoff,
+                printf("redwood-pager: verdict %d: pid %d[%s] address 0x%llx kr 0x%x (%s) ask %s entry 0x%llx..0x%llx prot 0x%x/%x fileoff 0x%llx size 0x%llx: the pager kept its name (kr 0x%x)\n",
+                    n, pid, procname, (uint64_t) vaddr, kr, kr_name(kr), fault_type_text(fault_type),
+                    (uint64_t) entry->vme_start, (uint64_t) entry->vme_end,
+                    entry->protection, entry->max_protection, (uint64_t) fileoff,
                     (uint64_t) sizes[named], name_kr);
         } else {
-                printf("redwood-pager: verdict %d: pid %d[%s] address 0x%llx kr 0x%x file \"%s\" (depth %d truncated %d) fileoff 0x%llx size 0x%llx\n",
-                    n, pid, procname, (uint64_t) vaddr, kr, pathname, named,
+                printf("redwood-pager: verdict %d: pid %d[%s] address 0x%llx kr 0x%x (%s) ask %s entry 0x%llx..0x%llx prot 0x%x/%x file \"%s\" (depth %d truncated %d) fileoff 0x%llx size 0x%llx\n",
+                    n, pid, procname, (uint64_t) vaddr, kr, kr_name(kr), fault_type_text(fault_type),
+                    (uint64_t) entry->vme_start, (uint64_t) entry->vme_end,
+                    entry->protection, entry->max_protection, pathname, named,
                     truncated ? 1 : 0, (uint64_t) fileoff, (uint64_t) sizes[named]);
         }
         if (buf != NULL) {

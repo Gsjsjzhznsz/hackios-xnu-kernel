@@ -100,6 +100,136 @@ redwood_fault_seen(void)
         r48_fault_seen++;
 }
 
+/*
+ * R49: THE FUNNEL RE-MOUNTED AT THE PHYSICAL EXITS.  The R48 boot closed
+ * the census: 128,204 user aborts rode handle_user_abort, 1,059 vm_fault
+ * failures left vm_fault_internal (the pager verdicts), and ZERO user
+ * exceptions ever reached the triage funnel (traps 0/0).  Pristine sleh.c
+ * ends handle_user_abort in `exception_triage(exc, codes, numcodes)` --
+ * a failed USER fault must deliver.  So the 1,059 were (a) kernel copyio
+ * aborts recovered to EFAULT (a path with no delivery at all), or (b)
+ * user faults that never made it to the delivery line, or (c) user
+ * faults whose delivery the funnel could not see -- and pristine
+ * exception.c routes exception_triage straight into
+ * exception_triage_thread, where the R44 hook sits.  The R49 knife mounts
+ * the census on handle_user_abort's REAL exits so the singer's arithmetic
+ * closes the question in one boot:
+ *
+ *   faults (the R48 floor census, every entry)
+ *     = redwood_user_fault_exit's share (the page-ins that succeeded or
+ *       were aborted -- counted, never printed: 127K quiet successes)
+ *     + redwood_user_fault_align's share (emulated alignment aborts)
+ *     + redwood_user_fault_deliver's share (the delivery line: every
+ *       genuinely delivered user exception, with its full hologram)
+ *     + the rare parity/else shares (pristine panics or KERN_FAILURE).
+ *
+ * redwood_user_fault_deliver IS the R48 CR3 verdict's own prescription
+ * ("next round records far/esr at sleh"): it receives the abort's real
+ * registers, the real ESR (ec + fsc + the write bit) and the fault's
+ * requested access -- the first eight deliveries print in full (and
+ * flush), then one in every thirty-two keeps the heartbeat.  The verdicts
+ * minus this counter names the kernel-side (copyio EFAULT) share of the
+ * vm_fault failures; the top16/low48 decomposition and the entry
+ * protection rides in the pager verdict (redwood_fault_convict.c).
+ * Non-static: the adreno minute line reads the counters.
+ */
+unsigned long long r49_uf_ok, r49_uf_aborted, r49_uf_align, r49_uf_delivered;
+
+static unsigned long long r49_deliver_lines;
+
+static const char *
+r49_ec_text(unsigned int ec)
+{
+        switch (ec) {
+        case 0x20: return "IABORT_EL0";
+        case 0x21: return "IABORT_EL1";
+        case 0x24: return "DABORT_EL0";
+        case 0x25: return "DABORT_EL1";
+        case 0x22: return "PC_ALIGN";
+        case 0x26: return "SP_ALIGN";
+        case 0x2f: return "SERROR";
+        default:   return "ec?";
+        }
+}
+
+static const char *
+r49_fsc_text(unsigned int fsc)
+{
+        switch (fsc & 0x3f) {
+        case 0x04: return "translation L0";
+        case 0x05: return "translation L1";
+        case 0x06: return "translation L2";
+        case 0x07: return "translation L3";
+        case 0x09: case 0x0a: case 0x0b: return "access-flag";
+        case 0x0d: return "permission L1";
+        case 0x0e: return "permission L2";
+        case 0x0f: return "permission L3";
+        case 0x10: return "sync-external";
+        case 0x21: return "alignment";
+        case 0x22: return "debug";
+        case 0x30: return "tlb-conflict";
+        default:   return "fsc?";
+        }
+}
+
+/* sleh.c handle_user_abort: the page-in worked, or the page-in was
+ * interrupted (KERN_ABORTED -- a silent pristine return with NO delivery:
+ * if the R48-era storms page in under signal pressure, this counter is
+ * where it shows).  Called at the pristine `return` only -- 127K boots'
+ * worth of successes stay a counter, never a line. */
+void
+redwood_user_fault_exit(kern_return_t result)
+{
+        if (result == KERN_ABORTED) {
+                r49_uf_aborted++;
+        } else {
+                r49_uf_ok++;
+        }
+}
+
+/* sleh.c handle_user_abort: the alignment abort emulated (or redrives
+ * after a copyin failure) -- thread_exception_return, no delivery. */
+void
+redwood_user_fault_align(void)
+{
+        r49_uf_align++;
+}
+
+/* sleh.c handle_user_abort, at the delivery line: every user exception
+ * that genuinely leaves for exception_triage counts here, the first
+ * eight with the full hologram.  This is the trap funnel's re-mount:
+ * if lines print HERE while the R44 funnel still shows seen 0, the
+ * disconnect is BELOW the delivery line; if this counter stays 0 while
+ * the pager verdicts climb, the failures were never user aborts at all. */
+void
+redwood_user_fault_deliver(const arm_saved_state_t *state, unsigned int esr, uint64_t fault_addr,
+    unsigned int fault_code, unsigned int fault_type, exception_type_t exc, uint64_t code0)
+{
+        thread_t thread = current_thread();
+        task_t task;
+        struct proc *proc;
+
+        r49_uf_delivered++;
+        if (r49_deliver_lines >= 8 && (r49_uf_delivered % 32) != 0) {
+                return;
+        }
+        r49_deliver_lines++;
+        task = get_threadtask(thread);
+        proc = task ? get_bsdtask_info(task) : NULL;
+        printf("r49-deliver: %s[%d] exc %d code 0x%llx: pc 0x%llx lr 0x%llx sp 0x%llx far 0x%llx"
+            " esr 0x%x (ec 0x%x %s, fsc 0x%x %s, write %d), ask 0x%x\n",
+            proc ? proc_name_address(proc) : "?", proc ? proc_pid(proc) : -1,
+            exc, (unsigned long long) code0,
+            state ? (unsigned long long) get_saved_state_pc(state) : 0,
+            state ? (unsigned long long) get_saved_state_lr(state) : 0,
+            state ? (unsigned long long) get_saved_state_sp(state) : 0,
+            (unsigned long long) fault_addr, esr,
+            (esr >> 26) & 0x3f, r49_ec_text((esr >> 26) & 0x3f),
+            fault_code & 0x3f, r49_fsc_text(fault_code),
+            (int) ((esr >> 6) & 1), fault_type);
+        (void) loader_log_flush();
+}
+
 static bool
 plausible_user_address(uint64_t address)
 {

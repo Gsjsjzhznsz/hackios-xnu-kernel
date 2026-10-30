@@ -3349,9 +3349,9 @@ diff --git a/osfmk/vm/vm_fault.c b/osfmk/vm/vm_fault.c
 +	 * Kernel-map faults stay out; the helper throttles itself.
 +	 */
 +	if (kr != KERN_SUCCESS && map != kernel_map) {
-+		extern void redwood_fault_convict(vm_map_t, vm_map_offset_t, kern_return_t);
++		extern void redwood_fault_convict(vm_map_t, vm_map_offset_t, kern_return_t, vm_prot_t);
 +
-+		redwood_fault_convict(map, real_vaddr, kr);
++		redwood_fault_convict(map, real_vaddr, kr, caller_prot);
 +	}
 +
  	return kr;
@@ -3373,3 +3373,45 @@ index 2cc442e..f6d0059 100644
  	(void)esr;
  	(void)expected_fault_handler;
  
+@@ -1403,6 +1407,9 @@ handle_user_abort: the page-in worked, or was aborted
+ 		if (thread->t_rr_state.trr_fault_state != TRR_FAULT_NONE) {
+ 			thread_reset_pcs_done_faulting(thread);
+ 		}
+ 		if (result == KERN_SUCCESS || result == KERN_ABORTED) {
++				extern void redwood_user_fault_exit(kern_return_t result);
++
++				redwood_user_fault_exit(result);
+ 			return;
+ 		}
+@@ -1420,11 +1428,14 @@ handle_user_abort: the alignment abort emulated
+ 		kern_return_t vmfkr = KERN_SUCCESS;
+ 		thread->machine.recover_esr = 0;
+ 		thread->machine.recover_far = 0;
+ 		int result = handle_alignment_fault_from_user(state, &vmfkr);
+ 		if (result == 0) {
+ 			/* Successfully emulated, or instruction
+ 			 * copyin() for decode/emulation failed.
+ 			 * Continue, or redrive instruction.
+ 			 */
++			extern void redwood_user_fault_align(void);
++
++			redwood_user_fault_align();
+ 			thread_exception_return();
+ 		} else if (((result == EFAULT) || (result == EINVAL)) &&
+@@ -1476,9 +1488,16 @@ handle_user_abort: the delivery line, the funnel re-mounted
+ 	codes[1] = fault_addr;
+ #if __has_feature(ptrauth_calls)
+ 	bool is_data_abort = (ESR_EC(esr) == ESR_EC_DABORT_EL0);
+ 	if (user_fault_addr_matches_pac_error_code(fault_addr, is_data_abort)) {
+ 		exc |= EXC_PTRAUTH_BIT;
+ 	}
+ #endif /* __has_feature(ptrauth_calls) */
++	{
++		extern void redwood_user_fault_deliver(const arm_saved_state_t *state, unsigned int esr,
++		    uint64_t fault_addr, unsigned int fault_code, unsigned int fault_type,
++		    exception_type_t exc, uint64_t code0);
++
++		redwood_user_fault_deliver(state, esr, fault_addr, fault_code, fault_type, exc, codes[0]);
++	}
+ 	exception_triage(exc, codes, numcodes);
+ 	__builtin_unreachable();
