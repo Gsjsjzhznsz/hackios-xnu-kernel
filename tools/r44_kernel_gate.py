@@ -45,11 +45,14 @@ at the R43 release kernel:
                shrink and stays under 16 KiB of growth; every OTHER payload
                segment keeps its file size and shifts by exactly the __TEXT
                growth; __LINKEDIT absorbs the rest of the file delta.
-  5. strings:  computed with the volatile regions MASKED OUT: every string
-               r44 gains is the R44 marker, a "redwood-pager:" format, or a
-               Darwin version line; every string it loses is the R43 marker
-               or a Darwin line.  The marker must live OUTSIDE the masked
-               spans.
+  5. strings:  computed with the volatile regions AND THE CODE SEGMENTS MASKED
+               OUT (the run-12 lesson: machine code is not strings -- changed
+               __TEXT_EXEC instruction bytes can carry a >= 8-char printable
+               run by accident, while every literal this law polices lives in
+               a DATA segment): every string r44 gains is the R44 marker, a
+               "redwood-pager:" format, or a Darwin version line; every
+               string it loses is the R43 marker or a Darwin line.  The
+               marker must live OUTSIDE the masked spans.
   6. symtab:   r44 carries at least as many symbols as the R43 release.
 
 usage:
@@ -219,9 +222,21 @@ def main():
         ' payload segment keeps its size and shifts by exactly +%d; __LINKEDIT +%d B == the rest'
         % (len(segs_n), shift, shift, link_n[2] - link_o[2]))
 
-    # 5. strings delta, volatile regions masked
-    mask_o = [(0, lc_end_o), (sym_o['symoff'], len(old))]
-    mask_n = [(0, lc_end_n), (sym_n['symoff'], len(new))]
+    # 5. strings delta, volatile regions AND code segments masked
+    #    THE RUN-12 LESSON (40976283142): machine code is not strings.  The
+    #    trace edits live in __TEXT_EXEC, and changed instruction bytes can
+    #    carry a >= 8-char printable run by accident (ADRP/ADD immediate
+    #    fields) -- run 12 died on three such ghosts (b'J1a9kAa9' and kin,
+    #    each x1 in the file, framed by ADRP encodings on both sides) with
+    #    the knife innocent.  Every literal this law polices (the markers,
+    #    the "redwood-pager:" verdict formats, the Darwin stamps) lives in a
+    #    DATA segment, so the scan masks the code segments out on BOTH sides
+    #    and keeps its full teeth on every data region.
+    CODE_SEGS = (b'__TEXT_EXEC', b'__PRELINK_TEXT', b'__PLK_TEXT_EXEC')
+    code_o = [(fo, fo + fs) for (name, fo, fs) in segs_o if name in CODE_SEGS and fs]
+    code_n = [(fo, fo + fs) for (name, fo, fs) in segs_n if name in CODE_SEGS and fs]
+    mask_o = [(0, lc_end_o)] + code_o + [(sym_o['symoff'], len(old))]
+    mask_n = [(0, lc_end_n)] + code_n + [(sym_n['symoff'], len(new))]
     o_str = masked_strings(old, mask_o)
     n_str = masked_strings(new, mask_n)
     gained, lost = n_str - o_str, o_str - n_str
@@ -231,13 +246,14 @@ def main():
 
     bad_gain = [s for s in gained if not allowed_gain(s)]
     bad_loss = [s for s in lost if not (s == R43_MARKER or DARWIN.search(s))]
-    assert not bad_gain, 'r44 gains unexpected strings (outside symtab/load cmds): %s' % [s[:64] for s in bad_gain[:5]]
+    assert not bad_gain, 'r44 gains unexpected strings (outside symtab/load cmds, code segs masked): %s' % [s[:64] for s in bad_gain[:5]]
     assert not bad_loss, 'r44 loses unexpected strings: %s' % [s[:64] for s in bad_loss[:5]]
     assert R44_MARKER in gained, 'the R44 marker is missing from the masked delta'
     assert R43_MARKER in lost, 'the R43 marker did not show up as a masked loss (it must be retired from rodata)'
     assert not in_masks(new.find(R44_MARKER), mask_n), \
         'the R44 marker sits inside a masked span -- smuggled?'
-    say('strings law: masked delta: gained %d (the R44 marker + the redwood-pager formats + %d Darwin stamp lines),'
+    say('strings law: masked delta (code segs masked too -- machine code is not strings, the run-12 law):'
+        ' gained %d (the R44 marker + the redwood-pager formats + %d Darwin stamp lines),'
         ' lost %d (the R43 marker + Darwin stamps); the marker at %#x rides real rodata'
         % (len(gained), sum(1 for s in gained if DARWIN.search(s)), len(lost), new.find(R44_MARKER)))
 
