@@ -1676,3 +1676,13 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 工具三件重锚（base = R46 发布内核 be36b679）：`r47_kernel_gate.py`（六律重锚 + sigbirth 律改双侧 x1/x1 + **新 flush 通道律：两侧 strtab 必含 loader_log_flush 符号**（R46 base 已有 pager/adreno 调用者）+ strings 律白名单收窄至 R47 marker）；`r47-kernel-id.py`（KNOWN += R46 = be36b679"the R47 gate BASE"；新内核分支断言 R47 marker + sigbirth/sigpost 格式双侧 + R46..R40 零残留；卷/loader 谱系延展 R39..R47）；`r47_flash_build.py`（底板 = r46 发布：daily b0f9f6df / GPU a2bc0222 / 内核条目 be36b679 + flush 符号断言）。springboard.yml 24 输入 repin：底板 URL 指向 r46-springboard、GPU 底板改判 R46、id_gates 判 R47、判读树 **SB1'（数据必达版：flush 后 logdump 必有 sigbirth 行；仍零行 = 记录仪真没跑 = exit(reason) 自戕腿重启）–SB5** 预注册进 README/release。
 
 离线证明 **24/24 GREEN**（`scripts/r47_univ_round_proof.py`）：P1 YAML 九断言（SHA 四钉 + 判词 grep 对齐 + retired 集完整）+ P2 源码五断言（四 flush 落位 [156/197/310/353]、extern 先于使用、R47 立法注释、marker 56B 换装）+ P3 patch 三断言（74 段、sigbirth x6、decl-before-call 律续行）+ P4 flush 普查 x10（记录仪 x4 + pager 判词 x4 + adreno x2）+ P5 工具链对真 R46 释出 GPU 镜像的正负判定（kernel-id 判 R46 = gate BASE；flash 拒 R46 内核死于 R47 marker 断言；gate 拒逐字节对死于 byte-identical 律）。
+
+## R47-fix 立档（2026-10-30，run 41040910832 验尸：Release 标题的 256 字铁顶）
+
+**run 验尸（发布死亡，非构建死亡）**：前五步全绿（磁盘 / 取树+底板三件 SHA 硬校验+底板判读 / theos+SDK / xnu-deps / ccache），step③ 内核构建过关（KSHA 3f225c40… 入 GITHUB_ENV），④打镜像、⑤复证门禁全过，⑥ SHA256SUMS/README/8 资产预检全就位——死在 **⑥b 发布步：softprops/action-gh-release 422 "Validation Failed: field:name, name is too long (maximum is 256 characters)"**。根因 = R47 把整段 496 字符判读叙事塞进了 `release_name` dispatch 默认值（R41-R46 标题都短，本轮首破 256 字铁顶；叙事本已在 `release_body` 全量承载，name 里那份纯属冗余）。构建产物完整但 release 创建被 API 拒绝，tag 未落，无资产可收割。
+
+**修复（最小刀，叙事零丢失）**：`release_name` 默认值 496→**139 字符**（"R47 · 纯血 hackios SpringBoard · flush 必达轮（R46 判读：通道死亡非记录仪死亡，四记录仪行尾补 loader_log_flush()；内核 = R46 + 一文件，cmdline 仍 R39 形 verbatim；判决树 SB1'–SB5）"），教训注释两行刻进 yml（"判读叙事全部写进 release_body（无此上限），release_name 只留一行标题"）。release_body / 判读树 / 工具三件 / 底板钉 / marker / 源码 / patch **全部原样**——纯标题修复，empty-inputs dispatch 即 R47 重发布。
+
+**电池新律法：release title ≤ 256**：P1 新增 `P1 release title fits the GitHub 256-char cap`（len 文本级断言，run 41040910832 教训入册——R46-fix 的 decl-before-call 同款先例：CI 死过一次的东西必须进电池）。离线证明 **25/25 GREEN**（原 24 项全绿 + 新律法亲测 len=139）。
+
+**重派发**：commit 54d9626 push main（0aa6480..54d9626）→ empty-inputs dispatch → **run 41043191263**（54d96263）in_progress。 盯守协议照旧：in_progress 回一行；SUCCESS → 收割协议（四资产 + r47-kernel-id 判读 + GATE GREEN + kernel-sha 对 run 产出）；FAILURE → 验尸协议。
