@@ -5,15 +5,15 @@ on:
       round:
         description: "轮次短名（r41/r42/…）：缓存键、产物与资产文件名的唯一来源"
         required: true
-        default: "r46"
+        default: "r47"
       release_tag:
         description: "Release tag（直链的一部分）"
         required: true
-        default: "r46-springboard"
+        default: "r47-springboard"
       release_name:
         description: "Release 标题"
         required: true
-        default: "R46 · 纯血 hackios SpringBoard · sigbirth 询凶轮③（记录仪上移到出生点：R45 判读——刀上膛而零响，144 死无一穿过 bsd_exception；白苹果 = flip 2/3 = SpringBoard/CoreAnimation 首次真翻页 = 突破；源码定案：proc_terminate 只发 memorystatus 的 SIGKILL/SIGTERM，真正同时解释 usertrap+sigpost 双静默的漏斗 = ux_handler（任务自己的异常处理器线程，ux_exception 把 EXC_BAD_ACCESS/KERN_PROTECTION_FAILURE 翻译成 SIGBUS，threadsignal(.., TRUE) 投递，不经 psignal、不产生 SOFT_SIGNAL 投递、不碰 triage）；R46 在 psignal / psignal_with_reason / psignal_uthread / threadsignal 四个变量信号号漏斗挂节流 sigbirth 行（目标+信号号+code+零滑动出生点+当前进程），一 boot 点名每只喂信号的手；内核 = R45 + 两文件改造；其余 = r45 原字节；cmdline 仍 R39 形 verbatim）"
+        default: "R47 · 纯血 hackios SpringBoard · flush 必达轮（R46 真机判读：loader 上报 kernel size 0x1038b00 = 释出字节逐字一致（真机确实在跑 R46），launchd 浪潮满强度（lsd×63 + analyticsd×8，每死皆 SIGBUS | sent by exc handler[own pid] = ux_handler 出生——主嫌预测波形精确复现），panic 护栏 PASS，白苹果维持（SpringBoard activation answered）——但 logdump 无一行 sigbirth。判读定案：通道死亡，非记录仪死亡——R46 logdump 连 memorystatus 都 0 行（R42 logdump 有 182 行，memorystatus printf 四轮未动 = 真机必打而不见）；快照段 690 行中 666 行是 adreno 轮询（8 行/秒重写环形 buffer，记录仪行出生即被覆盖）；R42 verdict 幸存是因为它打完即调 loader_log_flush()（\"the flush asks the loader to write the log out\"）——flush 过的行进 logdump 分区全量保留。R47 一刀：四记录仪（usertrap/sigpost/sigbirth/userabort）行尾补 loader_log_flush()（R42 verdict 真机先例，78 次 flush 无恙；节流预算限频不变）；内核 = R46 + 一文件改造；其余 = r46 原字节；cmdline 仍 R39 形 verbatim）"
       kernel_repo:
         description: "hackios 内核树 fork（含 xnu/ + tools/）"
         required: true
@@ -25,7 +25,7 @@ on:
       base_daily_url:
         description: "底板日常镜像直链（SHA 必填；本轮日常镜像的来源）"
         required: true
-        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r45-springboard/raphael-xnu-r45-flash.img"
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r46-springboard/raphael-xnu-r46-flash.img"
       base_daily_sha:
         description: "底板日常镜像 sha256（对官方字节硬校验）"
         required: true
@@ -33,15 +33,15 @@ on:
       base_gpu_url:
         description: "底板 GPU 镜像直链（外科手术的底板）"
         required: true
-        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r45-springboard/raphael-xnu-r45-gpu-flash.img"
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r46-springboard/raphael-xnu-r46-gpu-flash.img"
       base_gpu_sha:
         description: "底板 GPU 镜像 sha256"
         required: true
-        default: "aab351e3dde563603a0f85826949ce058c9030bf49b84b1f9cb73729be685aa2"
+        default: "a2bc0222dd8338e791ad21c99466c6871ea99c3b42d6e2b06b6b96d31926e626"
       base_flashboot_url:
         description: "底板启动卷直链（原样转发进 Release）"
         required: true
-        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r45-springboard/raphael-r45-flashboot.apfs"
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r46-springboard/raphael-r46-flashboot.apfs"
       base_flashboot_sha:
         description: "底板启动卷 sha256"
         required: true
@@ -51,22 +51,22 @@ on:
         required: false
         default: |
           loader.efi=4bf828e425e4b59d3668461ff89ef290dfbf3215cceec903f1662255fe45a3db
-          kernel=d38974bfe3239297f0a03b4280072b4681817d3e9053f314cbf10e0f86309bd0
+          kernel=be36b679f478509eb15dee7d05b2314a87dbc095d65c78992d74f5351f67f8b9
           ramdisk=5b9bbbcb6b5ede61d734bf8144fc639d4e419a22bb81e7d6cf93141f4fbe8746
       base_id_cmd:
         description: "底板判读命令（可选；空 = 跳过。占位符：$BASE_DAILY $BASE_GPU $BASE_IDFILE）"
         required: false
-        default: "python3 tools/r46-kernel-id.py \"$BASE_DAILY\" \"$BASE_GPU\" | tee \"$BASE_IDFILE\""
+        default: "python3 tools/r47-kernel-id.py \"$BASE_DAILY\" \"$BASE_GPU\" | tee \"$BASE_IDFILE\""
       base_id_gates:
         description: "底板判读门禁（bash；占位符：$BASE_IDFILE。空 = 跳过）"
         required: false
         default: |
           grep -c "the kernel entry is R33" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::日常底板的内核必须判为 R33（控制组）"; exit 1; }
-          grep -c "the kernel entry is R45" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::GPU 底板的内核必须判为 R45（R46 的门禁基准）"; exit 1; }
+          grep -c "the kernel entry is R46" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::GPU 底板的内核必须判为 R46（R47 的门禁基准）"; exit 1; }
           grep -q "the cmdline is the R39 GPU form verbatim" "$BASE_IDFILE" || { echo "::error::GPU 底板的 cmdline 不是 R39 组原样"; exit 1; }
           grep -c "the cmdline is the daily image WITHOUT" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::日常底板的 cmdline 应无任何 gpu token"; exit 1; }
           # 门禁必须 grep 工具的真实判定词，不能写起草者假设的那句（run 40838276403 教训）：
-          grep -c "the ramdisk entry is R39..R46" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::GPU 底板的小卷不是 R39..R46 卷（5b9bbbcb）"; exit 1; }
+          grep -c "the ramdisk entry is R39..R47" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::GPU 底板的小卷不是 R39..R47 卷（5b9bbbcb）"; exit 1; }
           grep -c "the ramdisk entry is R13..R33" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::日常底板的小卷不是 R13 谱系"; exit 1; }
       pre_gate_py:
         description: "门禁一/二（python，argv[1]=新内核路径）：谱系 + 换代件标记逐字在字节里"
@@ -84,13 +84,14 @@ on:
           assert n('R43: the probe try-locks first or walks away, no recurse') == 0, 'the retired R43 marker still rides'
           assert n('R44: the kernel asks each fatal exception to name itself') == 0, 'the retired R44 marker still rides'
           assert n('R45: the signal funnel writes who died and what was sent') == 0, 'the retired R45 marker still rides'
+          assert n('R46: the signal birth ledger names every hand that feeds') == 0, 'the retired R46 marker still rides'
           for mark, why in [
               ('raphael-display: three scanout buffers, VIG0/CTL0, hardware TE', 'the display round (adreno side)'),
               ('display: raphael command TE:', 'the TE phase measurement (display.c)'),
               ('page flips retained (fb_scan=1)', 'the fb_scan boot-arg'),
               ('wifi: raphael needs WCN3990 SNOC/ath10k and MPSS service 0x45', 'the raphael Wi-Fi branch'),
               ('raphael-display: flip did not latch at TE, restoring boot framebuffer', 'the flip fallback'),
-              ('R46: the signal birth ledger names every hand that feeds', 'THE R46 sigbirth marker'),
+              ('R47: the flush rule lands every born line in the logdump', 'THE R47 flush marker'),
           ]:
               assert n(mark) == 1, '%s x%d != 1 (%s)' % (mark, n(mark), why)
           assert n('sigbirth: %s[%d] signal %d code 0x%llx from 0x%llx by %s[%d]\n') == 1, 'the sigbirth format x%d != 1 (the birth wire must be packed)' % n('sigbirth: %s[%d] signal %d code 0x%llx from 0x%llx by %s[%d]\n')
@@ -99,29 +100,29 @@ on:
           assert n('redwood-pager: verdict') == 6, 'the pager verdict literal x%d != 6 (the four R42 verdict formats + the two R43 busy formats)' % n('redwood-pager: verdict')
           assert n('XNULIVE4') >= 1, 'the R38 loader-framebuffer channel mark is missing (x%d)' % n('XNULIVE4')
           assert n('wifi_step') >= 1, 'the wifi boot-arg surface is missing'
-          print('门禁一/二全过：R33 谱系 4 项 + R38 显示/WiFi/通道 5 项 + 取证字面量 2 处 + pager 判词 6 处 + R46 标记 1 项 + sigbirth 格式 1 项 + sigpost 格式 1 项 + R45/R44/R43/R42/R41/R40 标记零残留')
+          print('门禁一/二全过：R33 谱系 4 项 + R38 显示/WiFi/通道 5 项 + 取证字面量 2 处 + pager 判词 6 处 + R47 标记 1 项 + sigbirth 格式 1 项 + sigpost 格式 1 项 + R46/R45/R44/R43/R42/R41/R40 标记零残留')
       kernel_gate_cmd:
         description: "门禁三命令模板（可选；占位符：$BASE_KERNEL $K $KU $KSHA $REL $R）"
         required: false
-        default: "python3 tools/r46_kernel_gate.py --r45-kernel \"$BASE_KERNEL\" --r46-kernel \"$K\" --report \"$REL/${R}-kernel-gate.txt\" | tee \"$REL/${R}-kernel-gate-run.txt\""
+        default: "python3 tools/r47_kernel_gate.py --r46-kernel \"$BASE_KERNEL\" --r47-kernel \"$K\" --report \"$REL/${R}-kernel-gate.txt\" | tee \"$REL/${R}-kernel-gate-run.txt\""
       flash_build_cmd:
         description: "④ 手术命令模板（必填；占位符：$BASE_DAILY $BASE_GPU $K $REL $R）"
         required: true
-        default: "python3 tools/r46_flash_build.py --daily \"$BASE_DAILY\" --gpu \"$BASE_GPU\" --kernel \"$K\" --out-daily \"$REL/raphael-xnu-${R}-flash.img\" --out-gpu \"$REL/raphael-xnu-${R}-gpu-flash.img\" | tee \"$REL/${R}-pack.txt\""
+        default: "python3 tools/r47_flash_build.py --daily \"$BASE_DAILY\" --gpu \"$BASE_GPU\" --kernel \"$K\" --out-daily \"$REL/raphael-xnu-${R}-flash.img\" --out-gpu \"$REL/raphael-xnu-${R}-gpu-flash.img\" | tee \"$REL/${R}-pack.txt\""
       kernel_id_cmd:
         description: "⑤ 判读命令模板（必填；占位符：$REL $R $KSHA）"
         required: true
-        default: "python3 tools/r46-kernel-id.py \"$REL/raphael-xnu-${R}-flash.img\" \"$REL/raphael-xnu-${R}-gpu-flash.img\" --expect-loader-sha 4bf828e425e4b59d3668461ff89ef290dfbf3215cceec903f1662255fe45a3db --expect-kernel-sha \"$KSHA\" --expect-volume-sha 5b9bbbcb6b5ede61d734bf8144fc639d4e419a22bb81e7d6cf93141f4fbe8746 | tee \"$IDFILE\""
+        default: "python3 tools/r47-kernel-id.py \"$REL/raphael-xnu-${R}-flash.img\" \"$REL/raphael-xnu-${R}-gpu-flash.img\" --expect-loader-sha 4bf828e425e4b59d3668461ff89ef290dfbf3215cceec903f1662255fe45a3db --expect-kernel-sha \"$KSHA\" --expect-volume-sha 5b9bbbcb6b5ede61d734bf8144fc639d4e419a22bb81e7d6cf93141f4fbe8746 | tee \"$IDFILE\""
       id_gates:
         description: "⑤ 复证门禁（bash；占位符：$IDFILE。教训：必须 grep 工具的真实判定词，run 40838276403）"
         required: true
         default: |
           grep -c "loader  sha256" "$IDFILE" | grep -qx 2 || { echo "::error::双镜像都要读到 loader 条目"; exit 1; }
-          grep -c "the kernel entry is R46" "$IDFILE" | grep -qx 1 || { echo "::error::GPU 镜像内核判词不是 R46（本轮 sigbirth 询凶构建）"; exit 1; }
+          grep -c "the kernel entry is R47" "$IDFILE" | grep -qx 1 || { echo "::error::GPU 镜像内核判词不是 R47（本轮 flush 必达构建）"; exit 1; }
           grep -c "the kernel entry is R33" "$IDFILE" | grep -qx 1 || { echo "::error::日常镜像内核必须仍是 R33（控制组）"; exit 1; }
-          grep -c "the cmdline is the R39 GPU form verbatim" "$IDFILE" | grep -qx 1 || { echo "::error::GPU 镜像 cmdline 不是 R39 组原样（R46 零 cmdline 改动，sigbirth 默认开无需 boot-arg）"; exit 1; }
+          grep -c "the cmdline is the R39 GPU form verbatim" "$IDFILE" | grep -qx 1 || { echo "::error::GPU 镜像 cmdline 不是 R39 组原样（R47 零 cmdline 改动，记录仪与 flush 默认开无需 boot-arg）"; exit 1; }
           grep -c "the cmdline is the daily image WITHOUT" "$IDFILE" | grep -qx 1 || { echo "::error::日常镜像必须无任何 gpu token（控制组原样）"; exit 1; }
-          grep -c "the ramdisk entry is R39..R46" "$IDFILE" | grep -qx 1 || { echo "::error::GPU 镜像小卷不是 R39..R46 卷（5b9bbbcb）"; exit 1; }
+          grep -c "the ramdisk entry is R39..R47" "$IDFILE" | grep -qx 1 || { echo "::error::GPU 镜像小卷不是 R39..R47 卷（5b9bbbcb）"; exit 1; }
           grep -c "the ramdisk entry is R13..R33" "$IDFILE" | grep -qx 1 || { echo "::error::日常镜像小卷不是 R13 谱系"; exit 1; }
       pre_release_cmd:
         description: "⑥ 前置命令模板（可选；转发/台账等；占位符：$BASE_FLASHBOOT $BASE_GPU $REL $R）"
@@ -138,124 +139,101 @@ on:
         description: "README.txt 全文（逐字进 Release 资产）"
         required: true
         default: |
-          raphael (K20 Pro) R46 交付包：**sigbirth 询凶轮③（出生点记录仪）**。
+          raphael (K20 Pro) R47 交付包：**flush 必达轮（询凶续集）**。
 
-          R45 真机判读入账（6354 行）：白苹果 = 突破——flip 1 = adreno
-          step 22 三色测试帧（R43/R44 同）；flip 2/3 = SpringBoard/
-          CoreAnimation 开天辟地第一次真翻页（redwood-gl: -attachImage:
-          IOSurface 4 'BGRA' 1125 x 2436 整屏面上传 → GL 绘制 →
-          render_update → raphael-display: flip 2/3 latched）——iOS 开机
-          白苹果画面是 SpringBoard 自己画上去的，随后管线被浪潮杀死，
-          面板冻在白苹果；backboardd[9] 本 boot 活到 startup complete
-          7.99545s（R44 是 HID open 当口秒死）。SP1 零响但浪潮更大：
-          144 死 = lsd×108 + analyticsd×28 + backboardd×8（每 boot 换
-          一批受害者，用户态次序竞态第三次确认）。刀上膛验证：发布
-          内核 _bsd_exception 入口恰一条 BL _sigpost_trace（全内核唯一
-          调用点），开关静态初值 = 1——记录仪活、开、上膛、零响 =
-          144 死无一穿过 bsd_exception。且全内核 38 psignal +
-          6 psignal_with_reason + 3 threadsignal 出生点的信号寄存器逐点
-          反解：没有任何一点硬编码发 SIGBUS(0xa)。
+          R46 真机判读入账（4469 行）：真机确实在跑 R46——loader 上报
+          kernel size 0x1038b00 = 17,009,408 B = 释出内核逐字节；
+          launchd 浪潮满强度：lsd×63 连崩 + analyticsd×8，每一条死因
+          都是 "exited due to SIGBUS | sent by exc handler[own pid]"
+          ——死者自己的 Mach 异常处理器线程发放 = ux_handler 出生，
+          R46 主嫌预测波形精确复现。SB3 panic 护栏 PASS；白苹果维持
+          （SpringBoard activation answered）。
 
-          R46 定案（源码级）：proc_terminate 只发 memorystatus 的
-          SIGKILL/SIGTERM——“用户态经 proc_info 传 0xa”假说源头即死。
-          真正同时解释两轮静默（usertrap + sigpost）的漏斗 =
-          ux_handler：任务自己的异常处理器线程（launchd 话术
-          "exc handler[own pid]" 字面成立）经 ux_exception() 把真故障
-          翻译成 UNIX 信号（EXC_BAD_ACCESS / KERN_PROTECTION_FAILURE
-          → SIGBUS）并以 threadsignal(.., TRUE) 投递——不经过 psignal、
-          不产生 bsd_exception(EXC_SOFT_SIGNAL) 投递、不碰
-          exception_triage。R46 一刀：记录仪上移到出生点——
-          sigbirth_trace() 挂 psignal / psignal_with_reason /
-          psignal_uthread（pthread_kill）/ threadsignal（ux_handler 之
-          口，R45 验尸的 handle_ux_exception+0x10c）四个变量信号号
-          漏斗，每信号出生一条节流行：目标 + 信号号 + code + 出生点
-          （caller 返回地址，零滑动直对发布符号表）+ 当前进程。全新
-          (名字，信号) 键控节流（每键首 4 全量、之后每 16 次一次——
-          SIGCHLD 风暴不得吃掉浪潮行）；R44/R45 旧线全保留。标记同长
-          换替（56 B）。
+          但 logdump 无一行 sigbirth。判读定案：通道死亡，非记录仪
+          死亡——三条铁证：(1) R46 logdump 连 memorystatus 都 0 行，
+          而 R42 logdump 有 182 行，memorystatus printf 四轮从未改动
+          = 真机必打而不见；(2) 快照段 690 行中 666 行是 adreno 轮询
+          的传感器/时钟行（~8 行/秒，环形 message buffer 被它持续
+          重写，记录仪行出生即被覆盖）；(3) R42 verdict 之所以幸存，
+          是因为它打完即调 loader_log_flush()——"the flush asks the
+          loader to write the log out"，flush 过的行进 logdump 分区
+          全量保留。R45/R46 的记录仪只 printf 不 flush：刀一直在挥，
+          行全部死在了 buffer 里。
+
+          R47 一刀：四记录仪（usertrap / sigpost / sigbirth /
+          userabort）行尾补 loader_log_flush()（R42 verdict 真机先例；
+          78 次 flush 跑过 R42 的 boot 无恙；节流预算限频不变——
+          flush 频率 = 打行频率）。标记同长换替（56 B）。
 
           【刷机与取证】
-          1. fastboot flash boot raphael-xnu-r46-gpu-flash.img; fastboot reboot
+          1. fastboot flash boot raphael-xnu-r47-gpu-flash.img; fastboot reboot
           2. 让它跑 >= 4 分钟（浪潮自然复现；画面预期白苹果或更好）
           3. 五指按住屏幕 1.5 秒 = 退回 loader
-          4. 二次 boot 抓 logdump 回传
-          【判读树 SB】
-          SB1 = 定罪（主目标）：logdump 找
-                "sigbirth: <name>[pid] signal N code 0x.. from 0x.. by <name2>[pid2]"
-                行——一 boot 内核侧点名每个信号出生：谁中招、什么信号、
-                什么 code、从哪里出生（0x.. 零滑动对发布符号表定名）、
-                谁在跑。浪潮预期形态：signal 10 code 0x2..
+          4. 二次 boot 抓 logdump 回传（KERNEL LOG 快照多抓几轮更好）
+          【判读树 SB1'-SB5】
+          SB1' = 定罪（数据必达版）：flush 之后 logdump 必有
+                "sigbirth: <name>[pid] signal N code 0x.. from 0x.. by
+                <name2>[pid2]" 行——预期形态 signal 10 code 0x2..
                 （KERN_PROTECTION_FAILURE 类）from _handle_ux_exception
-                ——ux_handler 主嫌当庭对质。若 from 落在
-                _proc_terminate/_psignal 系 = 走政策/kill 路，by 字段
-                点名请求者；若出现完全未知的 0x.. = 立即重判。
-          SB2 = 节流纪律：sigbirth 行数有界（每 (名字，信号) 键 ≤ 4 +
-                计数/16），SIGCHLD 风暴被新表挡住，不淹没浪潮行。
-          SB3 = panic 护栏（命门不变）：全 logdump 不得出现
-                "Lock already held" / "panic(cpu" ——出现即 R46 失败。
-          SB4 = 画面护栏：零 "frame dropped"；GL 栈枚举继续活；白苹果
-                （flip ≥ 2）必须维持——若退回三色 = sigbirth 挂点
-                扰动时序，立即重判。
-          SB5 = WiFi：固件仍不在 RAM 镜像（已知遗留；用户侧
-                flashboot/fw/ 注入，合同见 WORKLOG 挖矿报告）。
-          【若 sigbirth 对浪潮仍然零响】= 144 死连信号出生都没有 →
-          死亡走 exit(reason) 自戕路（launchd 的 "SIGBUS" 话术出自
-          exit reason），R47 刀 = exit reason 记录仪。
+                ——ux_handler 主嫌当庭对质。若 flush 后仍零行 =
+                记录仪真没跑 = exit(reason) 自戕腿重启。
+          SB2 = 节流纪律：每 (名字，信号) 键 ≤ 4 全量 + 计数/16。
+          SB3 = panic 护栏（命门不变）：零 "Lock already held" /
+                "panic(cpu" ——出现即 R47 失败。
+          SB4 = 画面护栏：白苹果（flip ≥ 2）必须维持；退三色 =
+                flush 挂点扰动时序，立即重判。
+          SB5 = WiFi：固件仍不在 RAM 镜像（已知遗留）。
           【镜像说明】
-          - raphael-xnu-r46-flash.img = 日常控制组（= r45 逐字节原样）
-          - raphael-xnu-r46-gpu-flash.img = 本轮目标镜像（仅 kernel 条目换新）
-          - 启动卷 stage 一次：raphael-r46-flashboot.apfs 或固件+NV 版
+          - raphael-xnu-r47-flash.img = 日常控制组（= r46 逐字节原样）
+          - raphael-xnu-r47-gpu-flash.img = 本轮目标镜像（仅 kernel 条目换新）
+          - 启动卷 stage 一次：raphael-r47-flashboot.apfs 或固件+NV 版
           ⚠️ 含 Apple 版权内容，仅供个人研究；下载完成后请尽快删除本 Release。
       release_body:
         description: "GitHub Release 正文"
         required: true
         default: |
-          raphael (K20 Pro) R46 交付包：**sigbirth 询凶轮③**。
+          raphael (K20 Pro) R47 交付包：**flush 必达轮（询凶续集）**。
 
-          R45 真机定案（6354 行入账）：白苹果 = 突破——SpringBoard/
-          CoreAnimation 开天辟地第一次真翻页（flip 2/3，IOSurface 4
-          'BGRA' 1125 x 2436 整屏面上传 → GL 绘制 → flip latched），
-          随后管线被浪潮杀死，面板冻在白苹果。SP1 零响即定罪：发布
-          内核 _bsd_exception 入口恰一条 BL _sigpost_trace、开关静态
-          初值 = 1——记录仪活、开、上膛、零响 = 144 死无一穿过
-          bsd_exception；全内核信号出生点逐点反解，无一处硬编码
-          SIGBUS(0xa)。源码定案：proc_terminate 只发 memorystatus 的
-          SIGKILL/SIGTERM；真正同时解释两轮静默的漏斗 = ux_handler
-          （任务自己的异常处理器线程：ux_exception 把
-          EXC_BAD_ACCESS/KERN_PROTECTION_FAILURE 翻译成 SIGBUS，
-          threadsignal(.., TRUE) 投递，不经 psignal、不产生
-          SOFT_SIGNAL 投递、不碰 triage）。
+          R46 真机定案（4469 行入账）：真机确实在跑 R46（loader kernel
+          size 0x1038b00 = 释出字节）；浪潮满强度（lsd×63 +
+          analyticsd×8，全部 "SIGBUS | sent by exc handler[own pid]" =
+          ux_handler 出生，R46 主嫌预测波形精确复现）；panic 护栏
+          PASS；白苹果维持。
 
-          R46 一刀：sigbirth_trace() 落 user_exception_trace.c，经
-          redwood.patch 挂 psignal / psignal_with_reason /
-          psignal_uthread（pthread_kill）/ threadsignal（ux_handler 之
-          口）四个变量信号号漏斗；每信号出生一条节流行：目标 +
-          信号号 + code + 出生点（零滑动）+ 当前进程。全新
-          (名字，信号) 键控节流；R44/R45 旧线全保留。标记同长换替
-          （R46: the signal birth ledger names every hand that feeds）。
+          但 logdump 无一行 sigbirth。判读定案：通道死亡，非记录仪
+          死亡——(1) R46 logdump 连 memorystatus 都 0 行（R42 有 182
+          行，该 printf 四轮未动）；(2) 快照段 690 行中 666 行是
+          adreno 轮询（~8 行/秒重写环形 buffer，记录仪行出生即被
+          覆盖）；(3) R42 verdict 幸存 = 它打完即调 loader_log_flush()
+          （"the flush asks the loader to write the log out"）。
 
-          本轮判决问题：sigbirth 行是否到场并点名每只喂信号的手
-          （SB1 主目标）+ 节流纪律（SB2）+ panic 护栏（SB3 命门）+
-          白苹果/丢帧回归（SB4）。若浪潮对 sigbirth 仍零响 → 死亡走
-          exit(reason) 自戕路，R47 = exit reason 记录仪。
+          R47 一刀：四记录仪（usertrap/sigpost/sigbirth/userabort）
+          行尾补 loader_log_flush()——R42 verdict 真机先例，78 次
+          flush 跑过 R42 的 boot 无恙；节流预算限频不变。标记同长
+          换替（R47: the flush rule lands every born line in the logdump）。
 
-          内核 = R45 + 两文件改造（user_exception_trace.c +
-          redwood.patch 的 kern_sig.c hunks）；loader/cmdline/卷 =
-          r45 原字节；日常镜像 = r45 逐字节控制组。
-          WiFi 固件+NV 走 flashboot 用户侧重建（已知遗留，R47+）。
+          本轮判决问题：flush 后 sigbirth 行是否必达 logdump 并点名
+          每只喂信号的手（SB1' 主目标）+ 节流纪律（SB2）+ panic 护栏
+          （SB3 命门）+ 白苹果回归（SB4）。若 flush 后仍零行 =
+          记录仪真没跑 = exit(reason) 自戕腿重启。
+
+          内核 = R46 + 一文件改造（user_exception_trace.c 的四处
+          flush + R47 标记）；loader/cmdline/卷 = r46 原字节；日常
+          镜像 = r46 逐字节控制组。
+          WiFi 固件+NV 走 flashboot 用户侧重建（已知遗留，R48+）。
       checksum_files:
         description: "进 SHA256SUMS 的文件名（空格分隔，相对 release/；通常是双镜像+启动卷+md1）"
         required: true
-        default: "raphael-xnu-r46-flash.img raphael-xnu-r46-gpu-flash.img raphael-r46-flashboot.apfs r46-md1-root.apfs"
+        default: "raphael-xnu-r47-flash.img raphael-xnu-r47-gpu-flash.img raphael-r47-flashboot.apfs r47-md1-root.apfs"
       release_files:
         description: "进 Release 的文件（每行一个，相对 release/）"
         required: true
         default: |
-          raphael-xnu-r46-flash.img
-          raphael-xnu-r46-gpu-flash.img
-          raphael-r46-flashboot.apfs
-          r46-md1-root.apfs
-          r46-kernel-gate.txt
+          raphael-xnu-r47-flash.img
+          raphael-xnu-r47-gpu-flash.img
+          raphael-r47-flashboot.apfs
+          r47-md1-root.apfs
+          r47-kernel-gate.txt
           SHA256SUMS
           README.txt
           toolchain-versions.txt
