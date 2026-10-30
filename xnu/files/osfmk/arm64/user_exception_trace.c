@@ -155,6 +155,46 @@ user_exception_trace(exception_type_t exception, mach_exception_data_t code, mac
 }
 
 /*
+ * R45: the signal funnel.  The R44 boot proved the wave never takes a
+ * kernel-visible fault -- zero usertrap lines under a recorder proven live,
+ * enabled and sitting at the one hub -- while 108 SIGBUS deaths ran, all
+ * backboardd.  The wave travels the SIGNAL path: psignal -> bsd_ast ->
+ * issignal_locked -> bsd_exception(EXC_SOFT_SIGNAL, signum), launchd's
+ * sigexc port at the end -- a path that never reaches exception_triage
+ * (the release kernel's call map: _exception_triage_thread's only caller is
+ * the corpse path, _bsd_exception delivers directly).  So the recorder
+ * moves to the funnel itself: one throttled line per delivered signal,
+ * naming who died and what was delivered -- for the wave, exception 3
+ * (EXC_SOFTWARE), code 0x10003 (EXC_SOFT_SIGNAL), subcode = the signal
+ * number.  The same budget as the fault trace, the same switch: systrace=0
+ * silences both.  The exception_triage wire stays: genuine faults still
+ * trace there in full.
+ */
+void sigpost_trace(exception_type_t exception, mach_exception_data_t code, mach_msg_type_number_t count, thread_t thread);
+
+void
+sigpost_trace(exception_type_t exception, mach_exception_data_t code, mach_msg_type_number_t count, thread_t thread)
+{
+	task_t task;
+	struct proc *proc;
+
+	if (!user_exception_trace_enabled || thread != current_thread()) {
+		return;
+	}
+	task = get_threadtask(thread);
+	if (task == kernel_task) {
+		return;
+	}
+	proc = get_bsdtask_info(task);
+	if (!user_trace_admitted(proc ? proc_name_address(proc) : "?")) {
+		return;
+	}
+	printf("sigpost: %s[%d] exception %d code 0x%llx 0x%llx\n",
+	    proc ? proc_name_address(proc) : "?", proc ? proc_pid(proc) : -1, exception,
+	    count > 0 ? (unsigned long long)code[0] : 0, count > 1 ? (unsigned long long)code[1] : 0);
+}
+
+/*
  * A program calls abort(): say which, and from where. The reason is usually an exception nobody
  * caught, or an assertion; the text of it goes to the program's standard error (boot-arg applog=1
  * puts that on the console), the stack is here.

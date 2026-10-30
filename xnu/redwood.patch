@@ -2806,12 +2806,14 @@ diff --git a/osfmk/kern/exception.c b/osfmk/kern/exception.c
 index 809dafaaa2a7..71c6580f44e2 100644
 --- a/osfmk/kern/exception.c
 +++ b/osfmk/kern/exception.c
-@@ -636,6 +636,11 @@ check_exc_receiver_dependency(
+@@ -636,6 +636,13 @@ check_exc_receiver_dependency(
   *	Returns:
   *		KERN_SUCCESS if exception is handled by any of the handlers.
   */
 +#if defined(__arm64__)
 +extern void user_exception_trace(exception_type_t exception, mach_exception_data_t code,
++    mach_msg_type_number_t count, thread_t thread);
++extern void sigpost_trace(exception_type_t exception, mach_exception_data_t code,
 +    mach_msg_type_number_t count, thread_t thread);
 +#endif
 +
@@ -2830,6 +2832,36 @@ index 809dafaaa2a7..71c6580f44e2 100644
  	assert(exception != EXC_RPC_ALERT);
  
  	/*
+@@ -823,18 +830,29 @@ kern_return_t
+ kern_return_t
+ bsd_exception(
+ 	exception_type_t        exception,
+ 	mach_exception_data_t   code,
+ 	mach_msg_type_number_t  codeCnt)
+ {
+ 	task_t                  task;
+ 	lck_mtx_t               *mutex;
+ 	thread_t                self = current_thread();
+ 	kern_return_t           kr;
++#if defined(__arm64__)
++	/* R45 sigpost: the R44 boot proved the wave never takes a kernel-visible
++	 * fault -- zero usertrap lines under a recorder proven live, enabled and
++	 * sitting at the one hub -- while 108 SIGBUS deaths ran.  The wave
++	 * travels the signal funnel: psignal -> bsd_ast -> issignal_locked ->
++	 * bsd_exception(EXC_SOFT_SIGNAL, signum), launchd's sigexc port at the
++	 * end -- a path that can never reach exception_triage (the R41 wire's
++	 * premise, retired).  One throttled line per delivery: who died and
++	 * what was delivered; see osfmk/arm64/user_exception_trace.c. */
++	sigpost_trace(exception, code, codeCnt, self);
++#endif
+ 
+ 	/*
+ 	 * Maybe the task level will handle it.
+ 	 */
+ 	task = current_task();
+ 	mutex = &task->itk_lock_data;
+ 
+ 	kr = exception_deliver(self, exception, code, codeCnt, task->exc_actions, mutex);
 diff --git a/osfmk/kern/kalloc.h b/osfmk/kern/kalloc.h
 index dfa89c7b0d29..07e0ba5bf44c 100644
 --- a/osfmk/kern/kalloc.h

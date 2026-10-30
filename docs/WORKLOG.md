@@ -1637,3 +1637,11 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 - **驱动面健康度两轮持平**：buttons 驱动 step 5 在岗、SPMI 掉传输 5/6 次（同量级）、触摸 GT9886 正常（24 行）、adreno step 22 三色帧照画。
 
 **R45 立案（sigpost 询凶轮——把记录仪搬到死亡波的真实 funnel 上）**：单刀 = 在 `bsd_exception()`（osfmk/kern/exception.c，三个活调用者：issignal_locked / do_bsdexception / mac_do_machexc）入口加一行节流日志（pid + 进程名 + 信号号 + 被转换的异常/code 对，沿用 R44 的按名节流律），triage_thread 的旧接线保留（无害，真 fault 时仍响）。一次 boot 即可给 97+11 条死亡逐条补上内核侧现场：**谁死、谁发的信号、什么 code**。用户态失败点（HID-open 为何秒败、"Redwood buttons" 服务为何零尝试、buttons SPMI 掉传输是否升级）是 R46 的线索，R45 的 sigpost 行负责把它们和死亡时刻对齐。门禁与工具按惯例重锚（base = R44 发布内核 79853bfa）。
+
+## R45 立档（2026-10-30，sigpost 询凶轮构建 + 派发）
+
+单刀落地（两文件）：`xnu/files/osfmk/arm64/user_exception_trace.c` 新增 **`sigpost_trace()`**——每次信号投递一条节流行 `sigpost: <name>[pid] exception N code 0x.. 0x..`（对浪潮即 exception 3 EXC_SOFTWARE / code 0x10003 EXC_SOFT_SIGNAL / 子码 = 信号号；SIGBUS = 10 = 0xa），复用 R44 预算（每名首 4 全量、后每 16 次）与 systrace 开关；`xnu/redwood.patch` 在 **`bsd_exception()` 入口**（exception.c，先于 `exception_deliver`，三个活 caller 全收）挂线，triage 旧线保留。marker 同长换装（`r45_sigpost_mark`，56 B）。**sigpost printf 格式串 = 本轮唯一新增数据串**，lineage 律入册（x1 in r45 / x0 in base——记录仪装进二进制的证明，防 R44 式"零响"重演时无法分辨"没装"还是"没路过"）。
+
+工具三件重锚（base = R44 发布内核 79853bfa）：`r45_kernel_gate.py`（六律 + sigpost 律 + strings 律白名单 `sigpost:` 前缀——R42 年代 verdict-format 白名单先例）；`r45-kernel-id.py`（KNOWN += R44 = 79853bfa；新内核分支断言 R45 marker + sigpost 格式 + R44/R43/R42/R41/R40 零残留）；`r45_flash_build.py`（底板 = r44 发布：daily b0f9f6df / GPU edac8a72 / 内核条目 79853bfa）。springboard.yml 24 输入 repin：底板 URL 指向 r44-springboard、GPU 底板改判 R44（base_id_gates）、id_gates 判 R45、判读树 SP1–SP5 预注册进 README/release。
+
+离线证明 **19/19 GREEN + 6 负例死亡**（`scripts/r45_univ_round_proof.py`）：真 r44 发布字节对判读 + 两 gates 块真实 bash 执行（40838276403 类死刑）；合成 r45 内核 = 真 r44 内核 delta-0 上换装 marker + 覆写一条 Darwin 版本串为 sigpost 格式（零填充到游程尾）——六律 GATE GREEN（含 sigpost 律双侧）；打包自证 + 判读词 x7 + "flash build's own bytes"；负例 N1 真 base 死于退役律 / N2 无 marker 死 / N3 flash 拒 base / N4 拒逐字节对 / N5 **sigpost-x0 合成体死于 sigpost 律（律有齿）** / N6 双 marker 拒收；K1 刀源断言（decl+def、预算+TUNABLE 复用、格式串、TAB 纪律、patch 三 hunk）+ K2 **全补丁对钉死 BASE c54f35ca `git apply` 回放绿且调用落位实证**（sigpost 行在 bsd_exception 体内、exception_deliver 之前）。生成器两 bug 被电池当场击毙（CLI 占位链换名反转、re-prove 行 R43_LOADER_MARK 漏改）——电池先于 CI 死亡的价值再次入账。
