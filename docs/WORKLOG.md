@@ -1706,3 +1706,21 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 **离线证明 57/57 GREEN**（scripts/r48_univ_round_proof.py）：P1 yml 24 输入 + 五 SHA 钉 + release_name 189 B ≤ 256 + 判词 grep 对齐工具真实词表 + R40..R47 退役集完整；P2 刀源断言（探针先于 gate、拒收计数、census 骑 proven 通道并 flush、56B 同长、C99 声明序）；P3 75 段 + **真 pristine c54f35ca 上 git apply 回放绿**（sleh 段逐字节）；P4 flush 普查（记录仪 x4 + convict x4 + adreno x2 + census x1 = 11，探针不 flush 入册）；P5 工具对真 R47 释出 GPU 镜像正负判定（判 R47 = gate BASE；gate 拒逐字节对死于 byte-identical 律）；P6 打包自证（合成 r48 内核进真 r47 GPU 底板 → 重解包逐字节对 → id 判 R48）。
 
 **SSH 遥控通道同轮立档**：端点 ipv4.mysv.dpdns.org:222（DDNS 漂移曾致误判 CGNAT——DoH 干净解析 223.122.32.94 后 0.01s 通，中国移动香港段，用户判断正确）；scripts/raphael_ssh.py（run/get/put，写端强制 /vol1/1000/ios）；本轮 logdump 四件与刷入镜像全部经此通道取证。新律法候选：**远程取证轮的 logdump 应第一时间拉回本地再判读**（本 round 的快照结构解剖与 BL 审计全部依赖本地字节）。
+
+## R48 真机判读（2026-10-30 深夜，run 41067970694 SUCCESS 收割 + SSH 遥控全自动刷机 + 五轮沉默破案）
+
+**收割**：run #19 SUCCESS，tag r48-springboard 八资产齐（gpu-flash 12,664,943 B 新钉 0cdb3031；daily b0f9f6df / flashboot 14485e7c / md1 5b9bbbcb = R47 原字节控制组律成立）；r48-kernel-id.py 双镜像判读全绿（"the kernel entry is R48"、cmdline R39 GPU form verbatim、控制组 = R33 bytes）；KSHA 123a894a（17,009,824 B，+424 B）与 r48-kernel-gate.txt 逐位一致；GATE GREEN（marker 同长换替、__TEXT +0 B、nsyms 72999→73010 = r48_* 十符号 + redwood_fault_seen）。电池脚本未随提交入库（沙箱回收丢失），CI 内置电池 57/57 + GATE 记录 + kernel-id 三重证据闭环。
+
+**SSH 遥控首战全通**：上轮"端点不可达"确系 DDNS 解析过期——每轮连接前现做 DoH（1.1.1.1）拿最新 A 记录即秒连（0.3s）。用户机 = Linux NAS（trim, Debian 系），adb/fastboot 在位。USB ID 终裁：`d00d`+product "raphael" = 小米 ABL、`d00d`+product "xnuloader" = XNULOADER、`d001`+adb recovery = TWRP 复合设备。**fastboot 全程需 sudo**（USB 节点 root:plugdev，SSH 密码 = sudo 密码，经 stdin 传递不落盘不回显）。
+
+**launchd ENOENT 之谜（R44-R48 五轮沉默的真正根因）**：R48 三次 run 全部死于 `panic(cpu 1): Process 1 exec of /sbin/launchd failed, errno 2 @kern_exec.c:7154`（klog 139,905/139,935 B，温度稳定复现；R47 RAM-run 同死法 = census 刀彻底无罪）。logdump 判读曾现"launchd 洪流/GL 帧/backboardd ready"——**全部是旧 run 残留**：logdump 分区覆盖式快照只写前 152 KB，其余 1.15 MB 是 R47 时代旧数据，判读前必须按字节 offset 分段（新律法：**logdump 残留律**）。真解：**launchd 不在 md1（ramdisk 条目里 launchd x0），在 flashboot.apfs 启动卷里**——启动卷必须走 XNULOADER 的 `oem ramdisk`（arm）→ `fastboot stage flashboot.apfs`（resident 区）→ `stage payload` → `oem run`；漏 stage 启动卷 = init_programs 全 ENOENT = panic。R47 判读时代成功正因当时 stage 过。
+
+**fastboot stage 律**：XNUP 裸包（gzip 解压 + 切到 XNUP 魔数起点）必须用 `fastboot stage` 原样下载（`fastboot boot` 会被客户端重新包装成 boot img 破坏 XNUP 头 → not-started）；XNULOADER 不支持 flash（刷分区须抓 ABL 窗口，正常重启链的 ABL <1s 交棒抓不到）。
+
+**R48+启动卷 run4（23:55）历史性突破**：kernel 存活 **10 分钟+（本项目最长）零 panic**，SB4 白苹果律通过（**flip max 3 ≥ 2 ✓、GL frame 200**），SpringBoard spawn 流程跑了 22 分钟，launchd 洪流 x3955、backboardd x538、SpringBoard x1996。**四记录仪全部开口**：sigcensus 唱票 x22（22 分钟每分钟一次）、siglive 头四出生 x4（init[1]/launchd[1] sig 20=SIGCHLD from 同一调用点）、sigbirth x9（printed 9）、redwood-pager verdict x69（"no map entry"，pid 4[init]/1[launchd]/10[xpcproxy]，地址 0xff7xxx/0xffcxxx 模式）。
+
+**CR1-CR5 定裁**：CR1 伪（钩子跑了且行活着——五轮沉默 = run 没跑对 + 残留污染，非通道死）；CR2 伪（psignal 在跑，births 15）；**CR3 成立**：**faults 128,204**（sleh.c handle_user_abort 地板 census）vs **traps 0/0、posts 0/0、aborts 0**——**全部用户 abort 绕过 user_exception_trace 的 triage 漏斗**，R44/R45 的钩子挂的不是 faults 的真实路径（R46 的 sigbirth 与 R42 的 pager verdict 挂对了所以开口）；CR4 伪（kernel 知道一切：faults 128,204）；CR5 大半成立（沉默是假象：没 stage 启动卷 + logdump 残留）。
+
+**新律法入册**：① 启动卷律——真机 run 前必须 `oem ramdisk` + stage flashboot.apfs，漏 = launchd ENOENT panic；② logdump 残留律——判读前按字节 offset 分段，分区尾部是旧 run 数据；③ fastboot stage 律——XNUP 用 stage 不用 boot；④ USB ID 律——d00d 双形态靠 getvar product 区分；⑤ DDNS 律——SSH 端点每轮现做 DoH 解析，绝不信缓存。
+
+**R49 方向（CR3 判读指刀）**：faults 128K 的真实路径在 handle_user_abort → verdict 已点名 "no map entry"（地址 0xff7xxx/0xffcxxx 段，跨 init/launchd/xpcproxy 三进程同模式）——R49 刀 = verdict 增强（fault 上下文全息：PC/LR/vme 查找失败细则 + verdict 预算提高）或直击 no-map-entry 的根源；trap/post 漏斗重挂 handle_user_abort 真实出口。
