@@ -13,7 +13,9 @@ on:
       release_name:
         description: "Release 标题"
         required: true
-        default: "R47 · 纯血 hackios SpringBoard · flush 必达轮（R46 真机判读：loader 上报 kernel size 0x1038b00 = 释出字节逐字一致（真机确实在跑 R46），launchd 浪潮满强度（lsd×63 + analyticsd×8，每死皆 SIGBUS | sent by exc handler[own pid] = ux_handler 出生——主嫌预测波形精确复现），panic 护栏 PASS，白苹果维持（SpringBoard activation answered）——但 logdump 无一行 sigbirth。判读定案：通道死亡，非记录仪死亡——R46 logdump 连 memorystatus 都 0 行（R42 logdump 有 182 行，memorystatus printf 四轮未动 = 真机必打而不见）；快照段 690 行中 666 行是 adreno 轮询（8 行/秒重写环形 buffer，记录仪行出生即被覆盖）；R42 verdict 幸存是因为它打完即调 loader_log_flush()（\"the flush asks the loader to write the log out\"）——flush 过的行进 logdump 分区全量保留。R47 一刀：四记录仪（usertrap/sigpost/sigbirth/userabort）行尾补 loader_log_flush()（R42 verdict 真机先例，78 次 flush 无恙；节流预算限频不变）；内核 = R46 + 一文件改造；其余 = r46 原字节；cmdline 仍 R39 形 verbatim）"
+        default: "R47 · 纯血 hackios SpringBoard · flush 必达轮（R46 判读：通道死亡非记录仪死亡，四记录仪行尾补 loader_log_flush()；内核 = R46 + 一文件，cmdline 仍 R39 形 verbatim；判决树 SB1'–SB5）"
+      # 教训（run 41040910832）：GitHub Release name 上限 256 字符——判读叙事全部
+      # 写进 release_body（无此上限），release_name 只留一行标题。
       kernel_repo:
         description: "hackios 内核树 fork（含 xnu/ + tools/）"
         required: true
