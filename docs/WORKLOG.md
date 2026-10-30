@@ -1724,3 +1724,17 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 **新律法入册**：① 启动卷律——真机 run 前必须 `oem ramdisk` + stage flashboot.apfs，漏 = launchd ENOENT panic；② logdump 残留律——判读前按字节 offset 分段，分区尾部是旧 run 数据；③ fastboot stage 律——XNUP 用 stage 不用 boot；④ USB ID 律——d00d 双形态靠 getvar product 区分；⑤ DDNS 律——SSH 端点每轮现做 DoH 解析，绝不信缓存。
 
 **R49 方向（CR3 判读指刀）**：faults 128K 的真实路径在 handle_user_abort → verdict 已点名 "no map entry"（地址 0xff7xxx/0xffcxxx 段，跨 init/launchd/xpcproxy 三进程同模式）——R49 刀 = verdict 增强（fault 上下文全息：PC/LR/vme 查找失败细则 + verdict 预算提高）或直击 no-map-entry 的根源；trap/post 漏斗重挂 handle_user_abort 真实出口。
+
+## R49 全息判读轮（2026-10-31 凌晨，run 41099365467 SUCCESS 收割 + 全链真机闭环 + HR1-HR5 定裁）
+
+**收割**：run #21 SUCCESS（R49-fix run #20 验尸：内核干净产出 +672 B、nsyms 73010→73023，死在门禁三 strings law——29 个解码器文本（DABORT_EL0..SP_ALIGN、translation L0..L3、KERN_*、read-exec..）是新 rodata，+40 B 数据漂移把两处嵌入指针值推过可打印 run 边界（XNULIVE2 邻指针 0x07d849e8→0x07d84a10、(4(…表 低字节 '8'→'0'），字节考古定裁布局假象非走私串；gate 冻结解码器表与双 run 形态双侧入册）。tag r49-springboard 八资产齐；KSHA 72d75d49（17,010,496 B，+672 B）逐位闭环；gpu 新钉 5fb12183；daily b0f9f6df / flashboot 14485e7c / md1 5b9bbbcb = R48 控制组原字节；双镜像判读 "the kernel entry is R49" + 控制组 R33 verbatim；GATE GREEN（marker 同长 56 B 换替、__TEXT +0 B）。本地电池 68/68（含对 pristine c54f35ca 的 sleh/vm_fault/exception 三段逐字节回放；教训：**git apply 会向上找 .git 换根——回放必须做在 /tmp**）。
+
+**SSH 工具升级**：DDNS 记录在 223.122.24.105 / 223.122.32.94 间翻转且 DoH 会只回旧值——scripts/raphael_ssh.py 增加 known-good IP 缓存（.secrets/raphael_ssh_ip.cache，连上即记、每次先试缓存）。
+
+**刷机与 run1**：手机本轮从 loader 自行落回 TWRP（d001 复合态）→ adb reboot bootloader → ABL 稳窗 → **fastboot flash boot r49 持久化刷入**（Writing OKAY @ 02:02:59）→ fastboot reboot → XNULOADER（product=xnuloader）→ **oem ramdisk 臂 + stage flashboot（启动卷律）+ oem run** @ 02:03:55 → kernel 存活 ~9.5 分钟零 panic，oem stop @ 02:13:12 → oem logdump 4 MB 回拉。
+
+**R49 真机判读（run1）**：sigcensus x9 每分钟唱票且 **r49 五计数全在膛**；faults 119,656 vs **uf-ok 119,646、uf-aborted 0、uf-align 0、uf-delivered 0**（守恒 gap 恒 10 = 四出口之外微出口，0.008%，R50 附带项）；**verdicts 1,063 = 全部 kernel 侧**（delivered 0）。**HR1 伪（无送达链断点）；HR2 成立**——CR3 完全定裁：128K faults 全是成功 page-in，1,063 次 vm_fault 失败全是 kernel copyio EFAULT（绕 handle_user_abort，走 handle_kernel_abort_recover，无送达无 triage），triage 漏斗与 R44/R45 钩子无罪；R43 时代浪潮的 SIGBUS 非 kernel fault 送达——用户态 exc handler 自发（与 R47 判读一致）。HR5 伪（无 page-in 中断风暴）。
+
+**全息判决双破案（R50 指刀）**：**HR4**——kr 0x2 ×111 全部 `ask read-write` 对 `entry prot 0x1/7`（只读 Assets.car 上的写请求），调用者 upcb **pc 0x20d6ff814（dyld 共享缓存）**，SpringBoard ×72 + Spotlight ×32，文件 = CoreGlyphs/Assets.car、fileoff 深处（0xa6fc000）——用户态把只读文件映射当写缓冲传 syscall（copyout 目的地）→ EFAULT；R50 刀 = syscall 层抓 fd/buf/len 全息。**HR3**——kr 0x1 ×30 = 0xff70/0xffc0 垃圾顶位 + 低 48 页对齐 + 落 map 洞（14 entries，span 0x100be4000..0x3d8000000），调用者 = 共享缓存同一段 0x20d7034f8 ×23（exec 参数 copyin，launchd/xpcproxy/init 全中）+ init 自身 0x100006810 ×6——exec argv 指针数组坏顶位；R50 刀 = exec shim argv ABI 审计 + copyin 层抓指针来源。
+
+**SB 判读**：SB4 ✓（flip 3 latched @ 320.9s）、backboardd 活到 t=606s（158 wakes/s）、launchd spawn x81、43 次 kernel-asked flush 全落盘 read-back 一致、零 panic、零 "Lock already held"——SB2/SB3 沿袭全绿。R49 build 现已持久化在 boot 分区。
