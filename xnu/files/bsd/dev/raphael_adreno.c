@@ -5694,6 +5694,20 @@ redwood_adreno_minute(void)
                         }
                 }
         }
+        /* R48: the census -- the trace counters ride the one channel proven to
+         * print and flush, once a minute, so the next boot can tell "the wire
+         * never ran" apart from "the wire ran and the line died". */
+        {
+                extern unsigned long long r48_sigbirth_seen, r48_sigbirth_printed, r48_sigbirth_switch_denied,
+                    r48_sigbirth_budget_denied, r48_usertrap_seen, r48_usertrap_printed, r48_sigpost_seen,
+                    r48_sigpost_printed, r48_userabort_seen, r48_fault_seen;
+
+                printf("sigcensus: births %llu (printed %llu, sw-denied %llu, budget-denied %llu), traps %llu/%llu, posts %llu/%llu, aborts %llu, faults %llu\n",
+                    r48_sigbirth_seen, r48_sigbirth_printed, r48_sigbirth_switch_denied, r48_sigbirth_budget_denied,
+                    r48_usertrap_seen, r48_usertrap_printed, r48_sigpost_seen, r48_sigpost_printed,
+                    r48_userabort_seen, r48_fault_seen);
+                (void)loader_log_flush();
+        }
         printf("adreno: the GPU's sensors read %d.%d and %d.%d degrees; its clock is set to %u MHz\n", tenths[0] / 10,
             tenths[0] % 10 < 0 ? -(tenths[0] % 10) : tenths[0] % 10, tenths[1] / 10,
             tenths[1] % 10 < 0 ? -(tenths[1] % 10) : tenths[1] % 10, core_khz / 1000);

@@ -1686,3 +1686,23 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 **电池新律法：release title ≤ 256**：P1 新增 `P1 release title fits the GitHub 256-char cap`（len 文本级断言，run 41040910832 教训入册——R46-fix 的 decl-before-call 同款先例：CI 死过一次的东西必须进电池）。离线证明 **25/25 GREEN**（原 24 项全绿 + 新律法亲测 len=139）。
 
 **重派发**：commit 54d9626 push main（0aa6480..54d9626）→ empty-inputs dispatch → **run 41043191263**（54d96263）in_progress。 盯守协议照旧：in_progress 回一行；SUCCESS → 收割协议（四资产 + r47-kernel-id 判读 + GATE GREEN + kernel-sha 对 run 产出）；FAILURE → 验尸协议。
+
+## R47 真机判读 + R48 立档（2026-10-30，census 实证轮：门禁本身被捕）
+
+**R47 真机入账（logdump 11190 行 / 1.3 MB，SSH 通道自用户 NAS `/vol1/1000/ios/logs/` 直拉）——刷新纪录的五连**：
+
+- **真机 = R47 释出内核，铁证（刷机链第五次全对）**：loader 上报 `payload entry 'kernel' size 1038af8` = 0x1038af8 = **17,009,400 B = R47 收割值逐字节**；用户机上 `raphael-xnu-r47-gpu-flash.img` sha256 = 64e39867（= 释出 GPU 钉）；解包 kernel 条目 sha256 = 9d589bad（= 释出内核钉）。
+- **R47 flush 律法真机生效**：loader-log 记录 13 次写盘（#1–#13），其中 **#4–#13 = 十次 "the kernel asked for a flush"**（R47 的新通道），每次全量 read back 一致；kernel 终局交出 log at f7c049c8, 139978 B → 159,744 B 落盘。通道问题就此了结：**活着，且十次 kernel-asked flush 证明内核侧主动用过它**。
+- **挂钩在膛（对刷入字节做 BL 解剖，新律法工具 scripts/r47_bl_audit.py）**：`_psignal+0x24 → _sigbirth_trace`、`_psignal_uthread+0x28`、`_psignal_with_reason+0x2c`、`_threadsignal+0x5c`、`_bsd_exception+0x34 → _sigpost_trace`、`_exception_triage_thread+0x28 → _user_exception_trace`、`_vm_fault_internal → _redwood_fault_convict` 七处逐点验证；全部记录仪字面量在二进制（sigbirth x1 / sigpost x1 / usertrap x3 / userabort x1 / pager verdict x6 / ustacks x3）；总开关 `user_exception_trace_enabled` 二进制初值 = **1**（__DATA_CONST @ 0xfffffff0071ba6f8，cmdline 无 systrace token）。
+- **然而十三个快照 1.3 MB 全文检索：sigbirth / sigpost / usertrap / userabort / redwood-pager verdict / ustacks / top 全部零行**——连 boot 期的 (launchd, SIGCHLD) 出生都零行（datamigrator 00:01:42 exit(0)，kern_exit.c:2564 的 psignal 无条件）。浪潮满强度：lsd×108 / analyticsd×28 / powerd×22 / backboardd×21 / SpringBoard×10 / xpc×12，全部 "exited due to SIGBUS | sent by exc handler[own pid]"；白苹果与 GL 三色帧维持（frame 2-4 渲染全绿后 00:02:05 浪潮爆发）；SB3 panic 零；日志终局 = 用户按 power+vol-down（手机冻死）。
+- **静态推演穷尽**：钩子在膛 + 开关 = 1 + 预算 24 槽足额（(launchd, SIGCHLD) 是新键，首 4 必打）+ SIGCHLD 走的就是挂钩的 psignal + printf 通道同源（buttons/adreno 同期正常落盘）+ 记录仪若真打行，其 flush 会在 loader-log 留名且 1.5s 自旋会拖死 boot（boot 流畅跑完 5 分钟）——**五个前提全真而结论为零 = "记录仪 printf 从未执行"成为唯一幸存解释，但无法用静态分析再推进一步。R46 的"通道死亡"判读被本轮证据修正：通道活着，死的是别的。**
+
+**R48 一刀（census 实证轮，两文件 + 一补丁段 + 标记）**：既然"钩子在膛却零响"，唯一出路是让内核自报运行时真相——① `user_exception_trace.c` 新增 **r48_\* 十个计数器**（sigbirth/usertrap/sigpost/userabort 的 seen/printed + switch/budget 拒收数），**在每个漏斗入口、一切 gate 之前自增**；② **siglive: 活体探针**——头四个信号出生无条件打印（不 flush：早 boot 环境安静，2-second notes 携带）；③ `redwood.patch` 新增 **sleh.c 段**（真 git diff 生成，pristine 回放逐字节验证）：`handle_user_abort` 入口 `redwood_fault_seen()`——物理地板，任何用户态 fault 逃不掉；④ `raphael_adreno.c` minute 通道新增 **sigcensus: 唱票**——每分钟把全部计数器打上 proven 通道并 flush。marker 同长换装 56 B：`R48: the census counts every hand at work, live, no gate`。
+
+**判读树 CR1–CR5（预注册）**：CR1 births>0 且 printed=0 且 siglive 缺席 = 钩子跑了、行死在 printf/flush；CR2 births=0 = psignal 真没跑；CR3 faults 随浪潮上涨 = 硬件 fault 存在、triage 被绕过；CR4 faults=0 且 births=0 = SIGBUS 内核全不知情（死亡理由来自用户态）；CR5 sigbirth 行出现 = 四轮静默是假象，直接定罪。SB2/SB3/SB4/SB5 全部沿袭。
+
+**工具三件重锚（base = R47 发布内核 9d589bad）**：`r48_kernel_gate.py`（六律：marker 56B 同长双侧、R40..R47 退役、pager x6 双侧、sigpost/sigbirth x1 双侧、**siglive/sigcensus x1 新 x0 base**、strings 律放行 census 格式）；`r48-kernel-id.py`（KNOWN += R47 = 9d589bad"the R48 gate BASE"+R47 判定分支；新内核分支断言 R48 marker + siglive/sigcensus x1 + redwood_fault_seen 符号 + R47..R40 零残留）；`r48_flash_build.py`（底板 = r47 发布：daily b0f9f6df / GPU 64e39867 / 内核条目 9d589bad）。springboard.yml 24 输入 repin：底板 URL 指向 r47-springboard、GPU 底板判 R47、id_gates 判 R48、判读树 CR1–CR5 预注册进 README/release。
+
+**离线证明 57/57 GREEN**（scripts/r48_univ_round_proof.py）：P1 yml 24 输入 + 五 SHA 钉 + release_name 189 B ≤ 256 + 判词 grep 对齐工具真实词表 + R40..R47 退役集完整；P2 刀源断言（探针先于 gate、拒收计数、census 骑 proven 通道并 flush、56B 同长、C99 声明序）；P3 75 段 + **真 pristine c54f35ca 上 git apply 回放绿**（sleh 段逐字节）；P4 flush 普查（记录仪 x4 + convict x4 + adreno x2 + census x1 = 11，探针不 flush 入册）；P5 工具对真 R47 释出 GPU 镜像正负判定（判 R47 = gate BASE；gate 拒逐字节对死于 byte-identical 律）；P6 打包自证（合成 r48 内核进真 r47 GPU 底板 → 重解包逐字节对 → id 判 R48）。
+
+**SSH 遥控通道同轮立档**：端点 ipv4.mysv.dpdns.org:222（DDNS 漂移曾致误判 CGNAT——DoH 干净解析 223.122.32.94 后 0.01s 通，中国移动香港段，用户判断正确）；scripts/raphael_ssh.py（run/get/put，写端强制 /vol1/1000/ios）；本轮 logdump 四件与刷入镜像全部经此通道取证。新律法候选：**远程取证轮的 logdump 应第一时间拉回本地再判读**（本 round 的快照结构解剖与 BL 审计全部依赖本地字节）。

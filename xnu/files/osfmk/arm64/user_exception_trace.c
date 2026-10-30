@@ -75,6 +75,31 @@ user_trace_admitted(const char *name)
  * it off again without touching the cmdline laws. */
 static TUNABLE(uint32_t, user_exception_trace_enabled, "systrace", 1);
 
+/*
+ * R48: THE CENSUS.  The R47 boot proved the channel lives (ten kernel-asked
+ * flushes rode the logdump whole) and the hooks sit in the flashed binary
+ * (every funnel's BL verified), yet not one recorder line appeared -- so the
+ * gates themselves are under arrest.  These plain counters tick BEFORE every
+ * gate, and the adreno minute line sings them on the one channel proven to
+ * print and flush (sigcensus, raphael_adreno.c); the first four births print
+ * regardless of every gate (no flush -- the early ring is quiet and the
+ * two-second notes carry them).  The next boot can tell "the wire never ran"
+ * apart from "the wire ran and the line died" -- the one distinction four
+ * rounds of silence could not make.  Non-static: the census reads them.
+ */
+unsigned long long r48_sigbirth_seen, r48_sigbirth_printed, r48_sigbirth_switch_denied, r48_sigbirth_budget_denied;
+unsigned long long r48_usertrap_seen, r48_usertrap_printed;
+unsigned long long r48_sigpost_seen, r48_sigpost_printed;
+unsigned long long r48_userabort_seen, r48_fault_seen;
+
+/* R48: the floor's census call -- sleh.c's handle_user_abort counts every
+ * user abort here, silently, before anything decides what the fault was. */
+void
+redwood_fault_seen(void)
+{
+        r48_fault_seen++;
+}
+
 static bool
 plausible_user_address(uint64_t address)
 {
@@ -92,6 +117,7 @@ user_exception_trace(exception_type_t exception, mach_exception_data_t code, mac
         task_t task;
         struct proc *proc;
 
+        r48_usertrap_seen++;
         if (!user_exception_trace_enabled || thread != current_thread()) {
                 return;
         }
@@ -122,6 +148,7 @@ user_exception_trace(exception_type_t exception, mach_exception_data_t code, mac
             count > 0 ? (unsigned long long)code[0] : 0, count > 1 ? (unsigned long long)code[1] : 0,
             (unsigned long long)get_saved_state_pc(state), (unsigned long long)get_saved_state_lr(state),
             (unsigned long long)get_saved_state_sp(state), slide);
+        r48_usertrap_printed++;
 
         for (unsigned i = 0; i < sizeof(message_registers) / sizeof(message_registers[0]); i++) {
                 uint64_t value = (uint64_t)get_saved_state_reg(state, message_registers[i]);
@@ -180,6 +207,7 @@ sigpost_trace(exception_type_t exception, mach_exception_data_t code, mach_msg_t
         task_t task;
         struct proc *proc;
 
+        r48_sigpost_seen++;
         if (!user_exception_trace_enabled || thread != current_thread()) {
                 return;
         }
@@ -194,6 +222,7 @@ sigpost_trace(exception_type_t exception, mach_exception_data_t code, mach_msg_t
         printf("sigpost: %s[%d] exception %d code 0x%llx 0x%llx\n",
             proc ? proc_name_address(proc) : "?", proc ? proc_pid(proc) : -1, exception,
             count > 0 ? (unsigned long long)code[0] : 0, count > 1 ? (unsigned long long)code[1] : 0);
+        r48_sigpost_printed++;
         (void) loader_log_flush();
 }
 
@@ -288,7 +317,15 @@ sigbirth_trace(struct proc *p, thread_t thread, int signum, uint64_t code, void 
         task_t task;
         struct proc *who, *self;
 
+        /* R48: the census ticks and the live probe fire before every gate. */
+        r48_sigbirth_seen++;
+        if (r48_sigbirth_seen <= 4) {
+                printf("siglive: birth %llu target %s[%d] sig %d from 0x%llx\n",
+                    r48_sigbirth_seen, p ? proc_name_address(p) : "?",
+                    p ? proc_pid(p) : -1, signum, (unsigned long long)(uintptr_t)from);
+        }
         if (!user_exception_trace_enabled) {
+                r48_sigbirth_switch_denied++;
                 return;
         }
         who = p;
@@ -300,6 +337,7 @@ sigbirth_trace(struct proc *p, thread_t thread, int signum, uint64_t code, void 
                 who = get_bsdtask_info(task);
         }
         if (who == NULL || !sigbirth_admitted(proc_name_address(who), signum)) {
+                r48_sigbirth_budget_denied++;
                 return;
         }
         self = get_bsdtask_info(current_task());
@@ -307,6 +345,7 @@ sigbirth_trace(struct proc *p, thread_t thread, int signum, uint64_t code, void 
             proc_name_address(who), proc_pid(who), signum, (unsigned long long)code,
             (unsigned long long)(uintptr_t)from,
             self ? proc_name_address(self) : "?", self ? proc_pid(self) : -1);
+        r48_sigbirth_printed++;
         (void) loader_log_flush();
 }
 
@@ -328,6 +367,7 @@ user_abort_trace(void)
         uint64_t frame[2], fp;
         uint32_t slide = 0;
 
+        r48_userabort_seen++;
         if (task == kernel_task || state == NULL || !is_saved_state64(state)) {
                 return;
         }

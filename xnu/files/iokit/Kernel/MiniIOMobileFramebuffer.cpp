@@ -62,8 +62,8 @@ extern "C" void redwood_gpu_report(const char *why);
  * tradition: loader_return.c's XNULIVE4 is the precedent).  Same byte length as the
  * R46 marker it replaces, so the round's diff stays the flush calls in the
  * recorders plus this string -- the payload layout the gate pins does not move. */
-__attribute__((used)) static const char r47_flush_mark[] =
-    "R47: the flush rule lands every born line in the logdump";
+__attribute__((used)) static const char r48_census_mark[] =
+    "R48: the census counts every hand at work, live, no gate";
 static IOLock *gScanoutLock;
 
 /* IOConnectCallMethod selectors of the framebuffer user client (iOS 16.5) */
