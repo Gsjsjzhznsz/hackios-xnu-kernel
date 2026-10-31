@@ -1777,3 +1777,23 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 **新律法入册**：⑧ 编译自查律——files/ 覆盖文件引用跨树符号（osfmk 定义、bsd 消费）必须块内 extern 成对新增，字节级电池测不出编译错，CI 第一发就是编译自查；⑨ 拆行读窗律——同一 tick 拆成两条 printf 会引入读窗（守恒 gap 可带符号翻转），判读按 |gap| 不按符号。
 
 **R52 方向（双刀）**：① 数据供给考古刀 = all_image_infos copyin 的原始字节 hex（16 B/行，struct 0x170 全量）+ 与 dyld 文件静态字节（0x18008c000 形）逐字段对照 → 定裁"页内容错"vs"映射错位"，定位 vnode pager/decmpfs 或 load_dylinker 映射层；② 通道顺带 = census 双唱的两条通道与 [ts] 供给（loader 直写 vs 排空路径）。
+
+## R52 数据供给考古轮（2026-10-31，run #26 门禁带子验尸 + run #27 SUCCESS 收割 + run1 真机 1379.5 秒新纪录 + HR10 定谳 (a) 分支 + "卡死"误判翻案）
+
+**run#26 验尸（41175081697）**：编译零错（KSHA 2bce3c2a 17,027,056 B，delta +16480 = __TEXT +16384 + __LINKEDIT +96），死在门禁三两处带子律：① __TEXT 增长 16384 B 恰撞 16 KiB 带子（assert shift < 16384 不含等号）——R52 是项目首轮整页跳变（考古刀 + 指纹块跨 16 KiB 对齐边界），修 = 带子放宽 32 KiB（带子是审计窗不是字号预算，payload 律照旧钉死每段尺寸/位移）；② __LAST 零尺寸尾标记段（fileoff 0/filesize 0）在 shift > 0 时暴露——零尺寸段无布局语义，修 = 跳过（R51 shift=0 恒真所以历史轮看不见）。修后对 run#26 真字节离线全链演练 GREEN，re-dispatch。
+
+**收割**：run #27 SUCCESS（20 分钟）；KSHA **aaa90701**（同尺寸不同构建字节——CI 每轮重编先例，gate 不 pin 输出 sha）；GPU 新钉 **176fd691**；daily b0f9f6df / flashboot 14485e7c / md1 5b9bbbcb = 控制组原字节；id 全链 5/5。三件上传 NAS（gpu 12,669,039 B / flashboot 4,194,304 B / imgs/r52.xnup 24,126,808 B）。
+
+**"卡死"误判翻案（上轮判读整体作废）**：手机从未卡死——两层迷雾叠加：① **lsusb -v 打印十进制**，bInterfaceSubClass 66 = **0x42 = adb**（上轮拿 66(十进制) 对 adb=FF/42/01(十六进制) 比对 = 基底错配，"非标准变体"判读作废）；② **adb server 以无权主体（admin）运行时打不开 root:plugdev 的 USB 节点（crw-rw----）→ 静默空列表**——`sudo adb devices` 立见 `45c2b4ec recovery twrp_raphael`。 authorized toggle / VBUS 长断电 / pyusb fastboot 探测（I/O Error 实为对 adbd 接口说 fastboot 语法）全是无谓功；用户物理重启非必要但无害。
+
+**SSH/刷机**：凭据存档第 N 次随容器回收丢失（本地零残留、私有仓库空），重建后 DoH 曾指向未生效的新记录（223.122.24.105 超时）——**多候选逐试律**入通道工具（DoH 全部 Answer + 缓存各自 4s TCP 快探，首个活端点胜出，缓存写实战成功者）。刷机链：TWRP（d001/45c2b4ec）→ adb reboot bootloader → ABL 稳窗（d00d/product=raphael/0.003s）→ **fastboot flash boot r52 持久化刷入**（Writing OKAY 0.062s）→ fastboot reboot → XNULOADER（product=xnuloader）→ **启动卷律**（oem ramdisk 臂 OKAY + stage flashboot 4096KB OKAY + stage imgs/r52.xnup 23561KB OKAY）→ **oem run OKAY** → 探活实锤 `a kernel is running (oem stop ends it)`（loader 拒二次 run）→ ≈T0+23min `oem stop OKAY` 温和归位 → **oem logdump 4MB（sha 8e502c13）live 段 1,474,626 B 从偏移 0 起为 fresh run，残留律分段判读**。
+
+**R52 真机判读（run1）**：
+- **HR10 定谳——(a) 分支：页诚实，垃圾 = dyld 自己的 chained-fixup 编码**。infos-hex 5 套（pid 4/1 init + 7/6/8 launchd，各 344 B 全 garbage shape 1，**跨不同 aii_addr（0x100fb8000/0x100f54000/0x1006ec000/…）逐位相同**）= 同一份静态模板字节，非"某页被写坏"（写坏会随地址/时序而异）；infos[000] = version **17** 精确在位（dyld_all_image_infos v17，映射错位假设 (d) 排除）；四字段全部"低 36 位小 offset + 高位固定簇"：notif `0x00200000_000391f0`、dyldImageLoadAddress 簇 `0x00200000_00000000`、dyldAllImageInfosAddress 簇 `0x00700000_000752bd`、dyld_infos 自指 `0x00b00000_0008c000`、尾部 `0x01600000_0007032e`——**HR9 的"数据供给错误"精化：供给的字节 = dyld 静态 __DATA 里 all_image_infos 模板的 chained-fixup 编码态**（exec_prefault_data 在 dyld 未运行前 copyin，必然拿到模板原字节；高簇是 fixup 编码的 next/format 位域，不是真实指针也不是 PAC）。R53 = 按 fixup 位域解码四字段 + 评估 non-fatal 预取（kr 0x1 = KERN_INVALID_ADDRESS 家族，Errors are non-fatal 静默路径）的真实影响面。
+- **刀② 通道指纹定裁**：bare 组（无 [ts]）每 tick 四行全唱（chan=log + chan=direct + births 头 + uf-ok 尾）；[ts] 组每 tick births/uf-ok 双份且 **chan=log 独唱、chan=direct 恒缺席（ts'd direct = 0 行）**；双唱逐字段值相同。R51 的"42 条 births 双唱"通道结构看清：printf 经 console 产出裸行，直写/排空路径产出带 ts 行且 direct 标记行只走 printf 一侧——[ts] 供给 = 非 printf 通道的行头装饰。
+- **R51 wires 全沿袭**：uf-ok 尾行 + madvise-ro 8→1,813（WILLNEED 真预取持续生效）、verdicts 147→168、faults 69,108→129,339、traps 0/0、posts 0/0、aborts 0；births 15 / printed 9 / sw-denied 0 / budget-denied 6。
+- **存活 1379.5 秒 = 23.0 分钟零 panic（项目新纪录：R51 1342s、R50 1134s、R49 9.5min）**；末行 `[ 1379.508911]: adreno: gpucc cx_gdscr/cx_hw_ctrl` 收尾，`== END OF LOG ==` 完整落卷；13 处 "panic-ish" 全为 backboardd IOHIDEventSystemServer 生态常态 + panic_trace 探针名。
+
+**新律法入册**：⑩ USB 判读进制律——lsusb -v 的 class/subclass/protocol 是十进制，与已知签名（adb FF/42/01、fastboot FF/42/03）比对必须先归一基数（66 十进制 = 0x42）；⑪ adb 主体律——USB 节点 root:plugdev 时 adb 必须以有权主体运行（sudo），无权主体静默空列表会伪装成"设备不存在"；⑫ 多候选逐试律——DDNS 会发布尚未生效的记录，DoH 全部 Answer + 缓存逐个快探，实战成功者回写缓存。
+
+**R53 方向（chained-fixup 解码轮）**：① 解码刀 = 按 dyld_chained_ptr_64_rebase 位域（arm64e：target 低 36 位 / next 高位簇）解码 infos-hex 四字段，还原 dyld 静态期望指针与 next 链拓扑，对照 0x18008c000 形真值表；② 影响面刀 = 全量 prefault 全息按 fixup 解码重算 slide 算术（R51 的 0xff70000100f64000 形态 = 模板 fixup 字节 + slide 的产物），裁决 non-fatal 预取是否在 exec 风暴期造成真实页缺失代价（kr 0x1 x N 的时间分布 vs exec 时延）。
