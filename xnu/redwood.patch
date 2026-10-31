@@ -413,7 +413,7 @@ index 95192dd..b00da80 100644
  
  	/*
 diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
-index 1d71c66..6c72dd9 100644
+index 1d71c66..f35e966 100644
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
 @@ -1157,6 +1157,9 @@ SYSCTL_PROC(_vm, OID_AUTO, shared_region_control,
@@ -915,7 +915,7 @@ index 1d71c66..6c72dd9 100644
  
  			if (imgp->ip_flags & IMGPF_IS_64BIT_ADDR) {
  				notification_address = (user_addr_t)all_image_infos.infos64.notification;
-@@ -7722,6 +8066,72 @@ exec_prefault_data(proc_t p __unused, struct image_params *imgp, load_result_t *
+@@ -7722,6 +8066,70 @@ exec_prefault_data(proc_t p __unused, struct image_params *imgp, load_result_t *
  
  			dyld_slide_amount = (user_addr_t)load_result->all_image_info_addr - dyld_all_image_infos_address;
  
@@ -957,8 +957,7 @@ index 1d71c66..6c72dd9 100644
 +					r54_pref[2] = (user_addr_t)vm_map_trunc_page(dyld_base + ver_target, vm_map_page_mask(current_map()));
 +					r54_decode_ok++;
 +					if (n <= 4 || (n % 16) == 0) {
-+						printf("redwood-exec: decode %u: pid %d[%s] base 0x%llx notif 0x%llx->0x%llx img 0x%llx->0x%llx ver 0x%llx->0x%llx
-+",
++						printf("redwood-exec: decode %u: pid %d[%s] base 0x%llx notif 0x%llx->0x%llx img 0x%llx->0x%llx ver 0x%llx->0x%llx\n",
 +						    n, proc_getpid(p), p->p_comm, dyld_base,
 +						    (uint64_t)notification_address, (uint64_t)r54_pref[0],
 +						    (uint64_t)dyld_image_address, (uint64_t)r54_pref[1],
@@ -973,8 +972,7 @@ index 1d71c66..6c72dd9 100644
 +					r54_pref[2] = (user_addr_t)vm_map_trunc_page(dyld_version_address + dyld_slide_amount, vm_map_page_mask(current_map()));
 +					r54_decode_skip++;
 +					if (n <= 4) {
-+						printf("redwood-exec: decode skip %u: pid %d[%s] infos 0x%llx notif 0x%llx img 0x%llx ver 0x%llx
-+",
++						printf("redwood-exec: decode skip %u: pid %d[%s] infos 0x%llx notif 0x%llx img 0x%llx ver 0x%llx\n",
 +						    n, proc_getpid(p), p->p_comm,
 +						    (uint64_t)dyld_all_image_infos_address,
 +						    (uint64_t)notification_address,
@@ -988,7 +986,7 @@ index 1d71c66..6c72dd9 100644
  #if 0
  			kprintf("exec_prefault: 0x%016llx 0x%08x 0x%016llx 0x%016llx 0x%016llx 0x%016llx\n",
  			    (uint64_t)load_result->all_image_info_addr,
-@@ -7736,32 +8146,43 @@ exec_prefault_data(proc_t p __unused, struct image_params *imgp, load_result_t *
+@@ -7736,32 +8144,43 @@ exec_prefault_data(proc_t p __unused, struct image_params *imgp, load_result_t *
  				DEBUG4K_LOAD("notification_address 0x%llx dyld_slide_amount 0x%llx\n", (uint64_t)notification_address, (uint64_t)dyld_slide_amount);
  			}
  			kr = vm_fault(current_map(),
