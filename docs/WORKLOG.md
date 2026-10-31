@@ -1902,3 +1902,22 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 - 判据行全清单：brought up（tell 恒打印）/ per-step announce（quiet kept，失败倒灌）/ `wifi: the radio's DSP is up and linked, %llu ms in`（step 15 开始 = MPSS 活 + GLINK 链上）/ `wifi: ICNSS WLAN firmware %s; MSA indication %s`（fork 验证行：READY + received）/ QRTR 会话行 / `THE RADIO IS UP, %llu.%llu s`。
 - 沿袭全表守恒核对：decode ok 随 exec 风暴增长且 skip=0、verdicts 0、prefault 全息 0、faults/uf-ok 率 93/s、madvise-ro ~1,815、traps/posts/aborts 0、SpringBoard spawn、adreno 行数。
 - 观察计划：T+360/T+917/T+1530 相态探针（loader 常驻不辨 panic——真判词在 logdump）；收卷 = `oem logdump`（loader 在时）或 TWRP `dd if=/dev/block/by-name/logdump` 64 MB 全分区直读（R54 律）。
+
+**R56 真机判读（2026-11-01，run1 = HR12-1 全胜定谳：MPSS 装载 + ICNSS + SNOC 一次闭环，WiFi 链首次在 raphael 点亮）**
+
+**logdump**：oem stop OKAY @ T+1690s（stop 先于停车窗落地，手机稳在 loader）→ oem logdump + get_staged 4MB（sha 6a57d5ed）→ NAS 归档（/vol1/1000/ios/r56-logdump.bin + r56/raphael-r56-flashboot-fw-nv.apfs）+ 容器判读（scripts/r56_judge.py，预注册树逐项对表）。通道两度瞬断（~50s/~3min）——冠军缓存优先律入 nas_ssh.py（R50 律移植），重试即回。
+
+**HR12-1 全胜（预注册判据逐项）**：
+- **`wifi: SM8150 MPSS/ath10k is being brought up beside the system's start (wifi=1)` @ t=82.4s**（bare + [ts] 双唱；raphael 分支进入实锤，`firmware is missing` x0 = HR12-3 守卫未开火 = 固件卷交付成立）；
+- **`the radio's DSP is up and linked, 8812 ms in; now the driver` @ t=91.3s**——**MPSS（modem 处理器）从零到活只用 8.8 秒**：固件读 → APCS 臂 → PAS image 4 头验 → 81.6MB 镜像写读 → SMP2P 项 → TZ 认证启动 → 首词观察，全链一次通过；
+- **`THE RADIO IS UP, 9.1 s after the kernel began on it` @ t=91.6s**——whole_thread `failed == 0` 判词 = 步 6..15 全过：step_qrtr 的 raphael 分支（RMTFS + TFTP + pd-mapper + ICNSS bootstrap QMI/MSA）与 step_exchange（SNOC 主机驱动启动）全绿——**WCN3990 固件 READY + SNOC 桥在册**（fork 验证行判据由步级 kept 环承载，见下条 kept 律）；
+- **零 panic**（仅 launchd lint 2 行 = R54 同款常态）、零 SIGBUS、零 GPU reset；**存活 1751.4s = 29.2 分钟 = 项目新纪录**（R54 1473.5s → +277.9s；本轮无自落 TWRP，oem stop 亲手收卷）；
+- **优雅停车全链实锤**：`lx: the network is NOT joined, 0 s after it was joined` → `wifi: the radio is off: its DSP stopped when asked, and TrustZone has shut it down` @ t=1751.4s——**SMP2P 自认停（stopped by its own word）+ TZ 关停**，fork 文档化的清洁退出序（dsp_ask_to_stop 律）在本树首次完整运行；末行 `== END OF LOG ==` 完整落卷。
+
+**kept 律破案（quiet 设计的判读语义入册）**：whole 模式默认 quiet=1，且 wifi.c:309 / mpss.c:180 / wlfw.c:47 三处 `#define printf say`——**全部步级/ICNSS/QRTR/RMTFS/TFTP 细节行走 64KB kept 环，成功时不出卷（失败才 say_kept 倒灌 24KB）**；logdump 只承载 tell() 行（bare + [ts] 双唱 = loader 直写 + 内核控制台两通道）。故 `THE RADIO IS UP` 本身即步 6..15 全过的构造性证明；步级取证需 wifi_loud=1（cmdline 变更 = R57 可选项）。
+
+**沿袭全表（HR11-1 状态守恒，48 tick 单调）**：decode ok 58 / skip 0（R54 终值同）；verdicts 0、prefault 全息 0（判词漏斗空载沿袭）；faults 136,318 / uf-ok 136,306（gap 12 = 拆行读窗律 |gap| 不辨号；R54 137,173/1473.5s = 93.09/s → 本轮 136,318/1751.4s = **77.83/s（-16.4%）**——wifi 线程 + lx 电台内存整块预备与 exec 风暴共存，用户态故障率反降，无回归）；madvise-ro 1,813（R52 逐位同）；births 15 / printed 9 / sw-denied 0 / budget-denied 6（三代逐位同）；traps 0/0 posts 0/0 aborts 0；SpringBoard 3,581 行 spawn ✓；adreno 1,307 行；epoch 时钟 00:01:24 → 00:29:11。
+
+**结论（R56 立档）**：**WiFi 链在 raphael 首次点亮**——MPSS 装载（PAS 4）+ ICNSS 控制链（RMTFS/TFTP/pd-mapper/MSA/BDF）+ SNOC 主机驱动一次闭环，加载 9.1 秒、零 panic、清洁停车。内核零变（R54 KSHA 36438a97 骑现役 boot 分区）、cmdline 零变（R39 组 verbatim）、唯一变量 = flashboot 固件输入——单变量纪律兑现，R40 载体设计 + R41 M2 判决双双兑现。
+
+**R57 预注册（入网轮：lx join + 用户态对接）**：电台已 UP 而网络 NOT joined（"0 frames sent/received"）——用户态侧 com.redwood.wifi 控制链（wifi_ask=1 手机设置手输密码形态）+ lx join 数据路径未走。R57 = ① 判读增强：wifi_loud=1 进 cmdline（kept 环全量出卷，步级/ICNSS 细节可取证）+ wifi_diag 按需；② 用户态：确认 resident 卷 com.redwood.wifi/net_test 在册（R39 log 已证 spawn），触发 join → DHCP → 扫描/关联判词（fork 判据：`ICNSS WLAN firmware READY` 已有，下一层 = 关联 + 地址）；③ 风险预注册：fork 在案"连接仍不稳定 / 关闭再开启后无法扫描"（其自认未修）——按 wifi_diag + microdump 取证，不预期一次全绿。回滚律沿袭（小 flashboot = R54 稳态）。
