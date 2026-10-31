@@ -5707,6 +5707,7 @@ redwood_adreno_minute(void)
                     r48_sigbirth_budget_denied, r48_usertrap_seen, r48_usertrap_printed, r48_sigpost_seen,
                     r48_sigpost_printed, r48_userabort_seen, r48_fault_seen;
                 extern unsigned long long r49_uf_ok, r49_uf_aborted, r49_uf_align, r49_uf_delivered, r49_verdicts;
+                extern unsigned long long r51_madvise_readonly_pages;   /* osfmk/vm/vm_map.c, the R51 clamp */
 
                 printf("sigcensus: births %llu (printed %llu, sw-denied %llu, budget-denied %llu), traps %llu/%llu, posts %llu/%llu, aborts %llu, faults %llu\n",
                     r48_sigbirth_seen, r48_sigbirth_printed, r48_sigbirth_switch_denied, r48_sigbirth_budget_denied,
