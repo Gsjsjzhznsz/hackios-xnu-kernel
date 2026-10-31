@@ -1933,3 +1933,16 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 - **HR13-2** = 某步 named failure（wifi_loud 全量下首见细节）⇒ 新墙定点修；
 - **HR13-3** = 细节出卷但 R56 判词缺席（brought up/IS UP 消失）⇒ wifi_loud 本身引入回归（时序/日志洪泛），回滚 = R57 镜像换回 R54 镜像（fastboot flash boot r54）。
 - 沿袭全表照 R56（decode/verdicts/madvise/births/traps）+ 存活门槛升格 1751.4s。
+
+## R58 扫描轮（2026-11-01，wifi_scan=1 单变量：免凭据自驱阶梯 = 计划 R37 行前半）
+
+**R57 真机判读（先立档）——HR13-1 全胜**：R56 全线复现 + **loud 全量出卷**：内核 cmdline 自证行（202 行 `wifi_bdf=bd_f11cn.bin wifi_loud=1`）、**`ICNSS WLAN firmware READY; MSA indication received`**（fork 验证行）、MSA 区实探（`0x8bc00000 + 0x4000 secure 1` / `0x8bc04000 + 0x17c000 secure 0` = 计划硬件事实表逐位吻合）、QRTR 会话（`services it has told of: 45; the Wi-Fi firmware's service: THERE` = 计划"服务 0x45"判据）、**BDF `bd_f11cn.bin accepted: 26328 bytes`**、capability TLV 0x10/0x12/0x13、PD mapper 应答（tms/pdr_enabled、kernel/elf_loader）、RMTFS RAM-only（4 私有快照 6144 读 0 写——NV 零触律）、TFTP mcfg.tmp/server_check.txt 写读、步 6/9 ELF 段写全量、**ath10k 固件链**（pre-cal/cal/firmware-6 缺 → **firmware-5.bin: there**）→ SNOC 驱动起 → **THE RADIO IS UP @8.9s**、零 panic、**存活 1860s = 31.0 分钟再破纪录（+108.6s）**、清洁停车 + SMMU 恢复（s2cr/sctlr 行）、END OF LOG；沿袭全表绿（decode 58/0、verdicts 0、madvise-ro 1813、births 15/9、faults 141,725 = 76.2/s 稳定、SpringBoard、adreno 891）。logdump sha b1887289 已归 NAS。**计划阶梯 R36 行（ICNSS+BDF 轮）判据全数入档兑现。**
+
+**R58 设计（免凭据自驱）**：扫描链考古——`stands_for[]`（wifi.c:354）实锤 **wifi=1 已隐含 wifi_lx=2 + wifi_smmu=2 + wifi_station + wifi_keep + wifi_irq（+ba/wide）**；扫描消费点 lx_bus.c:821-830（join 优先、否则 wifi_scan ⇒ lx_station_scan() ⇒ say_heard() 打印，lx_80211.c:640 "strongest first"，fork 真机判据 "26 channels in 4.1s" 在案）。**单变量 = cmdline-append `wifi_scan=1`**（+ R57 的 wifi_loud=1 沿袭；r54.xnup 原载荷，R26 遗产通道第三次使用）。扫描 = listening only（fork 原话），零写入他网。
+
+**HR14 判决树（预注册）**：
+- **HR14-1 全胜** = R57 全线复现（brought up / READY 行 / THE RADIO IS UP / 零 panic / 存活 ≥1860s）+ **扫描判词在场**：驱动起后 station 接口建立 + 扫描完成（"26 channels in 4.1s" 形状行）+ say_heard 行（heard 计数、信道分布、最强优先表）⇒ **计划 R37 行前半（扫描）兑现，本机 RF 环境首次入册**；
+- **HR14-2** = 扫描发起但零 heard（空表/aborted）⇒ RF/域问题分诊（regd 信道表、BDF 校准链）；
+- **HR14-3** = 扫描行缺席且驱动未起（firmware 链断）⇒ 对表 R57 的 lx 文件请求序分诊；
+- **HR14-4** = panic/异常 ⇒ 按码分诊；回滚 = cmdline-append 不含 wifi_scan 重跑（R57 稳态）。
+- 隐私律沿袭（fork 原话 "the log is not for passing on"）：**扫描 heard 的他网名/地址只入私有归档（NAS + 本地 own 文件），推送账本只记计数/形状**。
