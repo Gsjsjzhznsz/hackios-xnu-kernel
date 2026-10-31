@@ -413,7 +413,7 @@ index 95192dd..b00da80 100644
  
  	/*
 diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
-index 1d71c66..f4639e8 100644
+index 1d71c66..6c72dd9 100644
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
 @@ -1157,6 +1157,9 @@ SYSCTL_PROC(_vm, OID_AUTO, shared_region_control,
@@ -753,7 +753,7 @@ index 1d71c66..f4639e8 100644
  	if (0 == error) {
  		/*
  		 * Update the new process's signature-dependent process state.
-@@ -7602,6 +7814,99 @@ done:
+@@ -7602,6 +7814,132 @@ done:
  	return error;
  }
  
@@ -850,10 +850,43 @@ index 1d71c66..f4639e8 100644
 +	(void)loader_log_flush();
 +}
 +
++
++/*
++ * (redwood R54) The decoder.  R52's archaeology proved the page honest:
++ * the copyin() bytes ARE dyld's static template, so every pointer field
++ * still wears its chained-fixup rebase encoding -- dyld's static offset
++ * in the low 36 bits, the next-chain stride in the top half -- and no
++ * fixup pass has run yet (dyld has not executed a single instruction
++ * when exec_prefault_data() copies the structure in).  The upstream
++ * slide arithmetic -- field + (aii_addr - infos_encoded) -- therefore
++ * walks a fragment of that encoding into the address (broken = real +
++ * 0xFF70000000000000, the R53 proof's constant), and every one of the
++ * three dyld prefetches dies fail-fast on no-map-entry: harmless (kr 0x1,
++ * no pager I/O), but the three pages were never warmed and every dyld
++ * startup paid first-touch soft faults for them.  The decode: target =
++ * field & 0xFFFFFFFFF (36 bits); dyld_base = aii_addr - infos_target;
++ * the prefetch walks trunc_page(dyld_base + target) -- the REAL page.
++ * Only a PURE rebase decodes (bind/auth/high8/unused all zero, the
++ * infos self-target nonzero); anything else keeps the upstream
++ * arithmetic and counts a skip -- the upstream path is non-fatal by
++ * construction, this only adds the truth to it.
++ */
++unsigned long long r54_decode_ok, r54_decode_skip;
++
++static int
++r54_rebase_target(user_addr_t field, uint64_t *target)
++{
++	uint64_t v = (uint64_t)field;
++
++	*target = v & 0xFFFFFFFFFULL;
++	return ((((v >> 36) & 0xFF) != 0) | (((v >> 44) & 0x7F) != 0) |
++	    ((v >> 62) & 1) | ((v >> 63) & 1)) == 0;
++}
++
  /*
   * Typically as soon as we start executing this process, the
   * first instruction will trigger a VM fault to bring the text
-@@ -7616,7 +7921,7 @@ done:
+@@ -7616,7 +7954,7 @@ done:
  #define PREVENT_CALLER_STACK_USE __attribute__((noinline))
  #endif
  static void PREVENT_CALLER_STACK_USE
@@ -862,7 +895,7 @@ index 1d71c66..f4639e8 100644
  {
  	int ret;
  	size_t expected_all_image_infos_size;
-@@ -7636,6 +7941,10 @@ exec_prefault_data(proc_t p __unused, struct image_params *imgp, load_result_t *
+@@ -7636,6 +7974,10 @@ exec_prefault_data(proc_t p __unused, struct image_params *imgp, load_result_t *
  	    THREAD_UNINT, NULL, 0);
  	if (kr != KERN_SUCCESS) {
  		DEBUG4K_ERROR("map %p va 0x%llx -> 0x%x\n", current_map(), (uint64_t)vm_map_trunc_page(load_result->entry_point, vm_map_page_mask(current_map())), kr);
@@ -873,7 +906,16 @@ index 1d71c66..f4639e8 100644
  	}
  
  	if (imgp->ip_flags & IMGPF_IS_64BIT_ADDR) {
-@@ -7722,6 +8031,15 @@ exec_prefault_data(proc_t p __unused, struct image_params *imgp, load_result_t *
+@@ -7694,6 +8036,8 @@ exec_prefault_data(proc_t p __unused, struct image_params *imgp, load_result_t *
+ 			user_addr_t dyld_version_address;
+ 			user_addr_t dyld_all_image_infos_address;
+ 			user_addr_t dyld_slide_amount;
++			user_addr_t r54_pref[3];    /* (redwood R54) the decoded prefetch pages: notif, image, version */
++			int r54_decoded;
+ 
+ 			if (imgp->ip_flags & IMGPF_IS_64BIT_ADDR) {
+ 				notification_address = (user_addr_t)all_image_infos.infos64.notification;
+@@ -7722,6 +8066,72 @@ exec_prefault_data(proc_t p __unused, struct image_params *imgp, load_result_t *
  
  			dyld_slide_amount = (user_addr_t)load_result->all_image_info_addr - dyld_all_image_infos_address;
  
@@ -886,16 +928,80 @@ index 1d71c66..f4639e8 100644
 +			    (uint64_t)dyld_image_address |
 +			    (uint64_t)dyld_all_image_infos_address) >> 32) > 0x10000));
 +
++			/* (redwood R54) The decode: pull dyld's static offsets
++			 * out of the fixup encoding and walk the REAL pages.
++			 * All four fields must decode as pure rebases and the
++			 * infos self-target must be nonzero (it anchors
++			 * dyld_base); one skip keeps the upstream arithmetic
++			 * for ALL of them -- no mixed truth.  r54_pref is
++			 * filled in both branches, so the three prefetches
++			 * below ride one variable: the real pages when the
++			 * template decoded, the upstream arithmetic when it
++			 * did not.  The R52 boot's template predicts: ok
++			 * through the exec storm, skip never; the census line
++			 * counts both, this line names the first few. */
++			{
++				uint64_t infos_target = 0, notif_target = 0, img_target = 0, ver_target = 0;
++
++				r54_decoded = r54_rebase_target(dyld_all_image_infos_address, &infos_target) &&
++				    r54_rebase_target(notification_address, &notif_target) &&
++				    r54_rebase_target(dyld_image_address, &img_target) &&
++				    r54_rebase_target(dyld_version_address, &ver_target) &&
++				    infos_target != 0;
++				if (r54_decoded) {
++					uint64_t dyld_base = (uint64_t)load_result->all_image_info_addr - infos_target;
++					unsigned n = (unsigned)r54_decode_ok + 1;
++
++					r54_pref[0] = (user_addr_t)vm_map_trunc_page(dyld_base + notif_target, vm_map_page_mask(current_map()));
++					r54_pref[1] = (user_addr_t)vm_map_trunc_page(dyld_base + img_target, vm_map_page_mask(current_map()));
++					r54_pref[2] = (user_addr_t)vm_map_trunc_page(dyld_base + ver_target, vm_map_page_mask(current_map()));
++					r54_decode_ok++;
++					if (n <= 4 || (n % 16) == 0) {
++						printf("redwood-exec: decode %u: pid %d[%s] base 0x%llx notif 0x%llx->0x%llx img 0x%llx->0x%llx ver 0x%llx->0x%llx
++",
++						    n, proc_getpid(p), p->p_comm, dyld_base,
++						    (uint64_t)notification_address, (uint64_t)r54_pref[0],
++						    (uint64_t)dyld_image_address, (uint64_t)r54_pref[1],
++						    (uint64_t)dyld_version_address, (uint64_t)r54_pref[2]);
++						(void)loader_log_flush();
++					}
++				} else {
++					unsigned n = (unsigned)r54_decode_skip + 1;
++
++					r54_pref[0] = (user_addr_t)vm_map_trunc_page(notification_address + dyld_slide_amount, vm_map_page_mask(current_map()));
++					r54_pref[1] = (user_addr_t)vm_map_trunc_page(dyld_image_address + dyld_slide_amount, vm_map_page_mask(current_map()));
++					r54_pref[2] = (user_addr_t)vm_map_trunc_page(dyld_version_address + dyld_slide_amount, vm_map_page_mask(current_map()));
++					r54_decode_skip++;
++					if (n <= 4) {
++						printf("redwood-exec: decode skip %u: pid %d[%s] infos 0x%llx notif 0x%llx img 0x%llx ver 0x%llx
++",
++						    n, proc_getpid(p), p->p_comm,
++						    (uint64_t)dyld_all_image_infos_address,
++						    (uint64_t)notification_address,
++						    (uint64_t)dyld_image_address,
++						    (uint64_t)dyld_version_address);
++						(void)loader_log_flush();
++					}
++				}
++			}
++
  #if 0
  			kprintf("exec_prefault: 0x%016llx 0x%08x 0x%016llx 0x%016llx 0x%016llx 0x%016llx\n",
  			    (uint64_t)load_result->all_image_info_addr,
-@@ -7743,6 +8061,14 @@ exec_prefault_data(proc_t p __unused, struct image_params *imgp, load_result_t *
+@@ -7736,32 +8146,43 @@ exec_prefault_data(proc_t p __unused, struct image_params *imgp, load_result_t *
+ 				DEBUG4K_LOAD("notification_address 0x%llx dyld_slide_amount 0x%llx\n", (uint64_t)notification_address, (uint64_t)dyld_slide_amount);
+ 			}
+ 			kr = vm_fault(current_map(),
+-			    vm_map_trunc_page(notification_address + dyld_slide_amount,
+-			    vm_map_page_mask(current_map())),
++			    (vm_map_offset_t)r54_pref[0],
+ 			    VM_PROT_READ | VM_PROT_EXECUTE,
+ 			    FALSE, VM_KERN_MEMORY_NONE,
  			    THREAD_UNINT, NULL, 0);
  			if (kr != KERN_SUCCESS) {
  //				printf("%s:%d map %p va 0x%llx -> 0x%x\n", __FUNCTION__, __LINE__, current_map(), vm_map_trunc_page(notification_address + dyld_slide_amount, vm_map_page_mask(current_map())), kr);
 +				r51_prefault_convict(p, 1, kr,
-+				    vm_map_trunc_page(notification_address + dyld_slide_amount,
-+				    vm_map_page_mask(current_map())),
++				    (vm_map_offset_t)r54_pref[0],
 +				    load_result->entry_point,
 +				    load_result->all_image_info_addr,
 +				    load_result->all_image_info_size,
@@ -904,13 +1010,18 @@ index 1d71c66..f4639e8 100644
  			}
  			if (vm_map_page_shift(current_map()) < (int)PAGE_SHIFT) {
  				DEBUG4K_LOAD("dyld_image_address 0x%llx dyld_slide_amount 0x%llx\n", (uint64_t)dyld_image_address, (uint64_t)dyld_slide_amount);
-@@ -7755,6 +8081,14 @@ exec_prefault_data(proc_t p __unused, struct image_params *imgp, load_result_t *
+ 			}
+ 			kr = vm_fault(current_map(),
+-			    vm_map_trunc_page(dyld_image_address + dyld_slide_amount,
+-			    vm_map_page_mask(current_map())),
++			    (vm_map_offset_t)r54_pref[1],
+ 			    VM_PROT_READ | VM_PROT_EXECUTE,
+ 			    FALSE, VM_KERN_MEMORY_NONE,
  			    THREAD_UNINT, NULL, 0);
  			if (kr != KERN_SUCCESS) {
  //				printf("%s:%d map %p va 0x%llx -> 0x%x\n", __FUNCTION__, __LINE__, current_map(), vm_map_trunc_page(dyld_image_address + dyld_slide_amount, vm_map_page_mask(current_map())), kr);
 +				r51_prefault_convict(p, 2, kr,
-+				    vm_map_trunc_page(dyld_image_address + dyld_slide_amount,
-+				    vm_map_page_mask(current_map())),
++				    (vm_map_offset_t)r54_pref[1],
 +				    load_result->entry_point,
 +				    load_result->all_image_info_addr,
 +				    load_result->all_image_info_size,
@@ -919,6 +1030,14 @@ index 1d71c66..f4639e8 100644
  			}
  			if (vm_map_page_shift(current_map()) < (int)PAGE_SHIFT) {
  				DEBUG4K_LOAD("dyld_version_address 0x%llx dyld_slide_amount 0x%llx\n", (uint64_t)dyld_version_address, (uint64_t)dyld_slide_amount);
+ 			}
+ 			kr = vm_fault(current_map(),
+-			    vm_map_trunc_page(dyld_version_address + dyld_slide_amount,
+-			    vm_map_page_mask(current_map())),
++			    (vm_map_offset_t)r54_pref[2],
+ 			    VM_PROT_READ,
+ 			    FALSE, VM_KERN_MEMORY_NONE,
+ 			    THREAD_UNINT, NULL, 0);
 diff --git a/bsd/kern/kern_memorystatus.c b/bsd/kern/kern_memorystatus.c
 index 1750d3a..9947cb2 100644
 --- a/bsd/kern/kern_memorystatus.c

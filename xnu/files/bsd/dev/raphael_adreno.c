@@ -5723,6 +5723,21 @@ redwood_adreno_minute(void)
                 printf("sigcensus: uf-ok %llu, uf-aborted %llu, uf-align %llu, uf-delivered %llu, verdicts %llu, madvise-ro %llu\n",
                     r49_uf_ok, r49_uf_aborted, r49_uf_align, r49_uf_delivered, r49_verdicts,
                     r51_madvise_readonly_pages);
+                /* R54: the decode census, its own line (the R51 split's law:
+                 * no singer line grows wide on another's width).  ok = the
+                 * execs whose three dyld pointer fields were PURE rebases
+                 * and so were decoded onto their real pages; skip = the
+                 * execs whose fields carried a bind/auth/high8/unused bit
+                 * and so kept the upstream arithmetic.  The R52 boot's
+                 * prediction: ok rises through the exec storm, skip stays
+                 * at zero -- if it does not, the template changed shape
+                 * and the skip line in kern_exec.c names the fields. */
+                {
+                        extern unsigned long long r54_decode_ok, r54_decode_skip;   /* bsd/kern/kern_exec.c */
+
+                        printf("sigcensus: decode ok %llu, skip %llu\n",
+                            r54_decode_ok, r54_decode_skip);
+                }
                 /* R52: the two channels sing once more, named -- the R51
                  * boot's census rode both a timestamped line and a bare
                  * twin, same values, and nobody could say which channel
