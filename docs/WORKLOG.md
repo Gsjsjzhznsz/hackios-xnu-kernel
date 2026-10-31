@@ -1833,3 +1833,13 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 **HR11 判读树（预注册进 release_readme/release_body）**：HR11-1（全胜）= census decode ok 在场且 skip=0 + prefault kind1/2 全息零条 + ask read-exec 判词归零（R52 45 条）+ 存活 ≥1379.5s 零 panic ⇒ 预取解码闭环（launch 预取优化复活），R55 = first-touch 软故障定量（faults vs R52 129,339）；HR11-2 = decode skip > 0 ⇒ 模板形态变异，skip 行入档修解码律；HR11-3 = ask read-exec 残留 ⇒ 判词漏斗另有喂食者按 pid/addr/kind 分诊；HR11-4 = panic/新墙 ⇒ logdump 按码分诊；回滚 = r52 GPU 镜像。
 
 **R53 证明沿袭补跑**：r53_fixup_decode_proof.py 输入（download/r52-logdump.bin）随容器回收丢失，SSH 通道重建后从 NAS 回拉复跑（七组裁决应照旧 ALL GREEN——轮间不变量）。
+
+## R54 run#28 验尸 + run#29 收割（2026-10-31，re.sub replacement 转义吃掉 C 字符串换行 → callable 根治；run#29 SUCCESS，KSHA 36438a97 入账）
+
+**run#28 验尸（41203603001，8/17 绿，死在步③编译）**：`kern_exec.c:8107:14 / 8123:14: error: expected expression` → `kern_exec.o Error 1`。死点 = R54 解码块的两条 printf：字符串字面量内出现**裸换行**。机理三层叠加：E3 的 r-string 字面量带着 backslash-backslash-n（对 r-string 是 `\`+`\`+n 三字符）→ 链上的 `.replace('\\\\n','\\n')` 把它归一成 backslash-n（两层本意互相抵消、方向相反）→ 最终插入经 `re.sub(pattern, "\\g<0>" + E3, ...)`，**re.sub 的 replacement 字符串转义把 backslash-n 改写成真换行**——C 字符串字面量唯一不能见的字节。电池测不出它：stub 从 release 镜像来，不经过 C 生成路径。离线验证的边界再次入册：**生成器问题只能在生成物上验**。
+
+**根治（run#29 提交 e90a84e）**：E3 改骑 **callable replacement**（`lambda m: m.group(0) + E3`）——re.sub 对 callable 返回值**逐字插入、零转义**；链上的 backslash 改写删除；r-string 字面量直接写 backslash-n。字节级三重证明：repr 于生成的 kern_exec.c（backslash-n 在位）、repr 于 patch 的 + 行、repr 于干净树 git apply 后；HUNK-MATH 210 hunks 0 bad；电池 32 项 ALL GREEN 复跑。**新律入册**：①凡组装 C 字符串字面量的生成器，大块插入永远骑 callable（或手工 span 拼接），永不骑 replacement 字符串——`\g`/`\1`/`\n`/`\t` 全是雷；②一切"生成物字节"主张以 repr() 断言为证——`cat -A | cut` 的截断曾伪造出并不存在的裸换行、一次 repr 扫读又把 `\n` 误读成 backslash-n，**断言是唯一证人**。
+
+**收割（run#29 = 41205080579，e90a84e，SUCCESS）**：Release r54-springboard 八资产全 uploaded（双镜像 8,163,439 / 12,669,039 B + flashboot + md1 + gate 报告 + SHA256SUMS + README + toolchain）。**KSHA = 36438a970047370fe1b435a4ab58f337542188abe2035af6b68ef8ab15455947**（17,027,112 B，**delta +56 B 全 __LINKEDIT、__TEXT +0**——解码器整块塞进 __TEXT padding，R41/R45/R50 的 delta-0 家族新成员；nsyms 73027→73029 = r54_decode_ok/r54_decode_skip 两数据符号；strings gained 6 / lost 3 = R54 marker + decode 三格式 + 2 Darwin 行 vs R52 marker + 2 Darwin 行；marker @ 0x2d616 真 rodata）。公网回读复验：SHA256SUMS 四件全 OK；r54-kernel-id 双镜像判读全对（GPU = R54 + R39 组 cmdline verbatim + 卷 R39..R54 + loader 4bf828e4；daily = v7 loader + R33 内核 + 零 gpu token + R13 卷 = 控制组原字节）。
+
+**HR11 真机待判**：刷机物料就绪（raphael-xnu-r54-gpu-flash.img / raphael-r54-flashboot.apfs 在 release 直链）；判决树 HR11 预注册在案（decode ok 在场且 skip=0 + kind1/2 全息零条 + ask read-exec 判词归零 + 存活 ≥1379.5s ⇒ HR11-1 全胜 = launch 预取优化复活）。本轮环境两处物理边界：容器实例无 USB 透传（手机不在总线上，fastboot/adb 链无法自治执行——等设备回插或设备端 `sh run_ios.sh flash r54 gpu`）；NAS SSH 的域名/用户名不在任何本地残留（多候选逐试律无候选可试——存档上传待补一条线索）。
