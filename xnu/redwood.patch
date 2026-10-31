@@ -1,5 +1,5 @@
 diff --git a/Makefile b/Makefile
-index e78d8476c346..03fc3ff646b8 100644
+index e78d847..03fc3ff 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -143,8 +143,8 @@ installsrc:
@@ -36,7 +36,7 @@ index e78d8476c346..03fc3ff646b8 100644
  
  TOP_TARGETS = \
 diff --git a/SETUP/config/doconf b/SETUP/config/doconf
-index 222158a93918..68bb0f3e56bf 100755
+index 222158a..68bb0f3 100755
 --- a/SETUP/config/doconf
 +++ b/SETUP/config/doconf
 @@ -1,4 +1,4 @@
@@ -46,7 +46,7 @@ index 222158a93918..68bb0f3e56bf 100755
  ######################################################################
  # HISTORY
 diff --git a/bsd/conf/Makefile.arm64 b/bsd/conf/Makefile.arm64
-index a4d25040f38f..aad72993d139 100644
+index a4d2504..aad7299 100644
 --- a/bsd/conf/Makefile.arm64
 +++ b/bsd/conf/Makefile.arm64
 @@ -5,6 +5,11 @@
@@ -62,7 +62,7 @@ index a4d25040f38f..aad72993d139 100644
  kern_debug.o_INCFLAGS += -I$(SRCROOT)/osfmk
  
 diff --git a/bsd/conf/files b/bsd/conf/files
-index 44274016a4cf..9cd24b42caca 100644
+index 4427401..99955d2 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
 @@ -109,6 +109,42 @@ bsd/dev/munge.c 			optional config_requires_u32_munging
@@ -140,7 +140,7 @@ index 44274016a4cf..9cd24b42caca 100644
  bsd/kern/kern_control.c			optional networking
  bsd/kern/kern_exec.c			standard
 diff --git a/bsd/dev/arm/km.c b/bsd/dev/arm/km.c
-index fd7a94b20794..69eaceedd248 100644
+index fd7a94b..69eacee 100644
 --- a/bsd/dev/arm/km.c
 +++ b/bsd/dev/arm/km.c
 @@ -205,6 +205,15 @@ kmioctl(dev_t dev, u_long cmd, caddr_t data, int flag, proc_t p)
@@ -179,7 +179,7 @@ index fd7a94b20794..69eaceedd248 100644
  		if (cc > 1) {
  			console_write((char *)buf, cc);
 diff --git a/bsd/dev/arm/systemcalls.c b/bsd/dev/arm/systemcalls.c
-index 7fd9be1a5f38..0d035255b030 100644
+index 7fd9be1..0d03525 100644
 --- a/bsd/dev/arm/systemcalls.c
 +++ b/bsd/dev/arm/systemcalls.c
 @@ -36,6 +36,92 @@
@@ -287,7 +287,7 @@ index 7fd9be1a5f38..0d035255b030 100644
  skip_syscall:
  #endif /* CONFIG_MACF */
 diff --git a/bsd/dev/memdev.c b/bsd/dev/memdev.c
-index 3e6bffa8c48e..43cffb98bdcc 100644
+index 3e6bffa..43cffb9 100644
 --- a/bsd/dev/memdev.c
 +++ b/bsd/dev/memdev.c
 @@ -159,7 +159,8 @@ static const struct cdevsw mdevcdevsw = {
@@ -358,7 +358,7 @@ index 3e6bffa8c48e..43cffb98bdcc 100644
  mdevremoveall(void)
  {
 diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
-index 4df41ba1f61b..16cf4fd8d8f1 100644
+index 4df41ba..16cf4fd 100644
 --- a/bsd/kern/bsd_init.c
 +++ b/bsd/kern/bsd_init.c
 @@ -147,6 +147,13 @@
@@ -400,7 +400,7 @@ index 4df41ba1f61b..16cf4fd8d8f1 100644
  #endif /* DEVFS */
  
 diff --git a/bsd/kern/decmpfs.c b/bsd/kern/decmpfs.c
-index 95192dd62449..b00da803b5b4 100644
+index 95192dd..b00da80 100644
 --- a/bsd/kern/decmpfs.c
 +++ b/bsd/kern/decmpfs.c
 @@ -515,7 +515,7 @@ decmpfs_fetch_compressed_header(vnode_t vp, decmpfs_cnode *cp, decmpfs_header **
@@ -413,7 +413,7 @@ index 95192dd62449..b00da803b5b4 100644
  
  	/*
 diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
-index 1d71c66629fb..3e1737c21b86 100644
+index 1d71c66..0c33010 100644
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
 @@ -1157,6 +1157,9 @@ SYSCTL_PROC(_vm, OID_AUTO, shared_region_control,
@@ -753,8 +753,113 @@ index 1d71c66629fb..3e1737c21b86 100644
  	if (0 == error) {
  		/*
  		 * Update the new process's signature-dependent process state.
+@@ -7602,6 +7814,54 @@ done:
+ 	return error;
+ }
+ 
++/*
++ * (redwood R51) The prefault hologram.  These prefault vm_fault() calls
++ * are "non-fatal" and their failures vanish into DEBUG4K -- but the R50
++ * boot caught them at the vm_fault exit: ask read-exec at addresses
++ * wearing a garbage top half (0xff70000100ff8000 and friends), through
++ * the exec storms, across init/launchd/xpcproxy.  An EL1 instruction
++ * abort PANICS (sleh.c routes IABORT_EL1 straight to
++ * panic_with_thread_kernel_state) and this boot took none, so the R50
++ * reading "a PAC-signed pointer was jumped" cannot be: the read-exec
++ * ask rides HERE, in arithmetic.  The prefault addresses are computed
++ * over dyld's all_image_infos pointers (copyin'd above), so a failing
++ * address names its own terms -- this convict prints the whole sum,
++ * throttled like the pager convict (first twelve in full, one in eight
++ * after, each flushed), and the garbage term (the static pointers, the
++ * slide subtraction, or the entry point itself) has nowhere to hide.
++ */
++extern int loader_log_flush(void);              /* osfmk/arm64/loader_return.c */
++
++static unsigned r51_prefault_verdicts;
++
++static void
++r51_prefault_convict(
++	proc_t                  p,
++	int                     kind,   /* 0 entry-point, 1 notification, 2 dyld-image */
++	kern_return_t           kr,
++	vm_map_offset_t         addr,
++	user_addr_t             entry_point,
++	user_addr_t             aii_addr,
++	user_size_t             aii_size,
++	user_addr_t             notif,
++	user_addr_t             dyld_img,
++	user_addr_t             dyld_infos,
++	user_addr_t             slide)
++{
++	unsigned n = ++r51_prefault_verdicts;
++
++	if (n <= 12 || (n % 8) == 0) {
++		printf("redwood-exec: prefault %u: pid %d[%s] kind %d kr 0x%x addr 0x%llx"
++		    " (entry 0x%llx aii_addr 0x%llx aii_size 0x%llx notif 0x%llx"
++		    " dyld_img 0x%llx dyld_infos 0x%llx slide 0x%llx)\n",
++		    n, proc_getpid(p), p->p_comm, kind, kr, (uint64_t)addr,
++		    (uint64_t)entry_point, (uint64_t)aii_addr, (uint64_t)aii_size,
++		    (uint64_t)notif, (uint64_t)dyld_img, (uint64_t)dyld_infos,
++		    (uint64_t)slide);
++		(void)loader_log_flush();
++	}
++}
++
+ /*
+  * Typically as soon as we start executing this process, the
+  * first instruction will trigger a VM fault to bring the text
+@@ -7616,7 +7876,7 @@ done:
+ #define PREVENT_CALLER_STACK_USE __attribute__((noinline))
+ #endif
+ static void PREVENT_CALLER_STACK_USE
+-exec_prefault_data(proc_t p __unused, struct image_params *imgp, load_result_t *load_result)
++exec_prefault_data(proc_t p, struct image_params *imgp, load_result_t *load_result)
+ {
+ 	int ret;
+ 	size_t expected_all_image_infos_size;
+@@ -7636,6 +7896,10 @@ exec_prefault_data(proc_t p __unused, struct image_params *imgp, load_result_t *
+ 	    THREAD_UNINT, NULL, 0);
+ 	if (kr != KERN_SUCCESS) {
+ 		DEBUG4K_ERROR("map %p va 0x%llx -> 0x%x\n", current_map(), (uint64_t)vm_map_trunc_page(load_result->entry_point, vm_map_page_mask(current_map())), kr);
++		r51_prefault_convict(p, 0, kr,
++		    vm_map_trunc_page(load_result->entry_point,
++		    vm_map_page_mask(current_map())),
++		    load_result->entry_point, 0, 0, 0, 0, 0, 0);
+ 	}
+ 
+ 	if (imgp->ip_flags & IMGPF_IS_64BIT_ADDR) {
+@@ -7743,6 +8007,14 @@ exec_prefault_data(proc_t p __unused, struct image_params *imgp, load_result_t *
+ 			    THREAD_UNINT, NULL, 0);
+ 			if (kr != KERN_SUCCESS) {
+ //				printf("%s:%d map %p va 0x%llx -> 0x%x\n", __FUNCTION__, __LINE__, current_map(), vm_map_trunc_page(notification_address + dyld_slide_amount, vm_map_page_mask(current_map())), kr);
++				r51_prefault_convict(p, 1, kr,
++				    vm_map_trunc_page(notification_address + dyld_slide_amount,
++				    vm_map_page_mask(current_map())),
++				    load_result->entry_point,
++				    load_result->all_image_info_addr,
++				    load_result->all_image_info_size,
++				    notification_address, dyld_image_address,
++				    dyld_all_image_infos_address, dyld_slide_amount);
+ 			}
+ 			if (vm_map_page_shift(current_map()) < (int)PAGE_SHIFT) {
+ 				DEBUG4K_LOAD("dyld_image_address 0x%llx dyld_slide_amount 0x%llx\n", (uint64_t)dyld_image_address, (uint64_t)dyld_slide_amount);
+@@ -7755,6 +8027,14 @@ exec_prefault_data(proc_t p __unused, struct image_params *imgp, load_result_t *
+ 			    THREAD_UNINT, NULL, 0);
+ 			if (kr != KERN_SUCCESS) {
+ //				printf("%s:%d map %p va 0x%llx -> 0x%x\n", __FUNCTION__, __LINE__, current_map(), vm_map_trunc_page(dyld_image_address + dyld_slide_amount, vm_map_page_mask(current_map())), kr);
++				r51_prefault_convict(p, 2, kr,
++				    vm_map_trunc_page(dyld_image_address + dyld_slide_amount,
++				    vm_map_page_mask(current_map())),
++				    load_result->entry_point,
++				    load_result->all_image_info_addr,
++				    load_result->all_image_info_size,
++				    notification_address, dyld_image_address,
++				    dyld_all_image_infos_address, dyld_slide_amount);
+ 			}
+ 			if (vm_map_page_shift(current_map()) < (int)PAGE_SHIFT) {
+ 				DEBUG4K_LOAD("dyld_version_address 0x%llx dyld_slide_amount 0x%llx\n", (uint64_t)dyld_version_address, (uint64_t)dyld_slide_amount);
 diff --git a/bsd/kern/kern_memorystatus.c b/bsd/kern/kern_memorystatus.c
-index 1750d3a52d3c..9947cb2421da 100644
+index 1750d3a..9947cb2 100644
 --- a/bsd/kern/kern_memorystatus.c
 +++ b/bsd/kern/kern_memorystatus.c
 @@ -222,6 +222,15 @@ MACRO_END
@@ -816,7 +921,7 @@ index 1750d3a52d3c..9947cb2421da 100644
  }
  
 diff --git a/bsd/kern/kern_priv.c b/bsd/kern/kern_priv.c
-index 88adf2dda936..2b2f528d2273 100644
+index 88adf2d..2b2f528 100644
 --- a/bsd/kern/kern_priv.c
 +++ b/bsd/kern/kern_priv.c
 @@ -82,6 +82,19 @@ priv_check_cred(kauth_cred_t cred, int priv, int flags)
@@ -840,7 +945,7 @@ index 88adf2dda936..2b2f528d2273 100644
  	 * We first evaluate policies that may deny the granting of
  	 * privilege unilaterally.
 diff --git a/bsd/kern/kern_sig.c b/bsd/kern/kern_sig.c
-index ae4a5f33df1e4bc7ffe39c5ff32b5b0de3e03f5e..eaf974e34aedec432d82c693c4ad8798b0067311 100644
+index ae4a5f3..eaf974e 100644
 --- a/bsd/kern/kern_sig.c
 +++ b/bsd/kern/kern_sig.c
 @@ -1099,6 +1099,14 @@ __pthread_kill(__unused proc_t p, struct __pthread_kill_args *uap,
@@ -919,7 +1024,7 @@ index ae4a5f33df1e4bc7ffe39c5ff32b5b0de3e03f5e..eaf974e34aedec432d82c693c4ad8798
  }
  
 diff --git a/bsd/kern/kpi_socket.c b/bsd/kern/kpi_socket.c
-index 003cfb074a99..c597065f24f1 100644
+index 003cfb0..c597065 100644
 --- a/bsd/kern/kpi_socket.c
 +++ b/bsd/kern/kpi_socket.c
 @@ -727,7 +727,7 @@ sock_receive_internal(socket_t sock, struct msghdr *msg, mbuf_t *data,
@@ -932,7 +1037,7 @@ index 003cfb074a99..c597065f24f1 100644
  	if (sock == NULL) {
  		return EINVAL;
 diff --git a/bsd/kern/sys_generic.c b/bsd/kern/sys_generic.c
-index 4ca22ee4371a..e95e618b4cb6 100644
+index 4ca22ee..e95e618 100644
 --- a/bsd/kern/sys_generic.c
 +++ b/bsd/kern/sys_generic.c
 @@ -303,7 +303,7 @@ dofileread(vfs_context_t ctx, struct fileproc *fp,
@@ -972,7 +1077,7 @@ index 4ca22ee4371a..e95e618b4cb6 100644
  	int spacetype = IS_64BIT_PROCESS(p) ? UIO_USERSPACE64 : UIO_USERSPACE32;
  
 diff --git a/bsd/kern/sys_work_interval.c b/bsd/kern/sys_work_interval.c
-index b544bf307dfe..85e34caf9f62 100644
+index b544bf3..85e34ca 100644
 --- a/bsd/kern/sys_work_interval.c
 +++ b/bsd/kern/sys_work_interval.c
 @@ -265,6 +265,22 @@ work_interval_ctl(__unused proc_t p, struct work_interval_ctl_args *uap,
@@ -999,7 +1104,7 @@ index b544bf307dfe..85e34caf9f62 100644
  		return ENOTSUP;
  	}
 diff --git a/bsd/kern/uipc_syscalls.c b/bsd/kern/uipc_syscalls.c
-index dce802fc36f1..e2e6b3a3f3db 100644
+index dce802f..e2e6b3a 100644
 --- a/bsd/kern/uipc_syscalls.c
 +++ b/bsd/kern/uipc_syscalls.c
 @@ -3561,7 +3561,7 @@ sendfile(proc_ref_t p, struct sendfile_args *uap, __unused int *retval)
@@ -1012,7 +1117,7 @@ index dce802fc36f1..e2e6b3a3f3db 100644
  		user_ssize_t    rlen;
  		off_t   pgoff;
 diff --git a/bsd/miscfs/bindfs/bind_vfsops.c b/bsd/miscfs/bindfs/bind_vfsops.c
-index 412f9ecfc22c..f6595c0401a3 100644
+index 412f9ec..f6595c0 100644
 --- a/bsd/miscfs/bindfs/bind_vfsops.c
 +++ b/bsd/miscfs/bindfs/bind_vfsops.c
 @@ -139,8 +139,12 @@ bindfs_mount(struct mount * mp, __unused vnode_t devvp, user_addr_t user_data, v
@@ -1031,7 +1136,7 @@ index 412f9ecfc22c..f6595c0401a3 100644
  	}
  
 diff --git a/bsd/miscfs/mockfs/mockfs.h b/bsd/miscfs/mockfs/mockfs.h
-index 07c91ffaf686..5ce41d043901 100644
+index 07c91ff..5ce41d0 100644
 --- a/bsd/miscfs/mockfs/mockfs.h
 +++ b/bsd/miscfs/mockfs/mockfs.h
 @@ -59,7 +59,7 @@ struct mockfs_mount {
@@ -1044,7 +1149,7 @@ index 07c91ffaf686..5ce41d043901 100644
  };
  
 diff --git a/bsd/miscfs/mockfs/mockfs_fsnode.c b/bsd/miscfs/mockfs/mockfs_fsnode.c
-index e00012622e77..4f993b3cd47f 100644
+index e000126..4f993b3 100644
 --- a/bsd/miscfs/mockfs/mockfs_fsnode.c
 +++ b/bsd/miscfs/mockfs/mockfs_fsnode.c
 @@ -85,7 +85,7 @@ mockfs_fsnode_create(mount_t mp, uint8_t type, mockfs_fsnode_t * fsnpp)
@@ -1081,7 +1186,7 @@ index e00012622e77..4f993b3cd47f 100644
  		}
  
 diff --git a/bsd/nfs/nfs_serv.c b/bsd/nfs/nfs_serv.c
-index 6ae9b6bc3fde..58556c324b67 100644
+index 6ae9b6b..58556c3 100644
 --- a/bsd/nfs/nfs_serv.c
 +++ b/bsd/nfs/nfs_serv.c
 @@ -769,8 +769,8 @@ nfsrv_readlink(
@@ -1132,7 +1237,7 @@ index 6ae9b6bc3fde..58556c324b67 100644
  	int len, nlen, rem, xfer, error, attrerr, gotfh, gotattr;
  	int siz, dircount, maxcount, fullsiz, eofflag, dirlen, nentries, isdotdot;
 diff --git a/bsd/sys/disk.h b/bsd/sys/disk.h
-index 82efb4fcc000..47a4cd98e59f 100644
+index 82efb4f..47a4cd9 100644
 --- a/bsd/sys/disk.h
 +++ b/bsd/sys/disk.h
 @@ -284,7 +284,7 @@ typedef struct{
@@ -1145,7 +1250,7 @@ index 82efb4fcc000..47a4cd98e59f 100644
  } dk_memdev_info_t;
  
 diff --git a/bsd/sys/uio_internal.h b/bsd/sys/uio_internal.h
-index 74a2036cf69e..a68b79ce48fa 100644
+index 74a2036..a68b79c 100644
 --- a/bsd/sys/uio_internal.h
 +++ b/bsd/sys/uio_internal.h
 @@ -170,7 +170,7 @@ __END_DECLS
@@ -1158,7 +1263,7 @@ index 74a2036cf69e..a68b79ce48fa 100644
  #define UIO_IS_USER_SPACE32( a_uio_t )  \
  	( (a_uio_t)->uio_segflg == UIO_USERSPACE32 || (a_uio_t)->uio_segflg == UIO_PHYS_USERSPACE32 || \
 diff --git a/bsd/vfs/vfs_attrlist.c b/bsd/vfs/vfs_attrlist.c
-index cbaa0b221894..78315a2d54cf 100644
+index cbaa0b2..78315a2d 100644
 --- a/bsd/vfs/vfs_attrlist.c
 +++ b/bsd/vfs/vfs_attrlist.c
 @@ -878,7 +878,7 @@ static int
@@ -1207,7 +1312,7 @@ index cbaa0b221894..78315a2d54cf 100644
  	int eofflag;
  	uint64_t options;
 diff --git a/bsd/vfs/vfs_conf.c b/bsd/vfs/vfs_conf.c
-index bae70cda3a96..031613b10643 100644
+index bae70cd..031613b 100644
 --- a/bsd/vfs/vfs_conf.c
 +++ b/bsd/vfs/vfs_conf.c
 @@ -103,6 +103,15 @@ extern  struct vfsops mockfs_vfsops;
@@ -1321,7 +1426,7 @@ index bae70cda3a96..031613b10643 100644
  	NULL
  };
 diff --git a/bsd/vfs/vfs_lookup.c b/bsd/vfs/vfs_lookup.c
-index a05c8e767b33..5f2846cb8893 100644
+index a05c8e7..5f2846c 100644
 --- a/bsd/vfs/vfs_lookup.c
 +++ b/bsd/vfs/vfs_lookup.c
 @@ -1670,7 +1670,7 @@ lookup_handle_symlink(struct nameidata *ndp, vnode_t *new_dp, bool *new_dp_has_i
@@ -1334,7 +1439,7 @@ index a05c8e767b33..5f2846cb8893 100644
  	u_int linklen = 0;
  	struct componentname *cnp = &ndp->ni_cnd;
 diff --git a/bsd/vfs/vfs_quota.c b/bsd/vfs/vfs_quota.c
-index d0476214e5f0..c81cadfab1d4 100644
+index d047621..c81cadf 100644
 --- a/bsd/vfs/vfs_quota.c
 +++ b/bsd/vfs/vfs_quota.c
 @@ -382,7 +382,7 @@ dqfileopen(struct quotafile *qfp, int type)
@@ -1374,7 +1479,7 @@ index d0476214e5f0..c81cadfab1d4 100644
  	if (dq->dq_id == 0) {
  		dq->dq_flags &= ~DQ_MOD;
 diff --git a/bsd/vfs/vfs_subr.c b/bsd/vfs/vfs_subr.c
-index f64d8c647365..f2e13c1aa7f3 100644
+index f64d8c6..f2e13c1 100644
 --- a/bsd/vfs/vfs_subr.c
 +++ b/bsd/vfs/vfs_subr.c
 @@ -10995,7 +10995,7 @@ rmdir_remove_orphaned_appleDouble(vnode_t vp, vfs_context_t ctx, int * restart_f
@@ -1387,7 +1492,7 @@ index f64d8c647365..f2e13c1aa7f3 100644
  	void *dir_pos;
  	void *dir_end;
 diff --git a/bsd/vfs/vfs_syscalls.c b/bsd/vfs/vfs_syscalls.c
-index 2bbba037c2dd..ee65d5943196 100644
+index 2bbba03..ee65d59 100644
 --- a/bsd/vfs/vfs_syscalls.c
 +++ b/bsd/vfs/vfs_syscalls.c
 @@ -7261,7 +7261,7 @@ readlinkat_internal(vfs_context_t ctx, int fd, vnode_t lnk_vp, user_addr_t path,
@@ -1481,7 +1586,7 @@ index 2bbba037c2dd..ee65d5943196 100644
  	if (uap->options & (XATTR_NOFOLLOW | XATTR_NOSECURITY | XATTR_NODEFAULT)) {
  		return EINVAL;
 diff --git a/bsd/vfs/vfs_vnops.c b/bsd/vfs/vfs_vnops.c
-index 5b51e9c46a8d..6872b94631c9 100644
+index 5b51e9c..6872b94 100644
 --- a/bsd/vfs/vfs_vnops.c
 +++ b/bsd/vfs/vfs_vnops.c
 @@ -964,7 +964,7 @@ vn_rdwr_64(
@@ -1494,7 +1599,7 @@ index 5b51e9c46a8d..6872b94631c9 100644
  	context.vc_thread = current_thread();
  	context.vc_ucred = cred;
 diff --git a/bsd/vm/vm_unix.c b/bsd/vm/vm_unix.c
-index 60c8b9eedd50..b0029de5ef21 100644
+index 60c8b9e..b0029de 100644
 --- a/bsd/vm/vm_unix.c
 +++ b/bsd/vm/vm_unix.c
 @@ -2538,7 +2538,19 @@ after_root_check:
@@ -1519,7 +1624,7 @@ index 60c8b9eedd50..b0029de5ef21 100644
  					("shared_region: %p [%d(%s)] map(%p:'%s'): "
  					"not on process' root volume nor preboot volume\n",
 diff --git a/config/MASTER b/config/MASTER
-index 07147cb3188b..e937e62bf4c3 100644
+index 07147cb..e937e62 100644
 --- a/config/MASTER
 +++ b/config/MASTER
 @@ -113,6 +113,8 @@ options		CONFIG_WORKLOOP_DEBUG	# <config_workloop_debug>
@@ -1532,7 +1637,7 @@ index 07147cb3188b..e937e62bf4c3 100644
  options		FDESC		# fdesc_fs support		# <fdesc>
  options		DEVFS		# devfs support			# <devfs>
 diff --git a/config/MASTER.arm64.bcm2837 b/config/MASTER.arm64.bcm2837
-index 1ed75eea2052..54c5e12d2271 100644
+index 1ed75ee..54c5e12 100644
 --- a/config/MASTER.arm64.bcm2837
 +++ b/config/MASTER.arm64.bcm2837
 @@ -16,15 +16,15 @@
@@ -1567,7 +1672,7 @@ index 1ed75eea2052..54c5e12d2271 100644
  #  MACH_RELEASE =   [ MACH_BASE config_skip_precise_user_kernel_time debugger_for_zone_info ]
  #  MACH_DEV =       [ MACH_BASE config_io_accounting importance_trace ]
 diff --git a/iokit/Kernel/IOPMrootDomain.cpp b/iokit/Kernel/IOPMrootDomain.cpp
-index 4a06407aea5f..69a4bcf1839d 100644
+index 4a06407..69a4bcf 100644
 --- a/iokit/Kernel/IOPMrootDomain.cpp
 +++ b/iokit/Kernel/IOPMrootDomain.cpp
 @@ -555,7 +555,16 @@ static uint32_t         gDarkWakeFlags = kDarkWakeFlagPromotionEarly;
@@ -1603,7 +1708,7 @@ index 4a06407aea5f..69a4bcf1839d 100644
  	PE_parse_boot_argn("swd_waketimeout", &gSwdWakeTimeout, sizeof(gSwdWakeTimeout));
  	PE_parse_boot_argn("swd_timeout", &gSwdSleepWakeTimeout, sizeof(gSwdSleepWakeTimeout));
 diff --git a/iokit/Kernel/IOPlatformExpert.cpp b/iokit/Kernel/IOPlatformExpert.cpp
-index 7a32a23e4bb1..35dc7b503846 100644
+index 7a32a23..35dc7b5 100644
 --- a/iokit/Kernel/IOPlatformExpert.cpp
 +++ b/iokit/Kernel/IOPlatformExpert.cpp
 @@ -51,6 +51,9 @@
@@ -1632,7 +1737,7 @@ index 7a32a23e4bb1..35dc7b503846 100644
  	if (entry) {
  		OSData * data1;
 diff --git a/iokit/Kernel/IOService.cpp b/iokit/Kernel/IOService.cpp
-index d2442944e5f0..e90ba6738516 100644
+index d244294..e90ba67 100644
 --- a/iokit/Kernel/IOService.cpp
 +++ b/iokit/Kernel/IOService.cpp
 @@ -5179,7 +5179,10 @@ IOService::setRootMedia(IOService * root)
@@ -1648,7 +1753,7 @@ index d2442944e5f0..e90ba6738516 100644
  	while (root) {
  		if (root->metaCast(ioblockstoragedriverClass)) {
 diff --git a/iokit/Kernel/IOUserClient.cpp b/iokit/Kernel/IOUserClient.cpp
-index 07aa0be4a0ca..3832eaff2184 100644
+index 07aa0be..3832eaf 100644
 --- a/iokit/Kernel/IOUserClient.cpp
 +++ b/iokit/Kernel/IOUserClient.cpp
 @@ -3536,6 +3536,25 @@ IOCopyPropertyCompatible(IORegistryEntry * regEntry, const char * name)
@@ -1718,7 +1823,7 @@ index 07aa0be4a0ca..3832eaff2184 100644
  		return err;
  	}
 diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
-index 2b14eda8f68f..09337bad5b01 100644
+index 2b14eda..09337ba 100644
 --- a/iokit/KernelConfigTables.cpp
 +++ b/iokit/KernelConfigTables.cpp
 @@ -32,6 +32,10 @@
@@ -1745,7 +1850,7 @@ index 2b14eda8f68f..09337bad5b01 100644
 +#endif
      ")";
 diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
-index 5219fb0d9ed6..29978e9cff43 100644
+index 5219fb0..29978e9 100644
 --- a/iokit/bsddev/IOKitBSDInit.cpp
 +++ b/iokit/bsddev/IOKitBSDInit.cpp
 @@ -683,7 +683,14 @@ IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
@@ -1783,7 +1888,7 @@ index 5219fb0d9ed6..29978e9cff43 100644
  		}
  	}
 diff --git a/iokit/conf/files b/iokit/conf/files
-index 5fb0a52062e0..6c430c2b23c7 100644
+index 5fb0a52..6c430c2 100644
 --- a/iokit/conf/files
 +++ b/iokit/conf/files
 @@ -79,6 +79,14 @@ iokit/Kernel/IOSubMemoryDescriptor.cpp			optional iokitcpp
@@ -1802,7 +1907,7 @@ index 5fb0a52062e0..6c430c2b23c7 100644
  
  iokit/Kernel/IOCPU.cpp					optional iokitcpp
 diff --git a/libkern/conf/files b/libkern/conf/files
-index ece14c7d41d3..4a903f73a9ef 100644
+index ece14c7..4a903f7 100644
 --- a/libkern/conf/files
 +++ b/libkern/conf/files
 @@ -109,6 +109,8 @@ libkern/apple_encrypted_archive/apple_encrypted_archive.c	standard
@@ -1815,7 +1920,7 @@ index ece14c7d41d3..4a903f73a9ef 100644
  libkern/stack_protector.c       standard
  libkern/ptrauth_utils.c         standard
 diff --git a/libkern/libkern/c++/OSData.h b/libkern/libkern/c++/OSData.h
-index 28ea44c2ae9d..9c7a1fe9e23e 100644
+index 28ea44c..9c7a1fe 100644
 --- a/libkern/libkern/c++/OSData.h
 +++ b/libkern/libkern/c++/OSData.h
 @@ -965,7 +965,7 @@ private:
@@ -1828,7 +1933,7 @@ index 28ea44c2ae9d..9c7a1fe9e23e 100644
  		return 0; // C++11 does not support void-returning constexpr functions
  	}
 diff --git a/makedefs/MakeInc.cmd b/makedefs/MakeInc.cmd
-index bc39e19b3b8e..0a72a2d43908 100644
+index bc39e19..0a72a2d 100644
 --- a/makedefs/MakeInc.cmd
 +++ b/makedefs/MakeInc.cmd
 @@ -100,12 +100,12 @@ ifeq ($(VERBOSE),YES)
@@ -1905,7 +2010,7 @@ index bc39e19b3b8e..0a72a2d43908 100644
  ifeq ($(origin HOST_CODESIGN_ALLOCATE),undefined)
  	export HOST_CODESIGN_ALLOCATE	:= $(shell $(XCRUN) -sdk $(HOST_SDKROOT) -find codesign_allocate)
 diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
-index 5bd6f23dd10c..14e0f17409f5 100644
+index 5bd6f23..14e0f17 100644
 --- a/makedefs/MakeInc.def
 +++ b/makedefs/MakeInc.def
 @@ -60,7 +60,7 @@ MACHINE_FLAGS_ARM64_T8101 = -DARM64_BOARD_CONFIG_T8101			-mcpu=apple-a14
@@ -1930,7 +2035,7 @@ index 5bd6f23dd10c..14e0f17409f5 100644
  ifneq ($(filter T6000 T8101 VMAPPLE T6000 T8101 VMAPPLE,$(CURRENT_MACHINE_CONFIG)),)
  	LDFLAGS_KERNEL_ONLY += -rdynamic -Wl,-force_load,$(KDKROOT)/System/Library/KernelSupport/lib$(CURRENT_MACHINE_CONFIG).os.$(CURRENT_KERNEL_CONFIG).a
 diff --git a/makedefs/MakeInc.top b/makedefs/MakeInc.top
-index 0316792a3f42..bbef0a4b26d4 100644
+index 0316792..bbef0a4 100644
 --- a/makedefs/MakeInc.top
 +++ b/makedefs/MakeInc.top
 @@ -285,7 +285,7 @@ endif
@@ -1943,7 +2048,7 @@ index 0316792a3f42..bbef0a4b26d4 100644
  # Assume LTO scaling by default, unless it is being explicitly passed on the command-line
  LARGE_BUILD_FOOTPRINT := $(if $(BUILD_LTO),$(BUILD_LTO),1)
 diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
-index e26a1d70f470..f91095c98d26 100644
+index e26a1d7..f91095c 100644
 --- a/osfmk/arm/arm_init.c
 +++ b/osfmk/arm/arm_init.c
 @@ -73,6 +73,9 @@
@@ -2103,7 +2208,7 @@ index e26a1d70f470..f91095c98d26 100644
  #if APPLE_ARM64_ARCH_FAMILY
  	configure_late_apple_regs();
 diff --git a/osfmk/arm/model_dep.c b/osfmk/arm/model_dep.c
-index 39daaf8db949..64ceb1a5f201 100644
+index 39daaf8..64ceb1a 100644
 --- a/osfmk/arm/model_dep.c
 +++ b/osfmk/arm/model_dep.c
 @@ -79,6 +79,9 @@
@@ -2131,7 +2236,7 @@ index 39daaf8db949..64ceb1a5f201 100644
  	}
  	os_atomic_clear_exclusive();
 diff --git a/osfmk/arm/pmap/pmap.c b/osfmk/arm/pmap/pmap.c
-index fc2096fa0010..5011ab612305 100644
+index fc2096f..5011ab6 100644
 --- a/osfmk/arm/pmap/pmap.c
 +++ b/osfmk/arm/pmap/pmap.c
 @@ -93,6 +93,8 @@
@@ -2185,7 +2290,7 @@ index fc2096fa0010..5011ab612305 100644
  }
  
 diff --git a/osfmk/arm/pmap/pmap.h b/osfmk/arm/pmap/pmap.h
-index df672c65b144..d7e1da7c5db2 100644
+index df672c6..d7e1da7 100644
 --- a/osfmk/arm/pmap/pmap.h
 +++ b/osfmk/arm/pmap/pmap.h
 @@ -112,7 +112,13 @@
@@ -2213,7 +2318,7 @@ index df672c65b144..d7e1da7c5db2 100644
  
  	bool reserved11;
 diff --git a/osfmk/arm64/corecrypto/arm64_isa_compatibility.h b/osfmk/arm64/corecrypto/arm64_isa_compatibility.h
-index b9549da357b4..cca31ea32502 100644
+index b9549da..cca31ea 100644
 --- a/osfmk/arm64/corecrypto/arm64_isa_compatibility.h
 +++ b/osfmk/arm64/corecrypto/arm64_isa_compatibility.h
 @@ -28,7 +28,7 @@
@@ -2226,7 +2331,7 @@ index b9549da357b4..cca31ea32502 100644
  #else
  #define __USES_V_CRYPTO_INTRINSICS 0
 diff --git a/osfmk/arm64/cpu.c b/osfmk/arm64/cpu.c
-index 94e91306b143..0ec1323086b7 100644
+index 94e9130..0ec1323 100644
 --- a/osfmk/arm64/cpu.c
 +++ b/osfmk/arm64/cpu.c
 @@ -568,7 +568,12 @@ cpu_idle(void)
@@ -2244,7 +2349,7 @@ index 94e91306b143..0ec1323086b7 100644
  #endif
  
 diff --git a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
-index e76e7e70ab9c..4f540f8caf43 100644
+index e76e7e7..4f540f8 100644
 --- a/osfmk/arm64/machine_routines.c
 +++ b/osfmk/arm64/machine_routines.c
 @@ -734,6 +734,9 @@ ml_get_machine_mem(void)
@@ -2447,8 +2552,57 @@ index e76e7e70ab9c..4f540f8caf43 100644
  }
  
  void
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+index 2cc442e..3cd3cd0 100644
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -1360,6 +1360,10 @@ handle_user_abort(arm_saved_state_t *state, uint32_t esr, vm_offset_t fault_addr
+ 	mach_msg_type_number_t     numcodes = 2;
+ 	thread_t                   thread   = current_thread();
+ 
++	extern void redwood_fault_seen(void);
++
++	redwood_fault_seen();           /* R48: the floor's census -- every user abort counts itself */
++
+ 	(void)esr;
+ 	(void)expected_fault_handler;
+ 
+@@ -1404,6 +1408,9 @@ handle_user_abort(arm_saved_state_t *state, uint32_t esr, vm_offset_t fault_addr
+ 			thread_reset_pcs_done_faulting(thread);
+ 		}
+ 		if (result == KERN_SUCCESS || result == KERN_ABORTED) {
++				extern void redwood_user_fault_exit(kern_return_t result);
++
++				redwood_user_fault_exit(result);
+ 			return;
+ 		}
+ 
+@@ -1426,6 +1433,9 @@ handle_user_abort(arm_saved_state_t *state, uint32_t esr, vm_offset_t fault_addr
+ 			 * copyin() for decode/emulation failed.
+ 			 * Continue, or redrive instruction.
+ 			 */
++			extern void redwood_user_fault_align(void);
++
++			redwood_user_fault_align();
+ 			thread_exception_return();
+ 		} else if (((result == EFAULT) || (result == EINVAL)) &&
+ 		    (thread->machine.recover_esr == 0)) {
+@@ -1480,6 +1490,13 @@ handle_user_abort(arm_saved_state_t *state, uint32_t esr, vm_offset_t fault_addr
+ 		exc |= EXC_PTRAUTH_BIT;
+ 	}
+ #endif /* __has_feature(ptrauth_calls) */
++	{
++		extern void redwood_user_fault_deliver(const arm_saved_state_t *state, unsigned int esr,
++		    uint64_t fault_addr, unsigned int fault_code, unsigned int fault_type,
++		    exception_type_t exc, uint64_t code0);
++
++		redwood_user_fault_deliver(state, esr, fault_addr, fault_code, fault_type, exc, codes[0]);
++	}
+ 	exception_triage(exc, codes, numcodes);
+ 	__builtin_unreachable();
+ }
 diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
-index e5336e5a1cce..a54e35035cde 100644
+index e5336e5..a54e350 100644
 --- a/osfmk/arm64/start.s
 +++ b/osfmk/arm64/start.s
 @@ -126,6 +126,27 @@ LEXT(LowResetVectorBase)
@@ -2784,7 +2938,7 @@ index e5336e5a1cce..a54e35035cde 100644
  #if !VMAPPLE
  	MOV64   x1, SCTLR_EL1_DEFAULT
 diff --git a/osfmk/conf/files b/osfmk/conf/files
-index 9d98c50094a0..9e3476124e54 100644
+index 9d98c50..1469eac 100644
 --- a/osfmk/conf/files
 +++ b/osfmk/conf/files
 @@ -361,3 +361,7 @@ osfmk/corecrypto/ccsha256_ltc_di.c	standard
@@ -2796,7 +2950,7 @@ index 9d98c50094a0..9e3476124e54 100644
 +osfmk/minicrypto/mc_aes.c	standard
 +osfmk/vm/redwood_fault_convict.c	standard
 diff --git a/osfmk/conf/files.arm64 b/osfmk/conf/files.arm64
-index c40d57bcc677..1b7a1fcdfcdf 100644
+index c40d57b..1b7a1fc 100644
 --- a/osfmk/conf/files.arm64
 +++ b/osfmk/conf/files.arm64
 @@ -25,8 +25,8 @@ osfmk/arm64/WKdmCompress_4k.s	standard
@@ -2820,7 +2974,7 @@ index c40d57bcc677..1b7a1fcdfcdf 100644
 +osfmk/arm64/gic_v3_irq.c	optional nos_arm_asm
 +osfmk/arm64/psci_smp.c	optional nos_arm_asm
 diff --git a/osfmk/console/video_console.c b/osfmk/console/video_console.c
-index 384118e8d7a9..2573d2ebd4e6 100644
+index 384118e..2573d2e 100644
 --- a/osfmk/console/video_console.c
 +++ b/osfmk/console/video_console.c
 @@ -2855,8 +2855,12 @@ initialize_screen(PE_Video * boot_vinfo, unsigned int op)
@@ -2838,7 +2992,7 @@ index 384118e8d7a9..2573d2ebd4e6 100644
  				 * io_map doesn't support.  However this buffer is set up
  				 * by the bootloader and doesn't require D$ cleaning, so
 diff --git a/osfmk/kern/debug.c b/osfmk/kern/debug.c
-index 0a00656a0fdd..bfad3cbca5bc 100644
+index 0a00656..bfad3cb 100644
 --- a/osfmk/kern/debug.c
 +++ b/osfmk/kern/debug.c
 @@ -1147,9 +1147,12 @@ panic_trap_to_debugger(const char *panic_format_str, va_list *panic_args, unsign
@@ -2863,7 +3017,7 @@ index 0a00656a0fdd..bfad3cbca5bc 100644
  		PEHaltRestart(kPEPanicRestartCPUNoCallouts);
  	} else {
 diff --git a/osfmk/kern/exception.c b/osfmk/kern/exception.c
-index 809dafaaa2a7..71c6580f44e2 100644
+index 809dafa..adf0863 100644
 --- a/osfmk/kern/exception.c
 +++ b/osfmk/kern/exception.c
 @@ -636,6 +636,13 @@ check_exc_receiver_dependency(
@@ -2880,7 +3034,7 @@ index 809dafaaa2a7..71c6580f44e2 100644
  kern_return_t
  exception_triage_thread(
  	exception_type_t        exception,
-@@ -650,6 +655,11 @@ exception_triage_thread(
+@@ -650,6 +657,11 @@ exception_triage_thread(
  	struct exception_action *actions;
  	kern_return_t   kr = KERN_FAILURE;
  
@@ -2892,14 +3046,7 @@ index 809dafaaa2a7..71c6580f44e2 100644
  	assert(exception != EXC_RPC_ALERT);
  
  	/*
-@@ -823,18 +830,29 @@ kern_return_t
- kern_return_t
- bsd_exception(
- 	exception_type_t        exception,
- 	mach_exception_data_t   code,
- 	mach_msg_type_number_t  codeCnt)
- {
- 	task_t                  task;
+@@ -830,6 +842,17 @@ bsd_exception(
  	lck_mtx_t               *mutex;
  	thread_t                self = current_thread();
  	kern_return_t           kr;
@@ -2917,13 +3064,8 @@ index 809dafaaa2a7..71c6580f44e2 100644
  
  	/*
  	 * Maybe the task level will handle it.
- 	 */
- 	task = current_task();
- 	mutex = &task->itk_lock_data;
- 
- 	kr = exception_deliver(self, exception, code, codeCnt, task->exc_actions, mutex);
 diff --git a/osfmk/kern/kalloc.h b/osfmk/kern/kalloc.h
-index dfa89c7b0d29..07e0ba5bf44c 100644
+index dfa89c7..07e0ba5 100644
 --- a/osfmk/kern/kalloc.h
 +++ b/osfmk/kern/kalloc.h
 @@ -821,12 +821,16 @@ __options_decl(kt_granule_t, uint32_t, {
@@ -2944,7 +3086,7 @@ index dfa89c7b0d29..07e0ba5bf44c 100644
  #define KALLOC_TYPE_ASSERT_COMPATIBLE_POINTER(ptr, type) \
  	_Static_assert(KALLOC_TYPE_IS_COMPATIBLE_PTR(ptr, type), \
 diff --git a/osfmk/kern/percpu.h b/osfmk/kern/percpu.h
-index 4fb223ee9788..df563bc04910 100644
+index 4fb223e..df563bc 100644
 --- a/osfmk/kern/percpu.h
 +++ b/osfmk/kern/percpu.h
 @@ -236,15 +236,22 @@ extern vm_offset_t other_percpu_base(int cpu_number);
@@ -2976,7 +3118,7 @@ index 4fb223ee9788..df563bc04910 100644
  #pragma mark - implementation details
  
 diff --git a/osfmk/kern/sched.h b/osfmk/kern/sched.h
-index a5f68ade084b..9741eb1b3ecd 100644
+index a5f68ad..9741eb1 100644
 --- a/osfmk/kern/sched.h
 +++ b/osfmk/kern/sched.h
 @@ -464,4 +464,13 @@ extern int sched_rt_n_backup_processors;
@@ -2994,7 +3136,7 @@ index a5f68ade084b..9741eb1b3ecd 100644
 +
  #endif  /* _KERN_SCHED_H_ */
 diff --git a/osfmk/kern/sched_clutch.c b/osfmk/kern/sched_clutch.c
-index 3657d83c5b6f..ded2ff427d68 100644
+index 3657d83..ded2ff4 100644
 --- a/osfmk/kern/sched_clutch.c
 +++ b/osfmk/kern/sched_clutch.c
 @@ -3204,7 +3204,7 @@ extern int sched_allow_rt_smt;
@@ -3007,7 +3149,7 @@ index 3657d83c5b6f..ded2ff427d68 100644
  		 * This is a secondary SMT processor.  If the primary is running
  		 * a realtime thread, only allow realtime threads on the secondary.
 diff --git a/osfmk/kern/sched_prim.c b/osfmk/kern/sched_prim.c
-index 8e29586464de..0a7de6fc4be7 100644
+index 8e29586..0a7de6f 100644
 --- a/osfmk/kern/sched_prim.c
 +++ b/osfmk/kern/sched_prim.c
 @@ -2042,6 +2042,7 @@ sched_vm_group_maintenance(void)
@@ -3106,7 +3248,7 @@ index 8e29586464de..0a7de6fc4be7 100644
  				if (idle_reason == 0) {
  					idle_reason = 4;
 diff --git a/osfmk/kern/startup.c b/osfmk/kern/startup.c
-index bec97fbf7243..203e1f48783f 100644
+index bec97fb..203e1f4 100644
 --- a/osfmk/kern/startup.c
 +++ b/osfmk/kern/startup.c
 @@ -156,6 +156,7 @@
@@ -3128,7 +3270,7 @@ index bec97fbf7243..203e1f48783f 100644
  
  #if CONFIG_DTRACE
 diff --git a/osfmk/kern/thread.c b/osfmk/kern/thread.c
-index 384ef23fe0e1..d5ab6db0edbc 100644
+index 384ef23..d5ab6db 100644
 --- a/osfmk/kern/thread.c
 +++ b/osfmk/kern/thread.c
 @@ -3065,6 +3065,26 @@ thread_get_tag(thread_t th)
@@ -3159,7 +3301,7 @@ index 384ef23fe0e1..d5ab6db0edbc 100644
  thread_last_run_time(thread_t th)
  {
 diff --git a/osfmk/kern/work_interval.c b/osfmk/kern/work_interval.c
-index f2b9ce24bd8d..3aed167fe32e 100644
+index f2b9ce2..3aed167 100644
 --- a/osfmk/kern/work_interval.c
 +++ b/osfmk/kern/work_interval.c
 @@ -683,6 +683,18 @@ work_interval_get_priority(thread_t thread)
@@ -3182,7 +3324,7 @@ index f2b9ce24bd8d..3aed167fe32e 100644
   * Switch to a policy driven by the work interval (if applicable).
   */
 diff --git a/osfmk/kern/work_interval.h b/osfmk/kern/work_interval.h
-index 8b46efb05c86..e161ca426b1a 100644
+index 8b46efb..e161ca4 100644
 --- a/osfmk/kern/work_interval.h
 +++ b/osfmk/kern/work_interval.h
 @@ -83,6 +83,8 @@ extern kern_return_t
@@ -3194,8 +3336,91 @@ index 8b46efb05c86..e161ca426b1a 100644
  extern kern_return_t
  kern_work_interval_set_workload_id(mach_port_name_t port_name,
      struct kern_work_interval_workload_id_args *workload_id_args);
+diff --git a/osfmk/vm/vm_fault.c b/osfmk/vm/vm_fault.c
+index 42e4536..7c644b8 100644
+--- a/osfmk/vm/vm_fault.c
++++ b/osfmk/vm/vm_fault.c
+@@ -6328,6 +6328,21 @@ done:
+ 		DEBUG4K_FAULT("map %p original %p vaddr 0x%llx -> 0x%x\n", map, original_map, (uint64_t)trace_real_vaddr, kr);
+ 	}
+ 
++	/*
++	 * R42: the pager forensics (files/osfmk/vm/redwood_fault_convict.c).
++	 * This is the ONE exit every user page-fill failure leaves through,
++	 * and a failed fault here is what a SIGBUS is made of above: the R41
++	 * run's device verdict put one crasher on the boot (com.apple.lsd
++	 * SIGBUS x78, backboardd failing on the same store), so the fault
++	 * names the file it died on -- one boot convicts the exact file.
++	 * Kernel-map faults stay out; the helper throttles itself.
++	 */
++	if (kr != KERN_SUCCESS && map != kernel_map) {
++		extern void redwood_fault_convict(vm_map_t, vm_map_offset_t, kern_return_t, vm_prot_t);
++
++		redwood_fault_convict(map, real_vaddr, kr, caller_prot);
++	}
++
+ 	return kr;
+ }
+ 
+diff --git a/osfmk/vm/vm_map.c b/osfmk/vm/vm_map.c
+index 3a29bf4..9f3ac72 100644
+--- a/osfmk/vm/vm_map.c
++++ b/osfmk/vm/vm_map.c
+@@ -16010,6 +16010,16 @@ vm_map_behavior_set(
+  */
+ 
+ 
++/*
++ * (redwood R51) The madvise(MADV_WILLNEED) pages prefaulted READ-only by
++ * the clamp below: the count rides the minute census (sigcensus), so the
++ * boot log proves the clamp fired and sizes the kr 0x2 verdict wave it
++ * retired (the R50 boot: x111 read-write asks against read-only
++ * entries -- the read-only CoreGlyphs/Assets.car mapping above all --
++ * every one a guaranteed protection failure, every one just a hint).
++ */
++unsigned long long r51_madvise_readonly_pages;
++
+ static kern_return_t
+ vm_map_willneed(
+ 	vm_map_t        map,
+@@ -16105,6 +16115,7 @@ vm_map_willneed(
+ 			 */
+ 			vm_size_t region_size = 0, effective_page_size = 0;
+ 			vm_map_offset_t addr = 0, effective_page_mask = 0;
++			vm_prot_t prefault_prot;
+ 
+ 			region_size = len;
+ 			addr = start;
+@@ -16112,12 +16123,26 @@ vm_map_willneed(
+ 			effective_page_mask = MIN(vm_map_page_mask(current_map()), PAGE_MASK);
+ 			effective_page_size = effective_page_mask + 1;
+ 
++			/*
++			 * (redwood R51) The prefault ask is clamped to the entry's
++			 * own protection, read BEFORE the unlock below (the entry
++			 * belongs to the map; after the unlock another thread may
++			 * reshape it).  WILLNEED is advice: asking READ|WRITE of a
++			 * read-only entry could only fail, and the failed fault was
++			 * the R50 boot's kr 0x2 wave.  The clamped ask still pages
++			 * the range in, which is all the advice was for.
++			 */
++			prefault_prot = VM_PROT_READ | (entry->protection & VM_PROT_WRITE);
++
+ 			vm_map_unlock_read(map);
+ 
+ 			while (region_size) {
+ 				vm_pre_fault(
+ 					vm_map_trunc_page(addr, effective_page_mask),
+-					VM_PROT_READ | VM_PROT_WRITE);
++					prefault_prot);
++				if (prefault_prot != (VM_PROT_READ | VM_PROT_WRITE)) {
++				        r51_madvise_readonly_pages++;
++				}
+ 
+ 				region_size -= effective_page_size;
+ 				addr += effective_page_size;
 diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
-index 3ad743fc3efb..ce036c5a2c26 100644
+index 3ad743f..ce036c5 100644
 --- a/pexpert/arm/pe_fiq.c
 +++ b/pexpert/arm/pe_fiq.c
 @@ -169,6 +169,15 @@ pe_init_fiq()
@@ -3215,7 +3440,7 @@ index 3ad743fc3efb..ce036c5a2c26 100644
  void
  pe_init_fiq()
 diff --git a/pexpert/arm/pe_kprintf.c b/pexpert/arm/pe_kprintf.c
-index 65144c74239c..ab6260d52d84 100644
+index 65144c7..ab6260d 100644
 --- a/pexpert/arm/pe_kprintf.c
 +++ b/pexpert/arm/pe_kprintf.c
 @@ -29,6 +29,7 @@ SECURITY_READ_ONLY_LATE(bool) enable_dklog_serial_output = false;
@@ -3235,7 +3460,7 @@ index 65144c74239c..ab6260d52d84 100644
  }
  
 diff --git a/pexpert/pexpert/arm64/BCM2837.h b/pexpert/pexpert/arm64/BCM2837.h
-index d9f0723244e5..53fe4f371d7f 100644
+index d9f0723..53fe4f3 100644
 --- a/pexpert/pexpert/arm64/BCM2837.h
 +++ b/pexpert/pexpert/arm64/BCM2837.h
 @@ -11,6 +11,15 @@
@@ -3277,7 +3502,7 @@ index d9f0723244e5..53fe4f371d7f 100644
  
  #endif /* ! _PEXPERT_ARM_BCM2837_H */
 diff --git a/pexpert/pexpert/arm64/board_config.h b/pexpert/pexpert/arm64/board_config.h
-index c84b2100bc19..aaad5cd2e8c6 100644
+index c84b210..aaad5cd 100644
 --- a/pexpert/pexpert/arm64/board_config.h
 +++ b/pexpert/pexpert/arm64/board_config.h
 @@ -91,7 +91,7 @@
@@ -3290,7 +3515,7 @@ index c84b2100bc19..aaad5cd2e8c6 100644
  
  #define CORE_NCTRS                     8 /* Placeholder; KPC is not enabled for this target */
 diff --git a/security/mac_vfs_subr.c b/security/mac_vfs_subr.c
-index 97028c06bb92..0daad830d0c0 100644
+index 97028c0..0daad83 100644
 --- a/security/mac_vfs_subr.c
 +++ b/security/mac_vfs_subr.c
 @@ -167,7 +167,7 @@ mac_vnop_setxattr(struct vnode *vp, const char *name, char *buf, size_t len)
@@ -3312,7 +3537,7 @@ index 97028c06bb92..0daad830d0c0 100644
  	int error;
  
 diff --git a/tools/lldbmacros/core/syntax_checker.py b/tools/lldbmacros/core/syntax_checker.py
-index 3ebc295117a3..de101eafc83b 100755
+index 3ebc295..de101ea 100755
 --- a/tools/lldbmacros/core/syntax_checker.py
 +++ b/tools/lldbmacros/core/syntax_checker.py
 @@ -12,10 +12,13 @@ Usage:
@@ -3331,87 +3556,3 @@ index 3ebc295117a3..de101eafc83b 100755
  def find_non_ascii(s):
      for c in s:
          if ord(c) >= 0x80: return True
-diff --git a/osfmk/vm/vm_fault.c b/osfmk/vm/vm_fault.c
-
---- a/osfmk/vm/vm_fault.c
-+++ b/osfmk/vm/vm_fault.c
-@@ -6328,6 +6328,21 @@ done:
- 		DEBUG4K_FAULT("map %p original %p vaddr 0x%llx -> 0x%x\n", map, original_map, (uint64_t)trace_real_vaddr, kr);
- 	}
- 
-+	/*
-+	 * R42: the pager forensics (files/osfmk/vm/redwood_fault_convict.c).
-+	 * This is the ONE exit every user page-fill failure leaves through,
-+	 * and a failed fault here is what a SIGBUS is made of above: the R41
-+	 * run's device verdict put one crasher on the boot (com.apple.lsd
-+	 * SIGBUS x78, backboardd failing on the same store), so the fault
-+	 * names the file it died on -- one boot convicts the exact file.
-+	 * Kernel-map faults stay out; the helper throttles itself.
-+	 */
-+	if (kr != KERN_SUCCESS && map != kernel_map) {
-+		extern void redwood_fault_convict(vm_map_t, vm_map_offset_t, kern_return_t, vm_prot_t);
-+
-+		redwood_fault_convict(map, real_vaddr, kr, caller_prot);
-+	}
-+
- 	return kr;
- }
- 
-
-diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
-index 2cc442e..f6d0059 100644
---- a/osfmk/arm64/sleh.c
-+++ b/osfmk/arm64/sleh.c
-@@ -1360,6 +1360,10 @@ handle_user_abort(arm_saved_state_t *state, uint32_t esr, vm_offset_t fault_addr
- 	mach_msg_type_number_t     numcodes = 2;
- 	thread_t                   thread   = current_thread();
- 
-+	extern void redwood_fault_seen(void);
-+
-+	redwood_fault_seen();           /* R48: the floor's census -- every user abort counts itself */
-+
- 	(void)esr;
- 	(void)expected_fault_handler;
- 
-@@ -1403,6 +1407,9 @@ handle_user_abort: the page-in worked, or was aborted
- 		if (thread->t_rr_state.trr_fault_state != TRR_FAULT_NONE) {
- 			thread_reset_pcs_done_faulting(thread);
- 		}
- 		if (result == KERN_SUCCESS || result == KERN_ABORTED) {
-+				extern void redwood_user_fault_exit(kern_return_t result);
-+
-+				redwood_user_fault_exit(result);
- 			return;
- 		}
-@@ -1420,11 +1428,14 @@ handle_user_abort: the alignment abort emulated
- 		kern_return_t vmfkr = KERN_SUCCESS;
- 		thread->machine.recover_esr = 0;
- 		thread->machine.recover_far = 0;
- 		int result = handle_alignment_fault_from_user(state, &vmfkr);
- 		if (result == 0) {
- 			/* Successfully emulated, or instruction
- 			 * copyin() for decode/emulation failed.
- 			 * Continue, or redrive instruction.
- 			 */
-+			extern void redwood_user_fault_align(void);
-+
-+			redwood_user_fault_align();
- 			thread_exception_return();
- 		} else if (((result == EFAULT) || (result == EINVAL)) &&
-@@ -1476,9 +1488,16 @@ handle_user_abort: the delivery line, the funnel re-mounted
- 	codes[1] = fault_addr;
- #if __has_feature(ptrauth_calls)
- 	bool is_data_abort = (ESR_EC(esr) == ESR_EC_DABORT_EL0);
- 	if (user_fault_addr_matches_pac_error_code(fault_addr, is_data_abort)) {
- 		exc |= EXC_PTRAUTH_BIT;
- 	}
- #endif /* __has_feature(ptrauth_calls) */
-+	{
-+		extern void redwood_user_fault_deliver(const arm_saved_state_t *state, unsigned int esr,
-+		    uint64_t fault_addr, unsigned int fault_code, unsigned int fault_type,
-+		    exception_type_t exc, uint64_t code0);
-+
-+		redwood_user_fault_deliver(state, esr, fault_addr, fault_code, fault_type, exc, codes[0]);
-+	}
- 	exception_triage(exc, codes, numcodes);
- 	__builtin_unreachable();

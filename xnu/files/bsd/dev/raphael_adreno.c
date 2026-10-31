@@ -5708,11 +5708,19 @@ redwood_adreno_minute(void)
                     r48_sigpost_printed, r48_userabort_seen, r48_fault_seen;
                 extern unsigned long long r49_uf_ok, r49_uf_aborted, r49_uf_align, r49_uf_delivered, r49_verdicts;
 
-                printf("sigcensus: births %llu (printed %llu, sw-denied %llu, budget-denied %llu), traps %llu/%llu, posts %llu/%llu, aborts %llu, faults %llu, uf-ok %llu, uf-aborted %llu, uf-align %llu, uf-delivered %llu, verdicts %llu\n",
+                printf("sigcensus: births %llu (printed %llu, sw-denied %llu, budget-denied %llu), traps %llu/%llu, posts %llu/%llu, aborts %llu, faults %llu\n",
                     r48_sigbirth_seen, r48_sigbirth_printed, r48_sigbirth_switch_denied, r48_sigbirth_budget_denied,
                     r48_usertrap_seen, r48_usertrap_printed, r48_sigpost_seen, r48_sigpost_printed,
-                    r48_userabort_seen, r48_fault_seen,
-                    r49_uf_ok, r49_uf_aborted, r49_uf_align, r49_uf_delivered, r49_verdicts);
+                    r48_userabort_seen, r48_fault_seen);
+                /* R51: the tail split onto its own line -- the verdicts field
+                 * reached five digits and the singer line rode past the log
+                 * line buffer (the R50 boot's truncation), so the tail must
+                 * not depend on the head's width.  The R51 clamp counter
+                 * rides here too: the read-only pages the madvise(WILLNEED)
+                 * prefault actually took, the wave the clamp retired. */
+                printf("sigcensus: uf-ok %llu, uf-aborted %llu, uf-align %llu, uf-delivered %llu, verdicts %llu, madvise-ro %llu\n",
+                    r49_uf_ok, r49_uf_aborted, r49_uf_align, r49_uf_delivered, r49_verdicts,
+                    r51_madvise_readonly_pages);
                 (void)loader_log_flush();
         }
         printf("adreno: the GPU's sensors read %d.%d and %d.%d degrees; its clock is set to %u MHz\n", tenths[0] / 10,
