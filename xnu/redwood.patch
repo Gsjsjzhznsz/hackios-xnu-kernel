@@ -413,7 +413,7 @@ index 95192dd..b00da80 100644
  
  	/*
 diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
-index 1d71c66..0c33010 100644
+index 1d71c66..f4639e8 100644
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
 @@ -1157,6 +1157,9 @@ SYSCTL_PROC(_vm, OID_AUTO, shared_region_control,
@@ -753,7 +753,7 @@ index 1d71c66..0c33010 100644
  	if (0 == error) {
  		/*
  		 * Update the new process's signature-dependent process state.
-@@ -7602,6 +7814,54 @@ done:
+@@ -7602,6 +7814,99 @@ done:
  	return error;
  }
  
@@ -805,10 +805,55 @@ index 1d71c66..0c33010 100644
 +	}
 +}
 +
++/*
++ * (redwood R52) The archaeology.  The R51 hologram named every failing
++ * prefault's whole sum, and every set agreed on one shape: each pointer's
++ * low half is dyld's static offset and the top half carries one of two
++ * stable clusters (0x00200000, 0x00b00000) -- a data supply error, and
++ * not a signature.  This knife prints the bytes THEMSELVES: the whole
++ * all_image_infos structure exactly as copyin() brought it in, hex,
++ * sixteen bytes a line.  If the page matches dyld's static bytes, the
++ * supply is honest and the shape was dyld's own (pre-rebase fixup
++ * chains ride no static-pointer arithmetic); if it does not, the page
++ * names the writer of the garbage.  The first exec prints its bytes
++ * whatever shape they wear (the control); the garbage shape prints the
++ * first four sets and then falls silent -- the R51 boot's sets all
++ * repeated the same triple, so four is plenty and the log keeps its
++ * budget.
++ */
++static unsigned r52_infos_hex_sets;
++
++static void
++r52_infos_hex(proc_t p, const void *infos, size_t size, unsigned garbage)
++{
++	unsigned n = r52_infos_hex_sets;
++
++	if (n != 0 && (!garbage || n >= 5)) {
++		return;
++	}
++	r52_infos_hex_sets = n + 1;
++	printf("redwood-exec: infos-hex %u: pid %d[%s] %u B, garbage shape %u\n",
++	    n + 1, proc_getpid(p), p->p_comm, (unsigned)size, garbage);
++	for (size_t off = 0; off < size; off += 16) {
++		uint64_t lo = 0, hi = 0;
++		size_t take = (size - off < 16) ? (size - off) : 16;
++
++		if (take > 8) {
++			__builtin_memcpy(&lo, (const char *)infos + off, 8);
++			__builtin_memcpy(&hi, (const char *)infos + off + 8, take - 8);
++		} else {
++			__builtin_memcpy(&lo, (const char *)infos + off, take);
++		}
++		printf("redwood-exec: infos[%03llx] %016llx %016llx\n",
++		    (uint64_t)off, lo, hi);
++	}
++	(void)loader_log_flush();
++}
++
  /*
   * Typically as soon as we start executing this process, the
   * first instruction will trigger a VM fault to bring the text
-@@ -7616,7 +7876,7 @@ done:
+@@ -7616,7 +7921,7 @@ done:
  #define PREVENT_CALLER_STACK_USE __attribute__((noinline))
  #endif
  static void PREVENT_CALLER_STACK_USE
@@ -817,7 +862,7 @@ index 1d71c66..0c33010 100644
  {
  	int ret;
  	size_t expected_all_image_infos_size;
-@@ -7636,6 +7896,10 @@ exec_prefault_data(proc_t p __unused, struct image_params *imgp, load_result_t *
+@@ -7636,6 +7941,10 @@ exec_prefault_data(proc_t p __unused, struct image_params *imgp, load_result_t *
  	    THREAD_UNINT, NULL, 0);
  	if (kr != KERN_SUCCESS) {
  		DEBUG4K_ERROR("map %p va 0x%llx -> 0x%x\n", current_map(), (uint64_t)vm_map_trunc_page(load_result->entry_point, vm_map_page_mask(current_map())), kr);
@@ -828,7 +873,23 @@ index 1d71c66..0c33010 100644
  	}
  
  	if (imgp->ip_flags & IMGPF_IS_64BIT_ADDR) {
-@@ -7743,6 +8007,14 @@ exec_prefault_data(proc_t p __unused, struct image_params *imgp, load_result_t *
+@@ -7722,6 +8031,15 @@ exec_prefault_data(proc_t p __unused, struct image_params *imgp, load_result_t *
+ 
+ 			dyld_slide_amount = (user_addr_t)load_result->all_image_info_addr - dyld_all_image_infos_address;
+ 
++			/* (redwood R52) The archaeology: the bytes copyin()
++			 * brought in, printed whole -- the garbage top halves
++			 * the R51 hologram caught are somewhere in these
++			 * words, or nowhere in them. */
++			r52_infos_hex(p, &all_image_infos, expected_all_image_infos_size,
++			    (unsigned)((((uint64_t)notification_address |
++			    (uint64_t)dyld_image_address |
++			    (uint64_t)dyld_all_image_infos_address) >> 32) > 0x10000));
++
+ #if 0
+ 			kprintf("exec_prefault: 0x%016llx 0x%08x 0x%016llx 0x%016llx 0x%016llx 0x%016llx\n",
+ 			    (uint64_t)load_result->all_image_info_addr,
+@@ -7743,6 +8061,14 @@ exec_prefault_data(proc_t p __unused, struct image_params *imgp, load_result_t *
  			    THREAD_UNINT, NULL, 0);
  			if (kr != KERN_SUCCESS) {
  //				printf("%s:%d map %p va 0x%llx -> 0x%x\n", __FUNCTION__, __LINE__, current_map(), vm_map_trunc_page(notification_address + dyld_slide_amount, vm_map_page_mask(current_map())), kr);
@@ -843,7 +904,7 @@ index 1d71c66..0c33010 100644
  			}
  			if (vm_map_page_shift(current_map()) < (int)PAGE_SHIFT) {
  				DEBUG4K_LOAD("dyld_image_address 0x%llx dyld_slide_amount 0x%llx\n", (uint64_t)dyld_image_address, (uint64_t)dyld_slide_amount);
-@@ -7755,6 +8027,14 @@ exec_prefault_data(proc_t p __unused, struct image_params *imgp, load_result_t *
+@@ -7755,6 +8081,14 @@ exec_prefault_data(proc_t p __unused, struct image_params *imgp, load_result_t *
  			    THREAD_UNINT, NULL, 0);
  			if (kr != KERN_SUCCESS) {
  //				printf("%s:%d map %p va 0x%llx -> 0x%x\n", __FUNCTION__, __LINE__, current_map(), vm_map_trunc_page(dyld_image_address + dyld_slide_amount, vm_map_page_mask(current_map())), kr);

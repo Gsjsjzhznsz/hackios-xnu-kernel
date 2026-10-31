@@ -132,6 +132,7 @@ static bool quiet;                      /* repeating accesses that have been ann
  * as well, before the next register is touched.
  */
 extern void loader_log_putc(char c);
+extern void loader_log_line(const char *line);  /* osfmk/arm64/loader_return.c */
 
 static int say(const char *format, ...) __printflike(1, 2);
 
@@ -5722,6 +5723,25 @@ redwood_adreno_minute(void)
                 printf("sigcensus: uf-ok %llu, uf-aborted %llu, uf-align %llu, uf-delivered %llu, verdicts %llu, madvise-ro %llu\n",
                     r49_uf_ok, r49_uf_aborted, r49_uf_align, r49_uf_delivered, r49_verdicts,
                     r51_madvise_readonly_pages);
+                /* R52: the two channels sing once more, named -- the R51
+                 * boot's census rode both a timestamped line and a bare
+                 * twin, same values, and nobody could say which channel
+                 * was which.  Three ticks of fingerprints: the printf()
+                 * line rides the kernel's log path, the loader_log_line()
+                 * line rides the direct ring write; whoever stamps [ts]
+                 * in the logdump has to stamp one and not the other. */
+                {
+                        static unsigned r52_census_ticks;
+                        unsigned r52_tick = ++r52_census_ticks;
+                        char r52_line[48];
+
+                        if (r52_tick <= 3) {
+                                printf("sigcensus: chan=log tick %u\n", r52_tick);
+                                snprintf(r52_line, sizeof(r52_line),
+                                    "sigcensus: chan=direct tick %u\n", r52_tick);
+                                loader_log_line(r52_line);
+                        }
+                }
                 (void)loader_log_flush();
         }
         printf("adreno: the GPU's sensors read %d.%d and %d.%d degrees; its clock is set to %u MHz\n", tenths[0] / 10,

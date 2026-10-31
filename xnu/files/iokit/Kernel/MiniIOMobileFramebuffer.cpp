@@ -58,12 +58,12 @@ extern "C" void *raphael_display_back(bool preserve);
 extern "C" bool raphael_display_present(void);
 extern "C" void redwood_gpu_report(const char *why);
 
-/* R51's own record, and the kernel-id tool's name for this build (the used-marker
+/* R52's own record, and the kernel-id tool's name for this build (the used-marker
  * tradition: loader_return.c's XNULIVE4 is the precedent).  Same byte length as the
- * R50 marker it replaces, so the round's diff stays the hint clamp + the prefault
- * hologram plus this string -- the payload layout the gate pins does not move. */
-__attribute__((used)) static const char r51_prefault_mark[] =
-    "R51: the prefault names the math behind every exec fault";
+ * R51 marker it replaces, so the round's diff stays the archaeology + the channel
+ * fingerprints plus this string -- the payload layout the gate pins does not move. */
+__attribute__((used)) static const char r52_archaeology_mark[] =
+    "R52: the archaeology reads the bytes that dyld delivered";
 static IOLock *gScanoutLock;
 
 /* IOConnectCallMethod selectors of the framebuffer user client (iOS 16.5) */
