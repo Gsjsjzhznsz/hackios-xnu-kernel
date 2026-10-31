@@ -1797,3 +1797,21 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 **新律法入册**：⑩ USB 判读进制律——lsusb -v 的 class/subclass/protocol 是十进制，与已知签名（adb FF/42/01、fastboot FF/42/03）比对必须先归一基数（66 十进制 = 0x42）；⑪ adb 主体律——USB 节点 root:plugdev 时 adb 必须以有权主体运行（sudo），无权主体静默空列表会伪装成"设备不存在"；⑫ 多候选逐试律——DDNS 会发布尚未生效的记录，DoH 全部 Answer + 缓存逐个快探，实战成功者回写缓存。
 
 **R53 方向（chained-fixup 解码轮）**：① 解码刀 = 按 dyld_chained_ptr_64_rebase 位域（arm64e：target 低 36 位 / next 高位簇）解码 infos-hex 四字段，还原 dyld 静态期望指针与 next 链拓扑，对照 0x18008c000 形真值表；② 影响面刀 = 全量 prefault 全息按 fixup 解码重算 slide 算术（R51 的 0xff70000100f64000 形态 = 模板 fixup 字节 + slide 的产物），裁决 non-fatal 预取是否在 exec 风暴期造成真实页缺失代价（kr 0x1 x N 的时间分布 vs exec 时延）。
+
+## R53 chained-fixup 解码轮（2026-10-31，纯离线闭环——无 dispatch 无手机动作，R52 判读树 (a) 分支材料已足）
+
+**方法**：R52 logdump live 段（8e502c13，1,474,626 B）的 infos-hex 模板 352 B + 50 条 prefault 全息（kernel 打印的 notif/dyld_img/dyld_infos/slide/addr 全项）为唯一输入，`scripts/r53_fixup_decode_proof.py` 按 dyld_chained_ptr_64_rebase 位域（target bits 0-35 / high8 36-43 / unused 44-50 / next 51-61 / bind 62 / auth 63）机械裁决七组：**ALL GREEN**。
+
+**V1 模板解剖**：44 个 u64 槽恰 6 个非零 = version@0x0（17，低 u32；infoArrayCount 0）+ 五个 fixup 字段，全部**纯 rebase**（bind=0 auth=0 high8=0 unused=0）：notif@0x10 target **0x391f0** next 4 / dyldImageLoadAddress@0x20 target **0x0** next 4 / dyldVersion@0x30 target **0x752bd** next 14 / dyldAllImageInfosAddress@0x68 target **0x8c000** next 22 / 尾字段@0xc0 target **0x7032e** next 44。
+
+**V2 真值表复现**：target + 期望基址 0x180000000 = infos 自指 **0x18008c000**（R51 在册真值逐位复现）、img → **0x180000000**（dyld 自身 mach header）——"0x18008c000 形真值表"由此闭合：低 36 位 = 静态 offset 保全，高簇 = next 链编码。
+
+**V3 链拓扑**：notif 链 0x10 →(next 4)→ **0x30 连续**（dyldVersion 字段，两链共点）→(14)→ 0xa0 终止；img 链 → 0x40 终止；infos 链 → 0x118 终止；尾字段链 → **0x220 出 0x170 结构窗**（__DATA 续行）。5/5 链落点明确。
+
+**V4/V5 slide 算术逐位闭环（50/50 事件）**：kernel slide = **aii_addr − infos_encoded**（逐位）；kind1 addr = trunc16k(notif_enc + slide)（14/14）、kind2 = trunc16k(img_enc + slide)（36/36）；**kind0（infos）= aii_addr 自身恒在图内故永不失败**——全息只有 kind 1/2 之谜解出。45 条 ask read-exec 判词 = 同族（R49 判词漏斗的喂食者）。
+
+**V6 正确算术与 R54 刀码公式**：dyld_base = **aii_addr − infos_target(0x8c000)**；真预取页 = trunc16k(dyld_base + target)：notif 页 0x100f64000、img 页 = dyld_base 0x100f2c000、infos 页 = aii_addr。**broken = real + 0xFF700000_00000000（常数！）**——next 链碎片流过 slide 减法的唯一残迹；kernel 的 16k 页截断与 no-map-entry 退路全部本来就对，**只差字段解码一步**。R54 刀码：exec_prefault_data 三字段先解 target = field & 0xFFFFFFFFFFF（44 位；bind/auth 非 0 则静默跳过保上游 non-fatal 姿态），slide 改 dyld_base 算术；census 加解码计数器。
+
+**V7 影响面定谳**：50 起失败全部 kr 0x1 KERN_INVALID_ADDRESS "no map entry"（fail-fast 退路、零 pager I/O），横跨 **44.0–152.4 s / 21 个 pid**（init/launchd 整个 exec 相）——单次代价 = 微秒级 map 查找，**无害实锤**；真代价 = 三个 dyld 预取页（notifier 页 / dyld 文本首页 / aii 页）从未被预热，每次 dyld 启动都吃 first-touch 软故障——**launch 预取优化自始静默死**（上游 xnu-8796 同裸指针+slide 算术，若 Apple dyld 静态模板同为 fixup 编码则上游同病；本修按本机字节走，不追上游）。
+
+**R54 方向（预取解码修复轮，dispatch 轮）**：① 修刀 = exec_prefault_data 解码（上式），预期 45 条 ask read-exec 判词归零 + 三个预取页 kr 0x0 真命中（census 计数可证）+ HR 桥接 exec 风暴期 first-touch 软故障下降；② 观测顺带 = census 增 decode 计数（decoded-prefault 命中/跳过），marker 56 B 同长换替，门禁三件套 r53。
