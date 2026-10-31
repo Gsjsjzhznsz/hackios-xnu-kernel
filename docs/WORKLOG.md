@@ -1885,3 +1885,20 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 - **结论：decode 的聚合用户可见效应亚噪声（<1%）——真实收益 = ① 174 次 kernel 侧必败 vm_fault 归零 ② 判词漏斗清空（168→0，日志噪声消灭）③ 每 exec 3 页真预热 = launch 预取优化复活**。R53 V7 预言（"真代价 = 三页自始未预热"）与 R54 实测双向闭合。
 
 **R56 预注册（WiFi MPSS 装载轮）**：用户在案第二诉求（"WiFi 依旧无法使用"）进入手术——按 docs/RAPHAEL-WIFI-PORT-PLAN.md 阶梯（wifi_step 1..8）：材料 = r36work/ 参考仓库 8 内核文件 15,701 行（hakios.mpss.c 6395 / wifi.c 5666 / qmi.c 963）+ mk-ath10k.py + lx/ 构建链 + 私有固件输入（upload/fw-raphael.tar.gz + nv-dump.tar.gz 在库，禁发布纪律沿袭）；R56 范围 = MPSS 装载第一梯（modem_step/wifi_step 观测刀先行，单变量纪律），判读树随刀预注册。
+
+## R56 WiFi MPSS 装载轮（2026-11-01，M2 兑现轮：固件输入入卷 + NAS 自治刷机 + HR12 预注册）
+
+**考古定谳（R56 设计依据，三笔账清白）**：① `wifi=1 wifi_bdf=bd_f11cn.bin` 自 R39 就骑在 R39 组 cmdline 上（r54_flash_build R39_TOKENS 在案）——每代内核 raphael wifi 分支都被调用过；② `redwood_input.c:254` 钩住 `redwood_wifi_init()`，整栈 conf 注册在册（redwood_wifi/qmi/wlfw/net/lx/adsp/mpss/image 全 `standard`）——代码在膛、已编译、已钩线；③ r39 log 的 `no fw/modem.mdt` 行定谳唯一缺口 = **固件输入缺席**（image_file("modem.mdt"/"wlanmdsp.mbn") 空手，raphael 分支每 boot 早退）。R40 已预注册载体设计（固件 81.6 MB > 64 MB 载荷窗 ⇒ 走 resident flashboot/md0，stage 上限 0xffffffff、choose_window top≈226MB）+ `tools/r40_flashboot_build.py` 在册；R41 M2 判决（固件卷 ⇒ `SM8150 MPSS/ath10k is being brought up` ⇒ 链走 6..15）预注册但从未实跑（R42 起 pivot 到内核手术）。**R56 = 兑现 M2，单变量 = flashboot 固件输入**：内核零变（R54 KSHA 36438a97 原样骑 boot 分区）、cmdline 零变（R39 组 verbatim）、loader 零变（4bf828e4）。
+
+**固件卷制备（r40 工具全律过）**：`r40_flashboot_build.py --base r54 flashboot（14485e7c = R39 钉死值同，自 R39 零漂移）--fw = fw-raphael/（modem.mdt + b00..b31 + wlanmdsp.mbn 4,054,436 B + bd_f11cn.bin 26,328 B）+ NV 四件（modemst1/2/fsg 8 MiB ×3 + fsc 256 KiB，设备提取交付在库）` → **raphael-r56-flashboot-fw-nv.apfs 113,680,384 B（sha 6897bb02）**，fw/ 39 件 105.1 MB（含工具自产 firmware-5.bin + 0-rmtfs-ram），回读证明全过（39 fw + 1 base 逐字节）；与 R41 产物逐文件交叉验证 **零差异**（同基座同输入 ⇒ 同尺寸 113,680,384 B 布局数学互证）。私有件纪律沿袭：不进 git 不进 Release，只归 NAS。
+
+**刷机（NAS 自治全链，nohup 脱链律）**：boot 分区已持久化 R54 gpu 镜像（R54 轮在案）⇒ 本轮**零 fastboot flash**：TWRP（d001/45c2b4ec，root 主体律三度）→ adb reboot bootloader → ABL 稳窗（d00d/product=raphael 0.001s）→ fastboot reboot → XNULOADER（product=xnuloader）→ oem ramdisk 臂 → **stage r56 fw 卷 111016 KB OKAY 4.910s（项目首次大卷装载一次通过）** → stage imgs/r54.xnup 23561 KB OKAY 0.977s → **oem run OKAY** @ 17:16:35 UTC（T0）。
+
+**HR12 判决树（预注册，判读工具 scripts/r56_judge.py）**：
+- **HR12-1 全胜** = `wifi: SM8150 MPSS/ath10k is being brought up beside the system's start (wifi=1)` 在场 + `THE RADIO IS UP` + 零 panic + 存活 ≥1473.5s（R54 纪录）⇒ WiFi 链全通（收获轮：MPSS 装载 + ICNSS + SNOC 一次闭环）；
+- **HR12-2** = brought up 在场 + `THE RADIO DID NOT COME UP: step N failed` ⇒ MPSS 装载进度到 N-1 步实锤，kept 倒灌（64 KB 环 24 KB 尾巴）给步级细节，新墙立档定点修（fork 在案风险：early crash `081950` 形 / ICNSS NOT READY 30s 形）；
+- **HR12-3** = `firmware is missing` 行再现 ⇒ md0 装载通道问题（窗口/映射/image_file 查找序），容器侧分诊；
+- **HR12-4** = panic/黑屏 ⇒ logdump 按码分诊；**回滚零成本** = 换回 4MB 小 flashboot 原样 stage（fw 缺席 = wifi 静默早退 = R39 以来默认态，R54 稳态即刻回归）。
+- 判据行全清单：brought up（tell 恒打印）/ per-step announce（quiet kept，失败倒灌）/ `wifi: the radio's DSP is up and linked, %llu ms in`（step 15 开始 = MPSS 活 + GLINK 链上）/ `wifi: ICNSS WLAN firmware %s; MSA indication %s`（fork 验证行：READY + received）/ QRTR 会话行 / `THE RADIO IS UP, %llu.%llu s`。
+- 沿袭全表守恒核对：decode ok 随 exec 风暴增长且 skip=0、verdicts 0、prefault 全息 0、faults/uf-ok 率 93/s、madvise-ro ~1,815、traps/posts/aborts 0、SpringBoard spawn、adreno 行数。
+- 观察计划：T+360/T+917/T+1530 相态探针（loader 常驻不辨 panic——真判词在 logdump）；收卷 = `oem logdump`（loader 在时）或 TWRP `dd if=/dev/block/by-name/logdump` 64 MB 全分区直读（R54 律）。
