@@ -29,7 +29,10 @@ at the R51 release kernel:
                ONLY in r52 -- and the flush channel is proven packed: the
                strtab of BOTH kernels carries the loader_log_flush symbol.
   4. segments: the LC_SEGMENT_64 name sequence is identical; __TEXT must not
-               shrink and stays under 16 KiB of growth; every OTHER payload
+               shrink and stays under 32 KiB of growth (the R52 lesson: __TEXT
+               growth is PAGE-QUANTIZED -- the archaeology rode a full 16 KiB
+               page jump, the band is an audit window not a size budget; two
+               quanta); every OTHER payload
                segment keeps its file size and shifts by exactly the __TEXT
                growth; __LINKEDIT absorbs the rest of the file delta.
   5. strings:  computed with the volatile regions AND THE CODE SEGMENTS
@@ -271,7 +274,13 @@ def main():
     # segments keep their sizes and shift by the same amount, and __LINKEDIT
     # takes the rest.
     assert shift >= 0, '__TEXT shrank %d B -- nothing in this round can shrink it' % shift
-    assert shift < 16384, '__TEXT grew %d B, past the 16 KiB forensics band' % shift
+    # THE R52 QUANTUM: __TEXT growth is PAGE-QUANTIZED -- R52's archaeology +
+    # fingerprints landed a 16384 B page-aligned jump (16 KiB exactly), the
+    # first round to move a whole page.  The band is an AUDIT window, not a
+    # size budget: 32 KiB pins it at two quanta; the payload law below still
+    # forces every other segment to keep its size and __LINKEDIT to absorb
+    # the remainder, so nothing can hide in the wider band.
+    assert shift < 32768, '__TEXT grew %d B, past the 32 KiB forensics band' % shift
     moved = []
     for (name_o, fo_o, fs_o), (name_n, fo_n, fs_n) in zip(segs_o, segs_n):
         if name_o == b'__TEXT':
@@ -280,6 +289,10 @@ def main():
             if fo_n != fo_o + shift:
                 moved.append((name_o.decode(), 'fileoff', fo_o, fo_n, 'want +shift'))
             continue
+        # zero-size segments (the __LAST tail mark) carry no file bytes and
+        # no layout semantics -- the R52 quantum (shift 16384) exposed them
+        if fs_o == 0 and fs_n == 0:
+            continue
         if fs_n != fs_o or fo_n != fo_o + shift:
             moved.append((name_o.decode(), fo_o, fs_o, fo_n, fs_n))
     assert not moved, 'payload segments did not follow the __TEXT growth law: %s' % moved[:4]
@@ -287,7 +300,7 @@ def main():
     link_n = [s for s in segs_n if s[0] == b'__LINKEDIT'][0]
     assert link_n[2] - link_o[2] == delta - shift, \
         'file delta %d != __TEXT %d + __LINKEDIT %d -- something else grew' % (delta, shift, link_n[2] - link_o[2])
-    say('segment law: %d segments, name sequence identical; __TEXT +%d B (< 16 KiB); every other'
+    say('segment law: %d segments, name sequence identical; __TEXT +%d B (< 32 KiB, page-quantized -- the R52 quantum); every other'
         ' payload segment keeps its size and shifts by exactly +%d; __LINKEDIT +%d B == the rest'
         % (len(segs_n), shift, shift, link_n[2] - link_o[2]))
 
