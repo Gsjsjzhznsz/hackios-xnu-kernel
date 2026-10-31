@@ -1960,3 +1960,5 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 **新观察入档（不碍判词）**：收卷尾一行 `redwood: signal 11 at 0x18` = **stop 拆解窗伪影**——上下文：`adreno: the run is about to end: the GPU is given back (STILL AT WORK after 500000 us)`（GPU 被收回时仍在渲染）+ launchd 正拆 jobs（SpringBoard[7] lookup failed）→ 渲染线程踩空 0x18 = SIGSEGV。R44 探针如实记账；内核自身零 panic、继续拆解并亲求落卷（FLUSH #191）。R56/R57 未现此行 = 快照时点差（满拆解后取，radio-off + END OF LOG 在卷）；R58 的 get_staged 在拆解中途截取（分区写失败之故）。**非运行期缺陷，判词不受染**；stop 窗信号 11 计入观察台账。
 
 **R59 预注册（join 轮 = 计划 R37 行后半，等一项用户输入）**：扫描全 RSN（WPA2/WPA3）零开放网——join 需凭据。契约已定谳：`redwood_wifi_network()` 读 **fw/ 小镜像内 `network` 文件，两行：SSID（1-32 B）/ PSK（8-63 B）**；cmdline-append `wifi_join=1`（优先于 scan，lx_bus.c:821）；判据行预注册：`wifi: %u: which network to join: a name of %u bytes and a passphrase of %u bytes were given` + 关联/DHCP 判词（lx_80211 关联路径）+ fork 风险在案（"连接仍不稳定 / 关闭再开启后无法扫描"——其自认未修，wifi_diag + microdump 取证随行）。**缺的唯一输入 = 本地 SSID/PSK**（或用户在手机设置手输的 wifi_ask 路径）。凭据到位即自驱执行。
+
+**操作律补账（R58 附带）**：oem logdump 分区写在 stop 后 ~2s 窗内可瞬态失败（UFS 路径随内核拆解未清），**stop 后候 5s 再 logdump** 即稳（R58 复测 0.010s OKAY）；失败时 get_staged 暂存环直取无损（暂存即日志本体）。
