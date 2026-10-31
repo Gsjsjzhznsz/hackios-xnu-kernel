@@ -1946,3 +1946,17 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 - **HR14-3** = 扫描行缺席且驱动未起（firmware 链断）⇒ 对表 R57 的 lx 文件请求序分诊；
 - **HR14-4** = panic/异常 ⇒ 按码分诊；回滚 = cmdline-append 不含 wifi_scan 重跑（R57 稳态）。
 - 隐私律沿袭（fork 原话 "the log is not for passing on"）：**扫描 heard 的他网名/地址只入私有归档（NAS + 本地 own 文件），推送账本只记计数/形状**。
+
+## R58 扫描轮真机判读（2026-11-01，HR14-1 全胜：本机 RF 环境首次入册，8 网络实弹命中）
+
+**logdump**：stop OKAY @ T+1943s（**32.4 分钟三度破纪录 +83s**）；oem logdump 分区写本轮失败（fastboot: Command failed——三轮无断电后的 UFS 瞬态，R59 顺手查），**get_staged 4MB 直接取暂存环**（sha 9bcc34bf，1,343,535 B 自有区 = FLUSH #191 @ 1948s kernel 亲求落卷）；NAS 归档 r58-logdump.bin。
+
+**HR14-1 全胜（预注册判据逐项）**：
+- 链全线复现：brought up / `ICNSS WLAN firmware READY; MSA indication received` / MSA 区 0x8bc00000 两区 / QRTR（services 44，WLFW THERE）/ RMTFS RAM-only / TFTP server_check / **THE RADIO IS UP @12.4s**（本 boot 时序 191-200s 窗，R57 191-199s 同族）；
+- **扫描实弹命中（fork 真机判据形状复现）**：`lx: THE DRIVER IS ASKED TO SCAN 41 channels, listening only: 0` → `lx: 3215 ms later the scan is OVER`（fork 26 信道 4.1s / 本轮 41 信道 3.2s 同族）→ `lx: THE SCAN HEARD 8 NETWORKS (access points): 6 at 2.4 GHz, 2 at 5 GHz; by channel: 2 on 2, 1 on 5, 1 on 7, 2 on 11, 1 on 40, 1 on 153, the strongest at -46 dBm`——**WCN3990 射频实弹活在膛：beacon 解码、RSSI 测量、信道分布全部真实**；驱动注册行（band 0: 14 信道 + band 1: 27 信道、有地址、16 names/256B extras 扫描容量）在膛；
+- **隐私律**：heard 的他网名/BSSID/信号只入私有归档（NAS r58-logdump.bin + 本地 own 文件），账本只记计数与形状（fork 原话 "the log is not for passing on"）；
+- 沿袭全表绿：decode ok 58 / skip 0、verdicts 0、madvise-ro 1,813、births 15/printed 9、traps/posts/aborts 0、SpringBoard、epoch 00:39:42 → 01:12:01（32.3 分钟）。
+
+**新观察入档（不碍判词）**：收卷尾一行 `redwood: signal 11 at 0x18` = **stop 拆解窗伪影**——上下文：`adreno: the run is about to end: the GPU is given back (STILL AT WORK after 500000 us)`（GPU 被收回时仍在渲染）+ launchd 正拆 jobs（SpringBoard[7] lookup failed）→ 渲染线程踩空 0x18 = SIGSEGV。R44 探针如实记账；内核自身零 panic、继续拆解并亲求落卷（FLUSH #191）。R56/R57 未现此行 = 快照时点差（满拆解后取，radio-off + END OF LOG 在卷）；R58 的 get_staged 在拆解中途截取（分区写失败之故）。**非运行期缺陷，判词不受染**；stop 窗信号 11 计入观察台账。
+
+**R59 预注册（join 轮 = 计划 R37 行后半，等一项用户输入）**：扫描全 RSN（WPA2/WPA3）零开放网——join 需凭据。契约已定谳：`redwood_wifi_network()` 读 **fw/ 小镜像内 `network` 文件，两行：SSID（1-32 B）/ PSK（8-63 B）**；cmdline-append `wifi_join=1`（优先于 scan，lx_bus.c:821）；判据行预注册：`wifi: %u: which network to join: a name of %u bytes and a passphrase of %u bytes were given` + 关联/DHCP 判词（lx_80211 关联路径）+ fork 风险在案（"连接仍不稳定 / 关闭再开启后无法扫描"——其自认未修，wifi_diag + microdump 取证随行）。**缺的唯一输入 = 本地 SSID/PSK**（或用户在手机设置手输的 wifi_ask 路径）。凭据到位即自驱执行。
