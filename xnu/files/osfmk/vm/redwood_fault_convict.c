@@ -79,6 +79,26 @@
  * (verdicts - delivered) names the kernel-side share.  The budget lifts
  * with the detail: the first twelve verdicts print in full and one in
  * every eight after, still try-locked, still flushed.
+ *
+ * R50: THE REGISTER HOLOGRAM.  The R49 boot closed the R48 census: the
+ * 128K user aborts are all SUCCESSFUL page-ins (uf-ok 119,646 of
+ * 119,656, delivered 0 -- HR1 dead, HR2 proven), and all 1,063 failures
+ * are kernel copyio EFAULTs that never rode a user abort at all.  The
+ * verdicts split into two named shapes: kr 0x2 x111 = an ask read-write
+ * against entry prot 0x1/7, the read-only Assets.car mapping used as a
+ * SYSCALL BUFFER (the copyout destination), from one shared-cache PC
+ * (0x20d6ff814), SpringBoard x72 + Spotlight x32; kr 0x1 x30 = garbage
+ * top-half addresses on the exec path (argv copyin), callers in the
+ * shared-cache exec shim x23 and init x6.  Both shapes are syscalls;
+ * the missing hand is the syscall ITSELF.  The upcb is the SVC instant:
+ * on the ARM64 ABI x16 carries the syscall number untouched through the
+ * SVC and x0..x5 the first six arguments, so one extra line per verbose
+ * verdict names the hand -- fd/buf/len for the write-on-read-only
+ * syscall (HR4), and for the exec verdicts x1 IS the argv array
+ * address, separating an unmapped array from a mapped array full of
+ * garbage pointers (HR3).  The accessor is the R49 deliver line's own
+ * (get_saved_state_reg, already in tree); no new locks, no new exits,
+ * the budget unchanged -- one line per verdict.
  */
 #include <arm/thread.h>
 #include <kern/kalloc.h>
@@ -193,6 +213,24 @@ redwood_fault_convict(vm_map_t map, vm_map_offset_t vaddr, kern_return_t kr, vm_
                             n, (uint64_t) get_saved_state_pc(state),
                             (uint64_t) get_saved_state_lr(state),
                             (uint64_t) get_saved_state_sp(state));
+                        /* R50: the register hologram -- the upcb is the SVC
+                         * instant: x16 carries the syscall number and x0..x5
+                         * the first six arguments, the ARM64 ABI rides them
+                         * through the SVC untouched and copyio runs on
+                         * temporaries, never the upcb.  A kr 0x2 write on a
+                         * read-only entry names its syscall's fd/buf/len --
+                         * buf IS the copyout destination that died (HR4);
+                         * a kr 0x1 exec garbage-top names x1 = the argv
+                         * array address, separating an unmapped array from
+                         * a mapped one full of garbage pointers (HR3). */
+                        printf("redwood-fault: verdict %d registers: x0 0x%llx x1 0x%llx x2 0x%llx x3 0x%llx x4 0x%llx x5 0x%llx x16 0x%llx\n",
+                            n, (uint64_t) get_saved_state_reg(state, 0),
+                            (uint64_t) get_saved_state_reg(state, 1),
+                            (uint64_t) get_saved_state_reg(state, 2),
+                            (uint64_t) get_saved_state_reg(state, 3),
+                            (uint64_t) get_saved_state_reg(state, 4),
+                            (uint64_t) get_saved_state_reg(state, 5),
+                            (uint64_t) get_saved_state_reg(state, 16));
                 }
         }
 

@@ -58,12 +58,12 @@ extern "C" void *raphael_display_back(bool preserve);
 extern "C" bool raphael_display_present(void);
 extern "C" void redwood_gpu_report(const char *why);
 
-/* R49's own record, and the kernel-id tool's name for this build (the used-marker
+/* R50's own record, and the kernel-id tool's name for this build (the used-marker
  * tradition: loader_return.c's XNULIVE4 is the precedent).  Same byte length as the
- * R48 marker it replaces, so the round's diff stays the hologram wires plus this
+ * R49 marker it replaces, so the round's diff stays the register hologram plus this
  * string -- the payload layout the gate pins does not move. */
-__attribute__((used)) static const char r49_hologram_mark[] =
-    "R49: the hologram names the hand and path of every fault";
+__attribute__((used)) static const char r50_hologram_mark[] =
+    "R50: the registers name the syscall behind every failure";
 static IOLock *gScanoutLock;
 
 /* IOConnectCallMethod selectors of the framebuffer user client (iOS 16.5) */

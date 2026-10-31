@@ -5,15 +5,15 @@ on:
       round:
         description: "轮次短名（r41/r42/…）：缓存键、产物与资产文件名的唯一来源"
         required: true
-        default: "r49"
+        default: "r50"
       release_tag:
         description: "Release tag（直链的一部分）"
         required: true
-        default: "r49-springboard"
+        default: "r50-springboard"
       release_name:
         description: "Release 标题"
         required: true
-        default: "R49 · 纯血 hackios SpringBoard · 全息判读轮（R48 判读：faults 128,204 绕过 triage 漏斗（traps 0/0），verdict 点名垃圾顶位与 Assets.car 保护失败；漏斗重挂真实出口 + far/esr/pc 全息 + ask/entry 对质 + 预算提高；内核 = R48 + 三出口一判词；cmdline 仍 R39 形 verbatim；判决树 HR1–HR5）"
+        default: "R50 · 纯血 hackios SpringBoard · 寄存器全息轮（R49 判读：HR2 成立——faults 全是成功 page-in，1063 失败全 kernel copyio EFAULT；双形态已命名：Assets.car 只读映射当写缓冲（HR4）与 exec argv 垃圾顶位（HR3）；本轮每条判词带 SVC 现场 x16 + x0-x5，fd/buf/len 与 argv 数组地址一线点名；cmdline 仍 R39 形 verbatim；判决树 HR6-HR7）"
       # 教训（run 41040910832）：GitHub Release name 上限 256 字符——判读叙事全部
       # 写进 release_body（无此上限），release_name 只留一行标题。
       kernel_repo:
@@ -27,7 +27,7 @@ on:
       base_daily_url:
         description: "底板日常镜像直链（SHA 必填；本轮日常镜像的来源）"
         required: true
-        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r48-springboard/raphael-xnu-r48-flash.img"
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r49-springboard/raphael-xnu-r49-flash.img"
       base_daily_sha:
         description: "底板日常镜像 sha256（对官方字节硬校验）"
         required: true
@@ -35,15 +35,15 @@ on:
       base_gpu_url:
         description: "底板 GPU 镜像直链（外科手术的底板）"
         required: true
-        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r48-springboard/raphael-xnu-r48-gpu-flash.img"
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r49-springboard/raphael-xnu-r49-gpu-flash.img"
       base_gpu_sha:
         description: "底板 GPU 镜像 sha256"
         required: true
-        default: "0cdb30316a22d3ea242811d4d63b2bc7b25d05ccab6a0a72a9a12aeadf351f23"
+        default: "5fb121836d823c8f4a99205bd74ba3e4aa8e00deaf63798384f133450c2319dd"
       base_flashboot_url:
         description: "底板启动卷直链（原样转发进 Release）"
         required: true
-        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r48-springboard/raphael-r48-flashboot.apfs"
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r49-springboard/raphael-r49-flashboot.apfs"
       base_flashboot_sha:
         description: "底板启动卷 sha256"
         required: true
@@ -53,22 +53,22 @@ on:
         required: false
         default: |
           loader.efi=4bf828e425e4b59d3668461ff89ef290dfbf3215cceec903f1662255fe45a3db
-          kernel=123a894a124e4764ef51a1201968a10f43cdf9d594fa7de58bc1ea6c6fa21524
+          kernel=72d75d4945eef15f8664b681adcb2d18f055d512e2913dfc14e734020427f4db
           ramdisk=5b9bbbcb6b5ede61d734bf8144fc639d4e419a22bb81e7d6cf93141f4fbe8746
       base_id_cmd:
         description: "底板判读命令（可选；空 = 跳过。占位符：$BASE_DAILY $BASE_GPU $BASE_IDFILE）"
         required: false
-        default: "python3 tools/r49-kernel-id.py \"$BASE_DAILY\" \"$BASE_GPU\" | tee \"$BASE_IDFILE\""
+        default: "python3 tools/r50-kernel-id.py \"$BASE_DAILY\" \"$BASE_GPU\" | tee \"$BASE_IDFILE\""
       base_id_gates:
         description: "底板判读门禁（bash；占位符：$BASE_IDFILE。空 = 跳过）"
         required: false
         default: |
           grep -c "the kernel entry is R33" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::日常底板的内核必须判为 R33（控制组）"; exit 1; }
-          grep -c "the kernel entry is R48" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::GPU 底板的内核必须判为 R48（R49 的门禁基准）"; exit 1; }
+          grep -c "the kernel entry is R49" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::GPU 底板的内核必须判为 R49（R50 的门禁基准）"; exit 1; }
           grep -q "the cmdline is the R39 GPU form verbatim" "$BASE_IDFILE" || { echo "::error::GPU 底板的 cmdline 不是 R39 组原样"; exit 1; }
           grep -c "the cmdline is the daily image WITHOUT" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::日常底板的 cmdline 应无任何 gpu token"; exit 1; }
           # 门禁必须 grep 工具的真实判定词，不能写起草者假设的那句（run 40838276403 教训）：
-          grep -c "the ramdisk entry is R39..R48" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::GPU 底板的小卷不是 R39..R48 卷（5b9bbbcb）"; exit 1; }
+          grep -c "the ramdisk entry is R39..R50" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::GPU 底板的小卷不是 R39..R50 卷（5b9bbbcb）"; exit 1; }
           grep -c "the ramdisk entry is R13..R33" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::日常底板的小卷不是 R13 谱系"; exit 1; }
       pre_gate_py:
         description: "门禁一/二（python，argv[1]=新内核路径）：谱系 + 换代件标记逐字在字节里"
@@ -89,50 +89,53 @@ on:
           assert n('R46: the signal birth ledger names every hand that feeds') == 0, 'the retired R46 marker still rides'
           assert n('R47: the flush rule lands every born line in the logdump') == 0, 'the retired R47 marker still rides'
           assert n('R48: the census counts every hand at work, live, no gate') == 0, 'the retired R48 marker still rides'
+          assert n('R49: the hologram names the hand and path of every fault') == 0, 'the retired R49 marker still rides'
           for mark, why in [
               ('raphael-display: three scanout buffers, VIG0/CTL0, hardware TE', 'the display round (adreno side)'),
               ('display: raphael command TE:', 'the TE phase measurement (display.c)'),
               ('page flips retained (fb_scan=1)', 'the fb_scan boot-arg'),
               ('wifi: raphael needs WCN3990 SNOC/ath10k and MPSS service 0x45', 'the raphael Wi-Fi branch'),
               ('raphael-display: flip did not latch at TE, restoring boot framebuffer', 'the flip fallback'),
-              ('R49: the hologram names the hand and path of every fault', 'THE R49 hologram marker'),
+              ('R50: the registers name the syscall behind every failure', 'THE R50 register hologram marker'),
           ]:
               assert n(mark) == 1, '%s x%d != 1 (%s)' % (mark, n(mark), why)
           assert n('sigbirth: %s[%d] signal %d code 0x%llx from 0x%llx by %s[%d]\n') == 1, 'the sigbirth format x%d != 1 (the birth wire must be packed)' % n('sigbirth: %s[%d] signal %d code 0x%llx from 0x%llx by %s[%d]\n')
           assert n('sigpost: %s[%d] exception %d code 0x%llx 0x%llx\n') == 1, 'the sigpost format x%d != 1 (the R45 funnel wire must stay packed)' % n('sigpost: %s[%d] exception %d code 0x%llx 0x%llx\n')
           assert n('siglive: birth ') == 1, 'the R48 live-probe format x%d != 1 (the census did not pack)' % n('siglive: birth ')
           assert n('sigcensus: births ') == 1, 'the R48 census format x%d != 1 (the sing-out did not pack)' % n('sigcensus: births ')
-          assert n('redwood-fault: ') == 1, 'the R49 verdict-hologram format x%d != 1 (the hologram did not pack)' % n('redwood-fault: ')
-          assert n('r49-deliver: ') == 1, 'the R49 deliver format x%d != 1 (the funnel re-mount did not pack)' % n('r49-deliver: ')
-          assert b'redwood_user_fault_exit' in b, 'the R49 exit-census symbol is missing (the sleh wire did not pack)'
-          assert b'redwood_user_fault_deliver' in b, 'the R49 deliver symbol is missing (the sleh wire did not pack)'
+          assert n('redwood-fault: ') == 2, 'the redwood-fault literal x%d != 2 (the R49 context wire + the R50 registers format did not pack)' % n('redwood-fault: ')
+          assert n('redwood-fault: verdict %d context: ') == 1, 'the R49 CONTEXT format x%d != 1 (the R49 wire must stay packed)' % n('redwood-fault: verdict %d context: ')
+          assert n('redwood-fault: verdict %d registers: ') == 1, 'the R50 registers format x%d != 1 (the register hologram did not pack)' % n('redwood-fault: verdict %d registers: ')
+          assert n('r49-deliver: ') == 1, 'the R49 deliver format x%d != 1 (the funnel re-mount must stay packed)' % n('r49-deliver: ')
+          assert b'redwood_user_fault_exit' in b, 'the R49 exit-census symbol is missing (the sleh wire did not stay packed)'
+          assert b'redwood_user_fault_deliver' in b, 'the R49 deliver symbol is missing (the sleh wire did not stay packed)'
           assert n('frame dropped') == 2, 'the forensic literal x%d != 2 (the IOLog format string + the report literal)' % n('frame dropped')
-          assert n('redwood-pager: verdict') == 6, 'the pager verdict literal x%d != 6 (the four R42 verdict formats + the two R43 busy formats; R49 adds no pager format -- the hologram rides its own literal)' % n('redwood-pager: verdict')
+          assert n('redwood-pager: verdict') == 6, 'the pager verdict literal x%d != 6 (the four R42 verdict formats + the two R43 busy formats; R50 adds no pager format -- the register hologram rides the redwood-fault literal)' % n('redwood-pager: verdict')
           assert n('XNULIVE4') >= 1, 'the R38 loader-framebuffer channel mark is missing (x%d)' % n('XNULIVE4')
           assert n('wifi_step') >= 1, 'the wifi boot-arg surface is missing'
-          print('门禁一/二全过：R33 谱系 4 项 + R38 显示/WiFi/通道 5 项 + 取证字面量 2 处 + pager 判词 6 处 + R49 标记 1 项 + redwood-fault/r49-deliver 各 1 项 + sigbirth/sigpost/siglive/sigcensus 各 1 项 + R48/R47/R46/R45/R44/R43/R42/R41/R40 标记零残留')
+          print('门禁一/二全过：R33 谱系 4 项 + R38 显示/WiFi/通道 5 项 + 取证字面量 2 处 + pager 判词 6 处 + R50 标记 1 项 + redwood-fault x2（context+registers）/r49-deliver x1 + sigbirth/sigpost/siglive/sigcensus 各 1 项 + R49/R48/R47/R46/R45/R44/R43/R42/R41/R40 标记零残留')
       kernel_gate_cmd:
         description: "门禁三命令模板（可选；占位符：$BASE_KERNEL $K $KU $KSHA $REL $R）"
         required: false
-        default: "python3 tools/r49_kernel_gate.py --base-kernel \"$BASE_KERNEL\" --r49-kernel \"$K\" --report \"$REL/${R}-kernel-gate.txt\" | tee \"$REL/${R}-kernel-gate-run.txt\""
+        default: "python3 tools/r50_kernel_gate.py --base-kernel \"$BASE_KERNEL\" --r50-kernel \"$K\" --report \"$REL/${R}-kernel-gate.txt\" | tee \"$REL/${R}-kernel-gate-run.txt\""
       flash_build_cmd:
         description: "④ 手术命令模板（必填；占位符：$BASE_DAILY $BASE_GPU $K $REL $R）"
         required: true
-        default: "python3 tools/r49_flash_build.py --daily \"$BASE_DAILY\" --gpu \"$BASE_GPU\" --kernel \"$K\" --out-daily \"$REL/raphael-xnu-${R}-flash.img\" --out-gpu \"$REL/raphael-xnu-${R}-gpu-flash.img\" | tee \"$REL/${R}-pack.txt\""
+        default: "python3 tools/r50_flash_build.py --daily \"$BASE_DAILY\" --gpu \"$BASE_GPU\" --kernel \"$K\" --out-daily \"$REL/raphael-xnu-${R}-flash.img\" --out-gpu \"$REL/raphael-xnu-${R}-gpu-flash.img\" | tee \"$REL/${R}-pack.txt\""
       kernel_id_cmd:
         description: "⑤ 判读命令模板（必填；占位符：$REL $R $KSHA）"
         required: true
-        default: "python3 tools/r49-kernel-id.py \"$REL/raphael-xnu-${R}-flash.img\" \"$REL/raphael-xnu-${R}-gpu-flash.img\" --expect-loader-sha 4bf828e425e4b59d3668461ff89ef290dfbf3215cceec903f1662255fe45a3db --expect-kernel-sha \"$KSHA\" --expect-volume-sha 5b9bbbcb6b5ede61d734bf8144fc639d4e419a22bb81e7d6cf93141f4fbe8746 | tee \"$IDFILE\""
+        default: "python3 tools/r50-kernel-id.py \"$REL/raphael-xnu-${R}-flash.img\" \"$REL/raphael-xnu-${R}-gpu-flash.img\" --expect-loader-sha 4bf828e425e4b59d3668461ff89ef290dfbf3215cceec903f1662255fe45a3db --expect-kernel-sha \"$KSHA\" --expect-volume-sha 5b9bbbcb6b5ede61d734bf8144fc639d4e419a22bb81e7d6cf93141f4fbe8746 | tee \"$IDFILE\""
       id_gates:
         description: "⑤ 复证门禁（bash；占位符：$IDFILE。教训：必须 grep 工具的真实判定词，run 40838276403）"
         required: true
         default: |
           grep -c "loader  sha256" "$IDFILE" | grep -qx 2 || { echo "::error::双镜像都要读到 loader 条目"; exit 1; }
-          grep -c "the kernel entry is R49" "$IDFILE" | grep -qx 1 || { echo "::error::GPU 镜像内核判词不是 R49（本轮 hologram 构建）"; exit 1; }
+          grep -c "the kernel entry is R50" "$IDFILE" | grep -qx 1 || { echo "::error::GPU 镜像内核判词不是 R50（本轮 register hologram 构建）"; exit 1; }
           grep -c "the kernel entry is R33" "$IDFILE" | grep -qx 1 || { echo "::error::日常镜像内核必须仍是 R33（控制组）"; exit 1; }
-          grep -c "the cmdline is the R39 GPU form verbatim" "$IDFILE" | grep -qx 1 || { echo "::error::GPU 镜像 cmdline 不是 R39 组原样（R49 零 cmdline 改动，hologram 默认开无需 boot-arg）"; exit 1; }
+          grep -c "the cmdline is the R39 GPU form verbatim" "$IDFILE" | grep -qx 1 || { echo "::error::GPU 镜像 cmdline 不是 R39 组原样（R50 零 cmdline 改动，register hologram 默认开无需 boot-arg）"; exit 1; }
           grep -c "the cmdline is the daily image WITHOUT" "$IDFILE" | grep -qx 1 || { echo "::error::日常镜像必须无任何 gpu token（控制组原样）"; exit 1; }
-          grep -c "the ramdisk entry is R39..R48" "$IDFILE" | grep -qx 1 || { echo "::error::GPU 镜像小卷不是 R39..R48 卷（5b9bbbcb）"; exit 1; }
+          grep -c "the ramdisk entry is R39..R50" "$IDFILE" | grep -qx 1 || { echo "::error::GPU 镜像小卷不是 R39..R50 卷（5b9bbbcb）"; exit 1; }
           grep -c "the ramdisk entry is R13..R33" "$IDFILE" | grep -qx 1 || { echo "::error::日常镜像小卷不是 R13 谱系"; exit 1; }
       pre_release_cmd:
         description: "⑥ 前置命令模板（可选；转发/台账等；占位符：$BASE_FLASHBOOT $BASE_GPU $REL $R）"
@@ -149,111 +152,96 @@ on:
         description: "README.txt 全文（逐字进 Release 资产）"
         required: true
         default: |
-          raphael (K20 Pro) R49 交付包：**全息判读轮（询凶续集Ⅳ）**。
+          raphael (K20 Pro) R50 交付包：**寄存器全息轮（询凶续集Ⅴ）**。
 
-          R48 真机判读入账（本仓库档）：收割全绿（KSHA 123a894a 逐位
-          闭环）；SSH 遥控全自动刷机首战全通；launchd ENOENT 之谜
-          破案——启动卷必须 oem ramdisk + stage flashboot.apfs（新律
-          法）；staged 后 run4 历史性突破：kernel 存活 10 分钟+ 零
-          panic、SB4 通过（flip 3、GL 200 帧）、SpringBoard 跑了 22
-          分钟，四记录仪全部开口（sigcensus x22 / siglive x4 /
-          sigbirth x9 / verdict x69）。
+          R49 真机判读入账（本仓库档，run 41099365467）：收割全绿（KSHA
+          72d75d49 逐位闭环）；持久化刷入 + 启动卷律 + run1 存活 9 分钟
+          零 panic；sigcensus x9 唱票全在膛；HR2 成立——faults 全是成
+          功 page-in（uf-ok 119,646/119,656，delivered 0），1063 次
+          vm_fault 失败全 kernel copyio EFAULT（绕 handle_user_abort），
+          triage 漏斗无罪；R43 时代 SIGBUS 浪潮 = 用户态 exc handler
+          自发，非 kernel 送达。
 
-          CR3 定案：faults 128,204（sleh 地板 census）对 traps 0/0、
-          posts 0/0——全部用户 abort 绕过 triage 漏斗；verdict 两形态：
-          kr 0x1 no-map-entry（0xff70/0xffc0 垃圾顶位，低 48 位是合理
-          用户地址，init/launchd/xpcproxy exec 风暴期）与 kr 0x2 保护
-          失败（只读 Assets.car 页，SpringBoard 的 CoreGlyphs 为主）。
-          pristine sleh.c：失败用户 fault 必经 exception_triage 送达——
-          所以 1059 次失败要么全是 kernel copyio EFAULT（无送达无
-          triage），要么送达链有断点。
+          全息判决双破案（R50 指刀）：HR4——kr 0x2 ×111 全部 ask
+          read-write 对 entry prot 0x1/7（只读 Assets.car 上的写请求），
+          调用者 pc 0x20d6ff814（dyld 共享缓存），SpringBoard ×72 +
+          Spotlight ×32——用户态把只读文件映射当写缓冲传 syscall
+          （copyout 目的地）→ EFAULT；HR3——kr 0x1 ×30 = 0xff70/0xffc0
+          垃圾顶位，调用者 = 共享缓存 exec shim 0x20d7034f8 ×23 +
+          init 0x100006810 ×6——exec argv 指针数组坏顶位。
 
-          R49 一刀（全息）：① 漏斗重挂 sleh.c handle_user_abort 的三个
-          真实出口——page-in 成功/中断（uf-ok/uf-aborted）、对齐模拟
-          （uf-align）、送达线（uf-delivered，附 far/esr/pc 全息，头 8
-          条全印 + 每至 32 条一条）；② verdict 全息增强——每条判词带
-          kr 名、请求访问（ask）、entry 保护对质、no-map-entry 的地图
-          形状（nentries/span/首条目边界/top16-low48 拆解）、前置
-          upcb pc/lr 线（用户指令或 syscall 调用者）；③ 预算 3/16 →
-          12/8；④ sigcensus 唱票加五计数（uf-ok/aborted/align/
-          delivered/verdicts）——verdicts - delivered 一行点名 kernel
-          侧份额。
+          R50 一刀（寄存器全息）：upcb 就是 SVC 现场——ARM64 ABI 上
+          x16 携带 syscall 号、x0-x5 携带前六参，穿 SVC 不变。每条
+          verbose 判词加一行：x0/x1/x2 = fd/buf/len（HR4 的 copyout
+          目的地就是 buf）——HR3 的 x1 = argv 数组地址（数组本身没映射
+          与数组内容坏一线区分）。零新锁、零新出口、预算不变——一线
+          之增。
 
           【刷机与取证】
-          1. fastboot flash boot raphael-xnu-r49-gpu-flash.img; fastboot reboot
+          1. fastboot flash boot raphael-xnu-r50-gpu-flash.img; fastboot reboot
           2. 启动卷律（必守）：oem ramdisk 臂 → fastboot stage
-             raphael-r49-flashboot.apfs → stage XNUP → oem run（漏
+             raphael-r50-flashboot.apfs → stage XNUP → oem run（漏
              stage = launchd ENOENT panic）
-          3. 让它跑 >= 10 分钟（R48 run4 存活 10 分钟+，浪潮若在自然复现）
+          3. 让它跑 >= 10 分钟（R49 run1 存活 9 分钟，SB4 已过）
           4. oem logdump / oem log 抓全量日志回传
-          【判读树 HR1-HR5（预注册）】
-          HR1 = delivered>0 且全息行在而 usertrap 仍零：送达线后、
-                exception_triage_thread 钩子前的断点——查链接/优化。
-          HR2 = delivered=0 且 verdicts 全 kernel 类（upcb pc 落在
-                syscall 库）：CR3 完全解释——faults 全成功 page-in，
-                失败全是 kernel EFAULT，非 kernel fault。
-          HR3 = no-map-entry 的 top16/low48 + 首条目边界点名垃圾指针
-                来源（同基址跨进程 = 用户态未初始化结构或 exec shim
-                bug）——R50 修。
-          HR4 = kr 0x2 的 ask 与 entry 保护矛盾点名（如 ask write 对
-                entry r--）：Assets.car 写入只读映射的源头命名。
-          HR5 = uf-aborted 显著上涨：page-in 被信号打断风暴——查信号
-                流量与 THREAD_ABORTSAFE 重试。
-          守恒律：faults ≈ uf-ok + uf-aborted + uf-align + delivered。
-          SB2 节流纪律 / SB3 panic 护栏（零 "Lock already held" /
-          "panic(cpu"，出现即失败）/ SB4 白苹果 flip>=2 / SB5 WiFi
-          缺固件（已知遗留）全部沿袭。
+          【判读树 HR6-HR7（预注册）】
+          HR6（HR4 续）= registers 行点名 x16 与 x0/x1/x2：若 x1（buf）
+                落在 Assets.car 映射内 → 写哪个 syscall、fd 指向什么、
+                长度多少全在手——下一轮修用户态（只读映射当缓冲的
+                调用点）或 kernel 侧给只读页 COW 临时页。
+          HR7（HR3 续）= x16 = execve 且 x1 落在 map 内：argv 数组本身
+                有映射、数组内容坏 → copyin 层再抓数组内寄（下一轮）
+                或直接审计用户态 exec shim（PAC 签名指针/未初始化栈）。
+          守恒律沿袭（faults ≈ 四出口合计，gap 10 仍在观）；SB2 节流
+          纪律 / SB3 panic 护栏 / SB4 白苹果 flip>=2 / SB5 WiFi 缺固件
+          （已知遗留）全部沿袭。
           【镜像说明】
-          - raphael-xnu-r49-flash.img = 日常控制组（= r48 逐字节原样）
-          - raphael-xnu-r49-gpu-flash.img = 本轮目标镜像（仅 kernel 条目换新）
-          - 启动卷 stage 一次：raphael-r49-flashboot.apfs 或固件+NV 版
+          - raphael-xnu-r50-flash.img = 日常控制组（= r49 逐字节原样）
+          - raphael-xnu-r50-gpu-flash.img = 本轮目标镜像（仅 kernel 条目换新）
+          - 启动卷 stage 一次：raphael-r50-flashboot.apfs 或固件+NV 版
           ⚠️ 含 Apple 版权内容，仅供个人研究；下载完成后请尽快删除本 Release。
       release_body:
         description: "GitHub Release 正文"
         required: true
         default: |
-          raphael (K20 Pro) R49 交付包：**全息判读轮（询凶续集Ⅳ）**。
+          raphael (K20 Pro) R50 交付包：**寄存器全息轮（询凶续集Ⅴ）**。
 
-          R48 真机定案：收割全绿（KSHA 123a894a）；SSH 遥控全自动刷机
-          首战全通；launchd ENOENT = 漏 stage 启动卷（启动卷律入册）；
-          staged run4 存活 10 分钟+ 零 panic、SB4 过（flip 3、GL 200）、
-          四记录仪全开口（sigcensus x22 / siglive x4 / sigbirth x9 /
-          verdict x69）。CR3：faults 128,204 绕过 triage 漏斗（traps
-          0/0）——verdict 两形态：no-map-entry 垃圾顶位与 Assets.car
-          保护失败。
+          R49 真机定案（run 41099365467）：收割全绿（KSHA 72d75d49）；
+          持久化刷入 + 启动卷律 + run1 九分钟零 panic、SB4 过、零
+          "Lock already held"；HR2 成立——faults 全成功 page-in、
+          失败全 kernel copyio EFAULT（delivered 0，triage 漏斗无罪）。
+          全息判决双破案：HR4 = 只读 Assets.car 映射当 syscall 写缓冲
+          （copyout 目的地，SpringBoard ×72 + Spotlight ×32）；HR3 =
+          exec argv 指针数组坏顶位（0xff70/0xffc0，exec shim ×23 +
+          init ×6）。
 
-          R49 一刀（全息）：漏斗重挂 handle_user_abort 三个真实出口
-          （uf-ok/aborted/align/delivered），送达线带 far/esr/pc 全息
-          （头 8 全印 + 每 32 一条）；verdict 全息（kr 名、ask、entry
-          保护对质、地图形状、top16/low48、upcb pc/lr 线）；预算
-          12/8；sigcensus 唱票 +5 计数（verdicts - delivered = kernel
-          侧份额）。标记同长换替（R49: the hologram names the hand
-          and path of every fault）。
+          R50 一刀（寄存器全息）：upcb = SVC 现场——x16 携带 syscall
+          号、x0-x5 携带前六参穿 SVC 不变；每条 verbose 判词加一行
+          寄存器全息（fd/buf/len 与 argv 数组地址一线点名，HR4/HR3
+          各自闭环）。零新锁零新出口，预算不变。标记同长换替
+          （R50: the registers name the syscall behind every failure）。
 
-          本轮判决问题（HR1-HR5 预注册）：送达链断没断（delivered 对
-          usertrap）、失败是不是 kernel EFAULT（upcb pc 判类）、垃圾
-          指针哪里来（top16/low48 + 首条目边界）、Assets.car 保护失败
-          的访问方（ask 对 entry 保护）、page-in 中断风暴存在与否
-          （uf-aborted）——一次 boot 全部给出答案。
+          本轮判决问题（HR6-HR7 预注册）：HR4 的 syscall 是谁（x16
+          对表 + fd/buf/len）、HR3 的 argv 数组是本身没映射还是内容
+          坏（x1 对 map）——一次 boot 全部给出答案。
 
-          内核 = R48 + 三出口一判词（user_exception_trace.c r49 钩组、
-          redwood_fault_convict.c 全息、raphael_adreno.c 唱票扩展、
-          redwood.patch sleh.c 三 hunk + vm_fault.c 钩扩 + R49 标记）；
-          loader/cmdline/卷 = r48 原字节；日常镜像 = r48 逐字节控制组。
+          内核 = R49 + 寄存器全息一行（redwood_fault_convict.c
+          registers 行 + R50 标记）；loader/cmdline/卷 = r49 原字节；
+          日常镜像 = r49 逐字节控制组。
           WiFi 固件+NV 走 flashboot 用户侧重建（已知遗留）。
       checksum_files:
         description: "进 SHA256SUMS 的文件名（空格分隔，相对 release/；通常是双镜像+启动卷+md1）"
         required: true
-        default: "raphael-xnu-r49-flash.img raphael-xnu-r49-gpu-flash.img raphael-r49-flashboot.apfs r49-md1-root.apfs"
+        default: "raphael-xnu-r50-flash.img raphael-xnu-r50-gpu-flash.img raphael-r50-flashboot.apfs r50-md1-root.apfs"
       release_files:
         description: "进 Release 的文件（每行一个，相对 release/）"
         required: true
         default: |
-          raphael-xnu-r49-flash.img
-          raphael-xnu-r49-gpu-flash.img
-          raphael-r49-flashboot.apfs
-          r49-md1-root.apfs
-          r49-kernel-gate.txt
+          raphael-xnu-r50-flash.img
+          raphael-xnu-r50-gpu-flash.img
+          raphael-r50-flashboot.apfs
+          r50-md1-root.apfs
+          r50-kernel-gate.txt
           SHA256SUMS
           README.txt
           toolchain-versions.txt
