@@ -1758,3 +1758,22 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 **新律法入册**：⑥ 前缀格式串律——gate 对前缀型格式串按 rodata run 头对质（startswith），绝不按集合成员（marker 整串入集合是 NUL 边界特例）；⑦ 缓存优先律——SSH 通道每次先试 known-good 缓存 IP（DoH 双源一致也会指向不可达地址），缓存写实际连接成功的 cand。
 
 **R51 方向（双刀）**：① 修刀 = madvise 的 WILLNEED/预取路径 read-write ask → VM_PROT_READ（修 kr 0x2 ×111 的 EFAULT 源，SpringBoard/Spotlight 的 Assets.car hint 恢复正常返回）；② 观测刀 = kernel IABORT 的 ELR 全息（handle_kernel_abort_recover 抓 abort PC +far），定位 PAC 签名指针的跳点。附带项：唱票行行缓冲截断（verdicts 5 位后）——singer 行考虑拆行或缩短字段。
+
+## R51 预取算术轮（2026-10-31，run 41167768571 验尸 + run #25 SUCCESS 收割 + run1 真机 1342 秒新纪录 + HR8 全胜 + HR9 定谳）
+
+**run#1 验尸（41167768571）**：唯一错误 = raphael_adreno.c:5723 "use of undeclared identifier r51_madvise_readonly_pages"——singer census 块的 extern 全部块内声明（R48/R49 先例），手术加了第二条 printf 却漏了配套的块内 extern 行；vm_map.o（04:22:41）与 kern_exec.o（04:23:17）在 make -k 续编下干净通过 = 全日志唯一错误，一行修复（`extern unsigned long long r51_madvise_readonly_pages;` 骑 r48/r49 extern 旁）re-dispatch 即过。离线电池无法咬合的盲区：字节级演练测不出 C 编译错——刀码的"编译自查"只能靠 CI 第一发（先例：R49-fix 同类）。
+
+**收割**：run #25 SUCCESS 一次过；tag r51-springboard 八资产齐；KSHA **1b862e1e**（17,010,576 B，delta +80 B 全 __LINKEDIT、__TEXT +0）逐位闭环；gpu 新钉 ef4c0202；daily b0f9f6df / flashboot 14485e7c / md1 5b9bbbcb = R50 控制组原字节；双镜像判读 "the kernel entry is R51" + 控制组 R33 verbatim；GATE GREEN（marker 同长 56 B 换替、strings gained 6/lost 4 = R51 标记+prefault 全息+census 尾行+2 Darwin vs R50 标记+旧全格式唱票串+2 Darwin、0 layout-run forms、nsyms 73023→73025）。本地电池 6 形状全绿（R50 release 真字节：底板提取 kernel 逐位 = 78c8d092、id 双判词 + cmdline/ramdisk 律、marker 伪造假件死在 R51 新 wire、gate 拒收 base-as-round、flash_build 拒收 R50 kernel、yml pre_gate 双形态咬合）。
+
+**SSH/刷机**：raphael_put.py 补缓存优先律（原版 DoH 优先 = R50 前旧序）；手机 TWRP（d001/45c2b4ec）→ adb reboot bootloader → ABL（product=raphael）→ **fastboot flash boot R51 持久化刷入**（Writing OKAY @ 12:48:45）→ fastboot reboot → XNULOADER（product=xnuloader）→ 启动卷律（oem ramdisk 臂 + stage flashboot 4096KB OKAY + stage imgs/r51.xnup 23545KB OKAY）+ **oem run @ 12:49:26** → kernel 存活 **1342 秒 = 22.4 分钟零 panic（项目新纪录：R50 1134s、R49 9.5min、R48 10+min）**。oem stop 第一发经 SSH exec 挂住 115s 超时未落地（再探实锤 "the kernel is running; stop it first"——run 还在续写纪录）；nohup 后台补发 OKAY @ 13:11:47 → product=xnuloader → oem logdump 4MB @ 13:13:18（sha 690022cc，live 段 1,474,626 B 从偏移 0 起为 fresh run）。
+
+**R51 真机判读（run1）**：
+- **HR8 全胜（修刀闭环）**：ask read-write 判词 **0**（R50 ×111 归零）+ **madvise-ro 1,813 页 = 7.1 MiB** 只读页被 WILLNEED 真实预取——机制定裁：顶对象 internal 的只读条目确实走匿名分支（R50 的 kr 0x2 波源头），钳到条目保护位后 hint 从"必败 ask"变"真预取"；verdicts 总量 174（verbose 32 = 前 12 + 1/8 采样律）。
+- **HR9 定谳（观测刀一击命中）**：prefault 全息 25 条（kind 1×6 早期 + kind 2×19，跨 init/launchd/xpcproxy），每进程三元组逐字相同：**notif 0x200000000391f0 / dyld_img 0x20000000000000 / dyld_infos 0xb000000008c000**——三字段同构：**低 32 位合理**（0x000391f0、0、0x0008c000——0x8c000 与 dyld 静态 all_image_infos 自指针 0x18008c000 的低 32 位吻合 = 静态 offset 保全）+ **高 32 位两簇垃圾**（0x00200000 / 0x00b00000）——**非 PAC 形态**（PAC 顶位是 0xffxx），**是数据供给错误**（页内容错或映射错位，非签名指针）；slide 算术逐位自洽（aii_addr − dyld_infos = 负巨数 0xff500001…，notif+slide → 0xff700001xxxxx000 与 pager 判词地址吻合）。R50 定性"PAC 签名指针被跳"（ELR 方案）作废有二：原版 sleh.c 的 EL1 IABORT 直 panic（真机零 panic）；全息显示垃圾在高 32 数据不在签名位。22 条 ask read-exec 判词 = kind 1/2 预取（no-map-entry）；10 条 ask read 判词（0xffc0 顶位，init/launchd）= 同族 copyio 侧数据读——kr 0x1 家族全解。
+- **守恒**：faults 129,339 / uf-ok 129,345——|gap| 6 且 **uf-ok 领先**：拆行后的两条 printf 相隔 20μs（1348.849750→849770），出口计数在窗内多走 6 步；非新出口（R50 gap 1 同源），入册拆行读窗律。
+- **census 双唱律（附带项定裁）**：42 条 births = 22 带 [ts] + 20 无 [ts]，逐字段值相同、每分钟两对——拆行让行长缩短，无时间戳的直写通道也活了下来；无数据损害，R52 顺带看清通道。traps 0/0、posts 0/0、aborts 0 沿袭；sigbirth 9 / siglive 4 照常。
+- **SB 判读**：零 panic、零 "Lock already held"、零 GPU reset（25 个 frame dropped = swap 超时背景噪声，R50 同款）；SB4 ✓ flip 3 latched；launchd x8865、SpringBoard x3642、backboardd x337——exec 风暴后系统满载活了 22.4 分钟。R51 build 已持久化在 boot 分区。
+
+**新律法入册**：⑧ 编译自查律——files/ 覆盖文件引用跨树符号（osfmk 定义、bsd 消费）必须块内 extern 成对新增，字节级电池测不出编译错，CI 第一发就是编译自查；⑨ 拆行读窗律——同一 tick 拆成两条 printf 会引入读窗（守恒 gap 可带符号翻转），判读按 |gap| 不按符号。
+
+**R52 方向（双刀）**：① 数据供给考古刀 = all_image_infos copyin 的原始字节 hex（16 B/行，struct 0x170 全量）+ 与 dyld 文件静态字节（0x18008c000 形）逐字段对照 → 定裁"页内容错"vs"映射错位"，定位 vnode pager/decmpfs 或 load_dylinker 映射层；② 通道顺带 = census 双唱的两条通道与 [ts] 供给（loader 直写 vs 排空路径）。
