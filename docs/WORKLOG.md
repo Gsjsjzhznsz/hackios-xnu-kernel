@@ -1843,3 +1843,29 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 **收割（run#29 = 41205080579，e90a84e，SUCCESS）**：Release r54-springboard 八资产全 uploaded（双镜像 8,163,439 / 12,669,039 B + flashboot + md1 + gate 报告 + SHA256SUMS + README + toolchain）。**KSHA = 36438a970047370fe1b435a4ab58f337542188abe2035af6b68ef8ab15455947**（17,027,112 B，**delta +56 B 全 __LINKEDIT、__TEXT +0**——解码器整块塞进 __TEXT padding，R41/R45/R50 的 delta-0 家族新成员；nsyms 73027→73029 = r54_decode_ok/r54_decode_skip 两数据符号；strings gained 6 / lost 3 = R54 marker + decode 三格式 + 2 Darwin 行 vs R52 marker + 2 Darwin 行；marker @ 0x2d616 真 rodata）。公网回读复验：SHA256SUMS 四件全 OK；r54-kernel-id 双镜像判读全对（GPU = R54 + R39 组 cmdline verbatim + 卷 R39..R54 + loader 4bf828e4；daily = v7 loader + R33 内核 + 零 gpu token + R13 卷 = 控制组原字节）。
 
 **HR11 真机待判**：刷机物料就绪（raphael-xnu-r54-gpu-flash.img / raphael-r54-flashboot.apfs 在 release 直链）；判决树 HR11 预注册在案（decode ok 在场且 skip=0 + kind1/2 全息零条 + ask read-exec 判词归零 + 存活 ≥1379.5s ⇒ HR11-1 全胜 = launch 预取优化复活）。本轮环境两处物理边界：容器实例无 USB 透传（手机不在总线上，fastboot/adb 链无法自治执行——等设备回插或设备端 `sh run_ios.sh flash r54 gpu`）；NAS SSH 的域名/用户名不在任何本地残留（多候选逐试律无候选可试——存档上传待补一条线索）。
+
+## R54 真机判读（2026-10-31 深夜，NAS 自治全链刷机 + HR11-1 全胜定谳：launch 预取优化复活 + 存活 ≥1473.5s 项目新纪录）
+
+**通道与刷机链（全自治，零人工干预）**：用户补 NAS SSH 线索（ipv4.mysv.dpdns.org:222 admin）→ scripts/nas_ssh.py 多候选逐试律重建（本容器无 ssh/scp/sshpass，paramiko 落地；DoH 四端点 + 系统 DNS 逐候选，冠军 = 主机名本尊 0.3s）→ **手机挂在 NAS 总线上实锤**（上轮"容器无 USB 通透"边界消解：45c2b4ec TWRP 复合态在 NAS lsusb 在册）→ 归档通道复活（/vol1/1000/ios 惯例目录，R47-R52 三代资产在架）；R54 八资产 + 刷机三件（gpu 镜像 / flashboot / r54.xnup）上传 + 远端 sha256sum 复验。
+
+**XNUP 制作律入册**：r54.xnup = gpu flash 镜像 kernel 段 gunzip → 切 XNUP 魔数 → 精切 8+size 终点（scripts/mk_xnup.py，与 r54_flash_build unpack() 同源）；**刷前字节校验律**先在 R52 真三件上复现验证（NAS imgs/r52.xnup 24,126,808 B 逐字节 ✓）再落 r54.xnup 24,126,872 B（sha 30431a90）。
+
+**通道劫持验尸（三律入册）**：① **nohup 脱链律**——首发 flash 死于 paramiko 通道 120s 读超时，被杀通道把 `fastboot flash` 半程遗在 NAS 上握住 USB 节点（后续 getvar 全体 "waiting for any device"，fastboot 无设备时 getvar 会无限阻塞、必须 timeout 包裹）；此后每步 fastboot 一律 `nohup … > log 2>&1 &` 脱链落日志，SSH 通道只做探针，刷机序列再无通道死点。② **pkill 精确名律**——`pkill -f fastboot` 会自杀（包装 shell 命令行自匹配），必须 `pkill -x fastboot`。③ **设备侧卡死恢复序**——authorized 翻转无效 → usb driver unbind/rebind 强制重枚举（devnum 006→007）→ 设备自掉自回 → ABL 自复位回稳窗（product=raphael 0.003s 应答）——boot 分区未受污染（ABL 全量下载完才落盘，flash 中途被杀 = 未提交）。
+
+**全链（启动卷律全 OKAY）**：TWRP（d001/45c2b4ec）→ adb reboot bootloader → ABL 稳窗 → nohup flash boot r54（Sending 12372KB OKAY 0.384s + Writing OKAY 0.057s）→ fastboot reboot → XNULOADER（product=xnuloader 0.001s）→ **oem ramdisk 臂 OKAY + stage flashboot 4096KB OKAY 0.174s + stage imgs/r54.xnup 23561KB OKAY 1.131s → oem run OKAY @ 22:51:16** → 二次 run 拒绝实锤 `a kernel is running (oem stop ends it)`。
+
+**存活观察与收卷**：探针 T+360s / T+917s 设备 009 恒在（注：panic 不重启手机——loader 常驻服务 USB，总线探针不能分辨 panic，真判词在 logdump）；T+1530s 停车指令到时手机已**自行落回 TWRP**（d001 Device 010——R49 模式再现，oem stop 未及落地）；**TWRP 直读 logdump 分区律**：loader 已走就别再重启回 loader——`adb shell dd if=/dev/block/by-name/logdump` 直读 **64MB 全分区**（sha 58604b5a）→ NAS 归档 + 容器判读，不经 loader 重启、零覆写风险、比 get_staged 4MB 窗更全。
+
+**残留律判读**：分区单 FLUSH 头（**#84 @ 1310s kernel 亲求落卷**，1,343,535 B 随行）+ 自有区以 `sigcensus: decode ok 58, skip 0` 收尾 + 零填充；`== END OF LOG ==` @1,474,609 与 t=120.8s prefault 全息/verdict 168 全为 **R52 残迹**（R52 live 段 1,474,626 B 吻合 + 数值与 R52 立档逐位同）——残留律三度立功，判读只认自有区。
+
+**HR11-1 全胜定谳（预注册判决树逐项对表）**：
+- **census decode ok 58 在场且 skip 0**（18 tick 单调 49→58）——HR11-2 守卫未开火，dyld 模板形态全程稳定；
+- **prefault kind1/2 全息 0 条**（R51 25 / R52 50 → 0）——hologram 只在预取失败时唱，成功即静默：三发 dyld 预取全部真命中；
+- **ask read-exec 判词 0**（R52 45 条归零），且 **verdicts 全漏斗 0**（R52 168 → 0：R51 madvise 修刀清 read-write 族 + R54 decode 清 read-exec 族，判词漏斗彻底空载）；
+- **存活 ≥1473.5s 零 panic**（launchd epoch 末值 00:24:33.176913 + 末 tick census 在膛；loader 自落 TWRP 截停，无 END OF LOG 属预期）= **项目新纪录（R52 1379.5s → +94.0s）**，HR11-1 门槛 1379.5s ✓；
+- 沿袭全绿：faults 137,173 / uf-ok 137,168（gap 5 沿袭；R52 129,339/129,345 → +7,829 = **faults 率守恒 93.76 → 93.09/s（-0.71%）**，绝对增长由更长存活解释，decode 未推高故障率）、madvise-ro 1,815（R52 1,813）、births 15 / printed 9 / sw-denied 0 / budget-denied 6、traps 0/0 posts 0/0 aborts 0、SpringBoard spawn ✓、adreno 715 行、零 SIGBUS 零 "Lock already held" 零 GPU reset。
+- **结论：launch 预取优化复活**——R53 V6 公式落码成立，dyld chained-fixup 解码把三发预取从"必败 ask"变"真页预热"。
+
+**两条观察入档（不碍判词）**：① decode 全息（首 4 + 每 16 例）零现身——census 计数器在场即解码证据成立，全息通道缺席或为 DEBUG4K 门控/条件计数器错位，R55 顺带查；② r54 流内 [ts] 装饰零条（R52 的 [N.NNNNNN]: 行）——判读改锚 launchd epoch 时钟 + census 单调计数。
+
+**R55 预注册（first-touch 软故障定量轮，HR11-1 预注册方向）**：双基线到手 = R52 129,339（decode-broken，93.76/s）vs R54 137,173（decode-revived，93.09/s）。刀 = first-touch 分类观测（minor vs major / 预取命中页的二次触点），判读 = exec 风暴窗内 faults 形状对表 + 每秒率守恒验证；附带项 = decode 全息通道缺席分诊（DEBUG4K 门控 or 条件计数器错位）。
