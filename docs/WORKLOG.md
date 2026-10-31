@@ -1921,3 +1921,15 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 **结论（R56 立档）**：**WiFi 链在 raphael 首次点亮**——MPSS 装载（PAS 4）+ ICNSS 控制链（RMTFS/TFTP/pd-mapper/MSA/BDF）+ SNOC 主机驱动一次闭环，加载 9.1 秒、零 panic、清洁停车。内核零变（R54 KSHA 36438a97 骑现役 boot 分区）、cmdline 零变（R39 组 verbatim）、唯一变量 = flashboot 固件输入——单变量纪律兑现，R40 载体设计 + R41 M2 判决双双兑现。
 
 **R57 预注册（入网轮：lx join + 用户态对接）**：电台已 UP 而网络 NOT joined（"0 frames sent/received"）——用户态侧 com.redwood.wifi 控制链（wifi_ask=1 手机设置手输密码形态）+ lx join 数据路径未走。R57 = ① 判读增强：wifi_loud=1 进 cmdline（kept 环全量出卷，步级/ICNSS 细节可取证）+ wifi_diag 按需；② 用户态：确认 resident 卷 com.redwood.wifi/net_test 在册（R39 log 已证 spawn），触发 join → DHCP → 扫描/关联判词（fork 判据：`ICNSS WLAN firmware READY` 已有，下一层 = 关联 + 地址）；③ 风险预注册：fork 在案"连接仍不稳定 / 关闭再开启后无法扫描"（其自认未修）——按 wifi_diag + microdump 取证，不预期一次全绿。回滚律沿袭（小 flashboot = R54 稳态）。
+
+## R57 判读增强轮（2026-11-01，wifi_loud=1 单变量：kept 环旁路 + ICNSS 细节确认 = 计划阶梯 R36 行兑现）
+
+**单变量**：cmdline 追加 `wifi_loud=1`（quiet 旁路 → 全部 say 行直出控制台 + loader 环）。内核零变（R54 KSHA 36438a97 原条目字节 verbatim 回装——本轮无 CI 无新内核构建）、loader/ramdisk/usb/DTB 零变、固件卷零变（R56 的 fw-nv flashboot 原样 stage）。**载荷律新钉：XNUP 载荷内含 cmdline 条目——换 cmdline 必须从新镜像提取新 xnup**（r57.xnup 24,126,872 B sha 3cd29f64，载荷内 wifi_loud=1 在膛断言；提取器先在 r54.xnup 上逐字节复现验证 30431a90 ✓ 再落新件——刷前字节校验律沿袭）。
+
+**工具**：scripts/r57_pack.py（r54 gpu 底板单条目换替：base sha 37b0ee8a = r54 release SHA256SUMS 互证；kernel sha 36438a97 断言零内核变化；cmdline token 集 = R39 组 + wifi_loud=1；输出五条目重读自证）→ **raphael-xnu-r57-gpu-flash.img 12,669,039 B sha 360dab89**。
+
+**HR13 判决树（预注册）**：
+- **HR13-1 全胜** = R56 全线复现（brought up / THE RADIO IS UP / 零 panic / 存活 ≥1751.4s 新门槛）+ **步级细节全量出卷**：PAS answer 0、ICNSS MSA region 行、BDF 下载行、capability 行、`ICNSS WLAN firmware READY; MSA indication received` 判词行、QRTR 会话行（服务 0x45 在册）——计划阶梯 R36 行判据（fork 132122-run.log 对照表）逐项入档；
+- **HR13-2** = 某步 named failure（wifi_loud 全量下首见细节）⇒ 新墙定点修；
+- **HR13-3** = 细节出卷但 R56 判词缺席（brought up/IS UP 消失）⇒ wifi_loud 本身引入回归（时序/日志洪泛），回滚 = R57 镜像换回 R54 镜像（fastboot flash boot r54）。
+- 沿袭全表照 R56（decode/verdicts/madvise/births/traps）+ 存活门槛升格 1751.4s。
