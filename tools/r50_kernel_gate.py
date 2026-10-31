@@ -302,7 +302,12 @@ def main():
     assert not bad_gain, 'r50 gains unexpected strings (outside symtab/load cmds, code segs masked): %s' % [s[:64] for s in bad_gain[:5]]
     assert not bad_loss, 'r50 loses unexpected strings: %s' % [s[:64] for s in bad_loss[:5]]
     assert R50_MARKER in gained, 'the R50 marker is missing from the masked delta'
-    assert REGISTERS_FMT in gained, 'the R50 registers format is missing from the masked delta'
+    # the registers format is a PREFIX of its printable run (the rodata run is
+    # the whole "redwood-fault: verdict %d registers: x0 .. x16" cstring, NUL-
+    # bounded like the rest) -- the run-1 lesson (41159150831): a prefix does
+    # not sit in the gained SET as itself; match the run by its head.
+    assert any(s.startswith(REGISTERS_FMT) for s in gained), \
+        'the R50 registers format is missing from the masked delta'
     assert R49_MARKER in lost, 'the R49 marker did not show up as a masked loss (it must be retired from rodata)'
     # the form-agnostic survival check: each side still carries a form of
     # both pointer-run artifacts (they may have moved, they may not vanish)
