@@ -1869,3 +1869,19 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 **两条观察入档（不碍判词）**：① decode 全息（首 4 + 每 16 例）零现身——census 计数器在场即解码证据成立，全息通道缺席或为 DEBUG4K 门控/条件计数器错位，R55 顺带查；② r54 流内 [ts] 装饰零条（R52 的 [N.NNNNNN]: 行）——判读改锚 launchd epoch 时钟 + census 单调计数。
 
 **R55 预注册（first-touch 软故障定量轮，HR11-1 预注册方向）**：双基线到手 = R52 129,339（decode-broken，93.76/s）vs R54 137,173（decode-revived，93.09/s）。刀 = first-touch 分类观测（minor vs major / 预取命中页的二次触点），判读 = exec 风暴窗内 faults 形状对表 + 每秒率守恒验证；附带项 = decode 全息通道缺席分诊（DEBUG4K 门控 or 条件计数器错位）。
+
+## R55 first-touch 软故障定量轮（2026-10-31 深夜，纯离线闭环——R53 先例，双 logdump census 定量 + decode 全息缺席翻案）
+
+**方法**：R52 判读树 (a)/(HR11-1) 双分支材料已足——R52 logdump（NAS 归档 4MB get_staged）+ R54 logdump（64MB 分区 dd，自有区 1,343,535 B）双 census 系列机械定量，零 dispatch 零手机动作。
+
+**decode 全息缺席翻案（R54 入档假设撤销）**：R54 自有区 **t<169s 整段缺席**（首 launchd epoch = 00:02:49 = 169s；t<120s 桶全空；头部为 loader/ufs 探测日志）——logdump 环是循环的，全程日志 > 1.34MB 环容量，**头部 169s 被环回覆写**。decode 全息条件（n = ok+1 ≤ 4 或 n%16==0 → n = 1,2,3,4,16,32,48 共 7 条）全部落在首 169s 窗内 = **全息打印正常，环吃了它**——"DEBUG4K 门控 or 计数器错位"两假设俱废。census 每分钟重印计数器 = 环回免疫的幸存证人（decode ok 58 在膛）——唱票式 census 的设计本意正是不怕环回。R52 的 4MB get_staged 窗 > 全程 1.47MB 所以早年内容（infos-hex 考古 5 套 @t≈2s）幸存——两代取证窗宽差异的解释闭环。
+
+**logdump 环回律入册（扩 R48 残留律）**：① 自有区时间覆盖必须先验首/末时间戳（R54 首 epoch 169s = 头部覆写带，凡落覆写带的一次性打印不可回收，判读改锚 census 单调计数器）；② 4MB get_staged 文件按快照顺序堆叠多代（R52 内 48 条 census = 3 代重复，同名行逐快照重现产生假负 delta）——真系列 = 最后一代（R52 末代 22 ticks 68631→129339 单调）。
+
+**双基线定量（预注册问题：faults vs R52 129,339）**：
+- 全程率守恒：R52 129,339/1379.5s = **93.76/s** vs R54 137,173/1473.5s = **93.09/s**（**-0.71%**）——decode 未推高用户侧故障压力，+7,829 绝对值由 +94s 存活解释；
+- 风暴首窗（首 tick 补账）：R52 45,490 vs R54 46,191 = **+1.54%，噪声内**——exec 风暴形状由 launchd/init 孵化主导，与 3 页/次预取无关（58 exec × 3 页 = 174 页 vs 137K 总 faults ≈ 0.13%，亚噪声）；
+- 机制台账：R54 = 58 解码 × 3 发预取**真命中 kr 0x0 零失败**（174 次真页预热 + 58 次 infos 恒等命中）；R52 同位置 = 45 条 ask read-exec 判词 + prefault 全息全数失败（fail-fast 零 pager I/O，单次微秒级）；
+- **结论：decode 的聚合用户可见效应亚噪声（<1%）——真实收益 = ① 174 次 kernel 侧必败 vm_fault 归零 ② 判词漏斗清空（168→0，日志噪声消灭）③ 每 exec 3 页真预热 = launch 预取优化复活**。R53 V7 预言（"真代价 = 三页自始未预热"）与 R54 实测双向闭合。
+
+**R56 预注册（WiFi MPSS 装载轮）**：用户在案第二诉求（"WiFi 依旧无法使用"）进入手术——按 docs/RAPHAEL-WIFI-PORT-PLAN.md 阶梯（wifi_step 1..8）：材料 = r36work/ 参考仓库 8 内核文件 15,701 行（hakios.mpss.c 6395 / wifi.c 5666 / qmi.c 963）+ mk-ath10k.py + lx/ 构建链 + 私有固件输入（upload/fw-raphael.tar.gz + nv-dump.tar.gz 在库，禁发布纪律沿袭）；R56 范围 = MPSS 装载第一梯（modem_step/wifi_step 观测刀先行，单变量纪律），判读树随刀预注册。
