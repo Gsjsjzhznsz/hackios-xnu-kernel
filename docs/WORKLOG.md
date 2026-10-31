@@ -1738,3 +1738,23 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 **全息判决双破案（R50 指刀）**：**HR4**——kr 0x2 ×111 全部 `ask read-write` 对 `entry prot 0x1/7`（只读 Assets.car 上的写请求），调用者 upcb **pc 0x20d6ff814（dyld 共享缓存）**，SpringBoard ×72 + Spotlight ×32，文件 = CoreGlyphs/Assets.car、fileoff 深处（0xa6fc000）——用户态把只读文件映射当写缓冲传 syscall（copyout 目的地）→ EFAULT；R50 刀 = syscall 层抓 fd/buf/len 全息。**HR3**——kr 0x1 ×30 = 0xff70/0xffc0 垃圾顶位 + 低 48 页对齐 + 落 map 洞（14 entries，span 0x100be4000..0x3d8000000），调用者 = 共享缓存同一段 0x20d7034f8 ×23（exec 参数 copyin，launchd/xpcproxy/init 全中）+ init 自身 0x100006810 ×6——exec argv 指针数组坏顶位；R50 刀 = exec shim argv ABI 审计 + copyin 层抓指针来源。
 
 **SB 判读**：SB4 ✓（flip 3 latched @ 320.9s）、backboardd 活到 t=606s（158 wakes/s）、launchd spawn x81、43 次 kernel-asked flush 全落盘 read-back 一致、零 panic、零 "Lock already held"——SB2/SB3 沿袭全绿。R49 build 现已持久化在 boot 分区。
+
+## R50 寄存器全息轮（2026-10-31，run 41160515566 SUCCESS 收割 + run1 真机 18.9 分钟新纪录 + HR4/HR3 双改写定锤）
+
+**收割**：run #23 SUCCESS（run #22 = 41159150831 验尸：内核干净产出 delta +0 B 全进 __TEXT padding、nsyms 73023→73023，死在门禁三 strings law——**registers 格式是完整 rodata run 的前缀**，`REGISTERS_FMT in gained` 集合成员断言永远不成立（marker 恰好整串入集合是特例不是规律）；修法 = 按 run 头匹配 `any(s.startswith(REGISTERS_FMT))`，新律法入册：**前缀格式串按 run 头对质，绝不按集合成员**）。tag r50-springboard 八资产齐；KSHA 78c8d092（17,010,496 B，delta +0 B）逐位闭环；gpu 新钉 0a543dc1；daily b0f9f6df / flashboot 14485e7c / md1 5b9bbbcb = R49 控制组原字节；双镜像判读 "the kernel entry is R50" + 控制组 R33 verbatim；GATE GREEN（marker 同长 56 B 换替、__TEXT +0、strings gained 4/lost 3、0 layout-run forms——R49-fix 冻结的两指针 run 本轮零漂移）。本地电池 21/21 GREEN（yml 契约 + 刀码源断言 + 工具三件套自洽 + 对 R49 release 真实字节演练：id 工具对真 base 判 R49/R33、gate 与 flash_build 双双拒收 R49 kernel、marker 伪造假 kernel 死在律法上）；**run#1 的 R50 kernel（diag artifact 65b1cbe0）离线全链演练 GREEN 后才 re-dispatch**——gate 修复先在真内核上验满再上 CI，run#2 一次过。
+
+**SSH 通道三劫**：① 容器中途回滚吞掉 raphael_ssh.py/.secrets/缓存（先例再现，按册重建）；② DDNS 双源 DoH 一致回 223.122.24.105 而 222 端口只有 223.122.32.94 开——**known-good 缓存律升格：连上即记、每次先试缓存**（DoH 也会撒谎）；③ 抓获缓存写入 bug——fallback 连上缓存 IP 后缓存被 DoH 值覆盖，修为写**实际连接成功的 cand**。
+
+**刷机与 run1**：手机从 loader 自行落回 TWRP（d001 复合态，adb 45c2b4ec recovery）→ adb reboot bootloader → ABL 稳窗（product=raphael）→ **fastboot flash boot r50 持久化刷入**（Writing OKAY @ 10:54）→ fastboot reboot → XNULOADER（product=xnuloader）→ **启动卷律（oem ramdisk 臂 + stage flashboot 4096KB OKAY）+ oem run** @ 10:54:58 → **kernel 存活 1134 秒 = 18.9 分钟零 panic（项目新纪录：R48 10+、R49 9.5）**，oem stop @ 11:13:52 温和返回 xnuloader → oem logdump 4 MB 回拉（sha 7d34be0f）。
+
+**R50 真机判读（run1，logdump live 段 1316 KB）**：**寄存器全息 x118 全在膛**（verdict x236 = context x118 + registers x118，每个 verbose 判词带 SVC 现场）；sigcensus x50 每分钟唱票（t=113s 后唱票行被行缓冲截断——verdicts 位数增长顶满行长，守恒数据取完整行）；faults 128,204 / uf-ok 128,198 守恒 gap 1（R49 的恒 10 漂移到 1——in-flight race，非新出口）；traps 0/0、posts 0/0、aborts 0 沿袭；零真 panic（x14 "panic" 全是 launchd lint 警告 + panic_trace 符号名 trace 启停）；SB4 ✓（flip 2/3 latched、GL x59 活跃、SpringBoard x2760、backboardd x451）；pager verdict kr 0x2 x166 / kr 0x1 x22。
+
+**寄存器对表（syscalls.master xnu-8796.121.2 逐字核）**：x16 分布 = **0x4b(75) ×111、0xf4(244) ×5、0x3b(59) ×2**。
+
+**HR4 改写定锤（R51 修刀指内核 madvise）**：x16=75 = **SYS_madvise(addr, len, behav) ×111**，与 R49 的 kr 0x2 ×111 同数——R49 判读"用户态把只读映射当写缓冲传 syscall（copyout 目的地）"**定性错误**：verdict 1040 全链（Spotlight pid 38、x0 0x1102f6d10 / x1 0x4a5c / **x2 0x3 = MADV_WILLNEED**、pager address 0x1102f8000 kr 0x2 ask read-write entry 0x10750c000..0x111edc000 prot 0x1/7 file SFSymbols.framework/CoreGlyphs.bundle/Assets.car）——**SpringBoard/Spotlight 对只读 Assets.car 映射调 madvise(WILLNEED)（合法 hint），移植内核的 madvise 实现以 read-write ask 探页 → kr 0x2 → EFAULT**。Apple 真机不 EFAULT；R51 修刀 = xnu-8796 madvise 路径（bsd vm_unix → vm_map_madvise）的 WILLNEED 预取改 VM_PROT_READ（或 hint 类失败静默返 0）。
+
+**HR3 改写定锤（R51 观测刀指 IABORT ELR）**：x16=59 = SYS_execve ×2、x16=244 = SYS_posix_spawn ×5；verdict 128 全链（init pid 30、x0=path 0x100008f33、**x1=argv 0x16fdfe690 栈上有映射**、pager address **0xff70000100ff8000** kr 0x1 **ask read-exec** no-map-entry）——R49 判读"exec argv copyin 数据读"**定性错误**：垃圾顶位地址的 ask 是 **read-exec = IABORT = 指令取指**，0xff70/0xffc0 正是 **PAC 签名高位形态**——kernel 侧把 PAC 签名指针当原始函数指针跳转（EL1 IABORT → handle_kernel_abort_recover → EFAULT），exec 风暴期跨 init/launchd/xpcproxy 同模式 = kernel exec 路径共享代码的签名函数指针。R51 观测刀 = handle_kernel_abort_recover 路径抓 ELR（kernel abort 的 PC），定位是哪个函数指针。
+
+**新律法入册**：⑥ 前缀格式串律——gate 对前缀型格式串按 rodata run 头对质（startswith），绝不按集合成员（marker 整串入集合是 NUL 边界特例）；⑦ 缓存优先律——SSH 通道每次先试 known-good 缓存 IP（DoH 双源一致也会指向不可达地址），缓存写实际连接成功的 cand。
+
+**R51 方向（双刀）**：① 修刀 = madvise 的 WILLNEED/预取路径 read-write ask → VM_PROT_READ（修 kr 0x2 ×111 的 EFAULT 源，SpringBoard/Spotlight 的 Assets.car hint 恢复正常返回）；② 观测刀 = kernel IABORT 的 ELR 全息（handle_kernel_abort_recover 抓 abort PC +far），定位 PAC 签名指针的跳点。附带项：唱票行行缓冲截断（verdicts 5 位后）——singer 行考虑拆行或缩短字段。
