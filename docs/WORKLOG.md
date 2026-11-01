@@ -1980,3 +1980,25 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 **安全上限注记（预注册）**：`lx_station_join` 硬编码 `REDWOOD_STA_WPA2_PSK` —— WPA3-only 热点会拒（fork 的 sae/ 在 r36work 在库未接此路径）；若 HR15-2 且信号强度良好，先查家庭路由是否 WPA2/WPA3 混合。fork 风险沿袭在案（"连接仍不稳定 / 关闭再开启后无法扫描"——其自认未修）。
 
 **阻塞点（唯一）**：真实 SSID/PSK 两行文件。到位即自驱：注入器出 r59 fw-nv → `nohup sh r59_session.sh` → r59_judge.py 定谳。凭据文件不进仓库不上归档（隐私律），会话后即焚。
+
+## R59 join 轮真机判读（2026-11-01，两发：attempt-1 的 stage 静默失败律 + attempt-2 的 SAE 全链前弧与 status-53 墙；HR15-0 → HR15-5 定谳）
+
+**凭据到位与注入**：用户 QR 讯（`WIFI:T:SAE;P:…;S:kira 5G;H:false`）→ SSID `kira 5G` 7 B / PSK 9 B（契约内；T:SAE = WPA3 预注册风险在案）。真注入全链绿（r56 fw-nv 基底 6897bb02 全长在卷、48 条目 40 文件逐位回读、fw 尺寸律互证、产物 113,684,480 B sha f089a6f9 双端吻合）；凭据源文件即焚（隐私律），产物入 r59-materials（会话材料非归档正典）。
+
+**attempt-1（v1 脚本，nohup 脱链）**：TWRP → ABL → XNULOADER → staging trio → oem run T0 22:52:04 → dwell 2100s → oem stop 后 5s 窗内 loader 弹回 ABL，`oem logdump`/`get_staged` 双 'unknown command'。手工 `fastboot reboot recovery` → **XNULOADER 温复位复活且暂存环存续**（固址不擦）→ 补 `oem logdump` OKAY + `get_staged` 4MB（sha 938a8dc3）双取证到手。**判读：HR15-0** —— `no fw/network in the small image` + `no network to join was given`，join 链零启动而扫描 8 网命中（R58 同分布）。**根因三重奏**：① `oem ramdisk` 触发 loader USB 重枚举，新节点回 root:plugdev 0660 关门（守门犬 5s 周期未及）；② 113MB `fastboot stage` **1 秒"完成"= 物理不可能**（手工重测 4.965s @ ~23MB/s USB2 为真值）——stage 秒败且 v1 脚本的 `2>&1 | say "$*"` 管道把 `$*` 在父壳展开成空串、报错全吞（脚本化妆律）；③ loader 固址暂存环仍持 **R58 会话的 r56 fw-nv**（温复位存续律——与 4MB 日志环存续同律）→ 内核 md1 = GPU 基底 + 旧 fw-nv 合成体：固件链全起（BDF 26328 互证）、独 network 缺席。**新律入册**：stage 未见 OKAY 即非 stage；门必须前置于每个 fastboot 调用；脚本输出禁管道展开吞字。
+
+**attempt-2（手工指挥，v2 律逐条手工执行）**：ABL（`product: raphael`）→ `fastboot reboot`（首 skb 秒败 rc=1 为瞬态，重发 OKAY）→ `product: xnuloader` 身份确认 → **staging trio 全 OKAY**（oem ramdisk + 113MB/4.965s + 24MB/1.024s，与 attempt-1 的 xnup 1s 速率互证——独 fw-nv 曾假）→ **oem run T0 23:49:49**。dwell 期间通道瞬断一次（自愈）。T+2236s 手工 oem stop → TWRP 落座（45c2b4ec，R49/R54/R58 同族）→ **TWRP dd 终审 64MB 全分区**（sha a85c4f02，双端吻合）。
+
+**attempt-2 判读（法证全卷，HR15-5 定谳）**：
+- **fw/network 交付实锤**：`which network to join: a name of 7 bytes and a passphrase of 9 bytes were given`（无 NOT-A-NAME 后缀）——注入器与凭据链全案清白；
+- **join 前弧全通**：AP 定位（`the network that is wanted: an access point on channel 40 (5200 MHz) at -57 dBm, capabilities 0x1511; HT/VHT/WMM yes; WPA3 SAE, CCMP and PMF`）→ `the access point is made known to the driver` → **`SAE commit response sequence 1 status 0`** → **`SAE group 19 H&P authentication: 0`（= sae_authenticate 返回 0：confirm 交换静默完成、PMK+PMKID 到手——loop 2 无打印律）** → **`AUTHENTICATION: the access point accepts (status 0)`**；
+- **墙体命名**：**`ASSOCIATION: THE ACCESS POINT REFUSES (status 53)`** —— 802.11 "association rejected temporarily; try again later"，AP 的 PMKSA 落定窗字面义；`the key of the name (7 bytes) and the passphrase (9 bytes) is there: 0 ms` + `the channel is taken, 80 MHz wide around 5210 MHz` 在卷；
+- **step-15 失败连锁**：join 失败 ⇒ `THE RADIO DID NOT COME UP: step 15 failed, 12 s in` ⇒ 内核自拆电台（DSP stop 确认 67ms → TZ 交还 zap shader → MSA 三区收回 0x42000c16 ×3 → RMTFS 终审 6144 读 0 写 → SMP2P modem off → SMMU 复位 → `the radio is off` → END OF LOG）——**优雅停车全链第二次完整入卷**；
+- **内核本体全绿**：decode 58/0、verdicts 0、madvise-ro 1813、births 15/9、traps 0、零 panic、SpringBoard、adreno 812；扫描 8 网（kira 5G ch40 -57dBm RSN 强信号在列、kira 2.4G ch11 -45dBm 同族 BSS 在列——**2.4G BSS 疑 WPA2 混合 = R59.5 零代码快试路径**）；
+- **环多代叠写律（palimpsest）**：分区捕获含 attempt-1 的 kmsg 残迹（[2386s] 带 no-fw/network 形 + R58 扫描分布）与 attempt-2 正代交错——**整卷正则判词必须过代际隔离**（判读器三修：success 行压残迹、RADIO DID NOT COME UP 压 RADIO IS UP 子串、真实行形对账）。
+
+**R59.5 预注册（零代码快试）**：network 文件换 `kira 2.4G`（9 B）同 PSK 注入（产物 84d278a3 在架）——若 2.4G BSS 为 WPA2/WPA3 混合则现役内核即入网（HR15-1）；若同 SAE-only 则 status 53 复现为旁证。NAS 通道瞬断（223.122.24.105 tcp/222 黑洞 ~30min+）阻塞执行，通道复活即跑。
+
+**R60 预注册并已开炉（关联重试轮）**：刀 = 关联循环 `attempt < 3 && answer == ANSWER_NONE` → `attempt < 5 && answer != ANSWER_ASSOCIATED` + `lx_pause_ms(200)` 退避（"try again later" 字面义入法）；同长标记 `R60: the association asks the access point, try it again`（56 B）换替 R54 marker；yaml 全换替（round r60 / bases = r54 release 四 sha 全钉 / R54 退役 R60 现役 / base-id = r60-kernel-id.py）；离线证明 9/9 绿（scripts/r60_assoc_retry_proof.py）；提交 dbbb8bb 已推；**CI run 41329601489 in_progress**（2026-11-01T17:04:58Z）。判决树 HR16（预注册）：HR16-1 全胜 = join 链复现 + 关联被收（THE NETWORK IS JOINED）+ wifi_hold=90 帧计数窗 > 0 ⇒ 计划 R37 行后半兑现（本机入网）；HR16-2 = 5 次重试后仍 status 53 ⇒ PMKSA 落定窗 > 1s 或需 auth 重跑（R60b：refused 后 sae_authenticate 整轮重入）；HR16-3 = 关联收而 4-way 握手断（HANDSHAKE 形）⇒ lx_wpa 对账；HR16-4 = panic/异常按码分诊。
+
+**运作定律新增**：① stage 未唱 OKAY 即非 stage（物理传输时间下界是诚实性探针）；② 温复位存续律面扩大——loader 暂存环与 kmsg 残迹同族，跨代取证必须先隔离代际；③ join 状态机必须听得懂 "try again later"——一次拒答不该带走整台电台。
