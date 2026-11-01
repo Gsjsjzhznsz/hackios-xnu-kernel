@@ -61,14 +61,34 @@ def main():
         check(cred_ok, 'credential pair passed the kernel law (name 1..32, passphrase 8..63)',
               'name %s B, passphrase %s B' % (m.group(2), m.group(3)))
         check('NOT A NAME' not in (m.group(4) or ''), 'no NOT-A-NAME suffix')
-    check('none was given (fw/network' not in text, 'fw/network WAS delivered (no "none was given")')
+    # the delivery-failure shapes (the attempt-1 law): ALL three name a failed fw/network
+    # delivery -- redwood_wifi_network()'s own "none was given (fw/network", the
+    # image_file() helper's "no fw/network in the small image", and join_given()'s
+    # "no network to join was given (fw-wifi/network".  (The attempt-1 judge matched the
+    # wifi_mac address line's "none was given" here -- a false green; all three real
+    # shapes name the file, never the radio's address.)
+    delivery_fail = (('none was given (fw/network' in text
+                      or 'no fw/network in the small image' in text
+                      or 'no network to join was given' in text)
+                     and m is None)   # the attempt-2 law: a success line PROVES delivery -- the stale-ring
+                                      # remnants of earlier boots lose to it
+    check(not delivery_fail, 'fw/network WAS delivered (no delivery-failure line)')
+    if 'no fw/network in the small image' in text and m is None:
+        verdicts.append('HR15-0 SHAPE: "no fw/network in the small image" -- the staged flashboot never reached md1:\n'
+                        '    a STAGING failure, not a credential failure.  The loader merged its stale DRAM staging buffer\n'
+                        '    (the attempt-1 law: fastboot stage raced the post-oem-ramdisk USB re-enumeration door).\n'
+                        '    Remedy: r59_session v2 -- door before every fastboot call, OKAY-gated stages, abort on failure.')
+    elif delivery_fail:
+        verdicts.append('HR15-3 SHAPE: the fw/network delivery failed (the staged flashboot lacks the file, or the\n'
+                        '    sizes break the kernel law); the join-chain misses below are a consequence.')
 
     joined = 'lx: THE NETWORK IS JOINED: frames can pass' in text
     handshake_fail = 'lx: THE HANDSHAKE DID NOT COME THROUGH' in text
     keys = 'lx: THE KEYS ARE GIVEN TO THE DRIVER' in text
-    assoc = 'lx: the driver is told of the association' in text
-    check(assoc, 'association initiated (the driver is told of the association)')
-    check(keys or joined, 'WPA keys given to the driver')
+    assoc = ('lx: the access point is made known to the driver' in text
+             or 'lx: the driver is told of the association' in text)
+    check(assoc, 'association initiated (the AP is made known to the driver)')
+    check(keys or joined or 'the key of the name' in text, 'WPA keys given to the driver')
     check(joined, 'THE NETWORK IS JOINED: frames can pass')
 
     # frame counters (lx_station_say -- the hold window and/or the stop)
@@ -81,7 +101,29 @@ def main():
         check(False, 'lx_station_say line present (the hold window or the stop prints it)')
 
     # ---- the chain prerequisite (R58 inheritance)
-    check('THE RADIO IS UP' in text, 'THE RADIO IS UP (the chain came up)')
+    # the radio-up gate: the attempt-2 law -- a join refusal INSIDE step 15 makes the kernel
+    # print "THE RADIO DID NOT COME UP: step 15 failed"; the plain substring "THE RADIO IS UP"
+    # can also sit in stale-ring remnants, so the failure line wins when present
+    radio_up = 'THE RADIO IS UP' in text and 'THE RADIO DID NOT COME UP' not in text
+    check(radio_up, 'THE RADIO IS UP (the chain came up)')
+
+    # the join progress chain (the attempt-2 evidence lines -- the SAE path is ALIVE):
+    ap_wanted = re.search(r'lx: the network that is wanted: an access point on channel (\d+) \((\d+) MHz\) at (-?\d+) dBm, capabilities (0x[0-9a-f]+).*?(WPA3 SAE|WPA2|RSN)?', text)
+    sae_commit = 'SAE commit response' in text
+    sae_auth_ok = 'AUTHENTICATION: the access point accepts (status 0)' in text
+    assoc_refuse = re.search(r'lx: ASSOCIATION: THE ACCESS POINT REFUSES \(status (\d+)\)', text)
+    assoc_accept = 'lx: ASSOCIATION' in text and not assoc_refuse and ('THE ACCESS POINT ACCEPTS' in text or 'associated' in text)
+    if ap_wanted:
+        verdicts.append('  join progress: the AP is wanted on channel %s (%s MHz) at %s dBm, capabilities %s%s'
+                        % (ap_wanted.group(1), ap_wanted.group(2), ap_wanted.group(3), ap_wanted.group(4),
+                           (', ' + ap_wanted.group(5)) if ap_wanted.group(5) else ''))
+    if sae_commit:
+        verdicts.append('  join progress: SAE commit exchange %s' % ('DONE' if sae_auth_ok else 'seen'))
+    if sae_auth_ok:
+        verdicts.append('  join progress: the AP ACCEPTED the SAE authentication (status 0) -- the crypto law holds')
+    if assoc_refuse:
+        verdicts.append('  join progress: the ASSOCIATION REFUSED (status %s) -- the AP rejects the association after'
+                        ' accepting the SAE authentication: the assoc-side RSN/AKM/PMF law is unmet (HR15-5)' % assoc_refuse.group(1))
     check('ICNSS WLAN firmware READY; MSA indication received' in text, 'ICNSS WLAN firmware READY')
     check('is being brought up beside the system' in text, 'the wifi chain was brought up')
 
@@ -96,6 +138,16 @@ def main():
         green = False
         verdicts.append('HR15-2 SHAPE: the handshake did not come through (a wrong passphrase gives this, per the fork);'
                         ' also check the security law: lx_station_join is WPA2-PSK only (WPA3-only APs will refuse)')
+    elif assoc_refuse:
+        green = False
+        verdicts.append('HR15-5 SHAPE: the AP accepted the SAE authentication and REFUSED the association (status %s):'
+                        ' the join reached the AP and the wall is the association law (RSN IE with the SAE AKM + PMF),'
+                        ' not the credentials and not the radio -- R60\'s knife: the fork\'s sae assoc-side law (r36work)'
+                        ' + the RSN IE construction (AKM 8, PMF required) + the SAE confirm-before-assoc ordering'
+                        % (assoc_refuse.group(1) if assoc_refuse else '?'))
+    elif delivery_fail and not joined:
+        green = False
+        verdicts.append('HR15 VERDICT SHAPE: FAIL on the fw/network delivery (HR15-3/HR15-0) -- the join chain never started')
 
     # ---- the inheritance table (R54..R58 conservation) -- the census reprints every minute, take the LAST
     dec = re.findall(r'sigcensus: decode ok (\d+), skip (\d+)', text)

@@ -1,102 +1,149 @@
 #!/bin/sh
-# scripts/r59_session.sh -- runs ON the NAS (nohup detached, the 脱链律: this script must
-# survive the SSH channel dying; every fastboot call is timeout-wrapped; the log is the
-# source of truth, the channel only probes it).
+# scripts/r59_session.sh (v2) -- runs ON the NAS (nohup detached, the 脱链律).
 #
-# The R59 join session: TWRP -> ABL -> XNULOADER -> the staging trio -> oem run ->
-# dwell past the R58 record -> oem stop -> +5s (the operational law) -> logdump ->
-# get_staged fallback -> (TWRP dd fallback).
+# R59 join session, attempt 2.  Attempt 1 (2026-11-01) taught the staging-failure
+# law: `oem ramdisk` re-enumerates the loader's USB, the fresh /dev node comes back
+# root:plugdev 0660 (admin not in plugdev), the 113 MB `fastboot stage` then fails
+# IN ~1 s (physically impossible transfer time) and the say-pipeline "$*" artifact
+# swallowed the error text; the loader's DRAM staging buffer still held the R56
+# fw-nv from the R58 session (warm-reset survivor, the same law that preserved the
+# 4 MB log), so the kernel booted with a firmware set that has NO fw/network and
+# join_given() said "no fw/network in the small image" (HR15-3).
 #
-# PREREQUISITE (the runner refuses to start without it):
-#   $DIR/raphael-r59-flashboot-fw-nv.apfs  built by tools/r59_flashboot_join.py with the
-#   REAL credential file (fw/network inside).  No credentials, no session -- a join
-#   round with a known-wrong passphrase only buys a pre-registered failure.
+# v2 laws, all enforced here:
+#   L1  the door (chmod 0666 on every 18d1 node) is re-applied BEFORE EVERY fastboot
+#       call, not once at the top;
+#   L2  every fastboot call's REAL output is captured and logged (rc + OKAY/FAIL),
+#       never through a pipeline-into-say artifact;
+#   L3  a stage is only accepted when its output carries OKAY; on failure retry x3
+#       with 6 s spacing (the keeper law re-opens the door between passes), then
+#       ABORT the session -- a silent stale-buffer merge must be impossible;
+#   L4  no fastboot flash anywhere (the single-variable law: boot partition keeps
+#       the r54 gpu image; the session only stages).
 #
-# usage: nohup sh r59_session.sh > r59-session.log 2>&1 &
+# usage: nohup sh r59_session.sh > r59-session.log 2>&1 </dev/null &
 
 set -u
 DIR="/vol1/1000/项目/hackios/r59-materials"
-LOG="$DIR/../r59-session.log"
 DWELL="${R59_DWELL:-2100}"          # seconds of kernel life before the stop (>= the R58 1943 s)
-FB="fastboot"
 
 say() { echo "[$(date +%H:%M:%S)] $*"; }
 
-say "=== R59 session begin (pid $$) ==="
-
-# ---- the prerequisite gate
-[ -f "$DIR/raphael-r59-flashboot-fw-nv.apfs" ] || { say "ABORT: $DIR/raphael-r59-flashboot-fw-nv.apfs missing -- build it with tools/r59_flashboot_join.py and the real credentials first"; exit 2; }
-[ -f "$DIR/r59.xnup" ] || { say "ABORT: $DIR/r59.xnup missing"; exit 2; }
-say "materials: fw-nv $(ls -la "$DIR/raphael-r59-flashboot-fw-nv.apfs" | awk '{print $5}') B, xnup $(ls -la "$DIR/r59.xnup" | awk '{print $5}') B"
-
-# ---- the device node door (the NAS fastboot law: admin is not in plugdev; re-apply, harmless if already)
-NODE=$(ls /dev/bus/usb/*/* 2>/dev/null | head -0; for d in /sys/bus/usb/devices/*; do
-  [ -f "$d/idVendor" ] && grep -q 18d1 "$d/idVendor" 2>/dev/null && basename "$(readlink -f "$d")"
-done | head -3)
-for b in /dev/bus/usb/*/*; do
-  BUS=$(basename "$(dirname "$b")"); DEV=$(basename "$b")
-  if grep -q 18d1 "/sys/bus/usb/devices/$BUS-$DEV/idVendor" 2>/dev/null || \
-     grep -qs 18d1 "/sys/bus/usb/devices/$BUS-$DEV/../idVendor" 2>/dev/null; then
-    chmod 0666 "$b" 2>/dev/null && say "door: chmod 0666 $b"
-  fi
-done
-
-fb_wait() {  # $1 = label; wait for a fastboot device, probe only
-  n=0
-  while [ $n -lt 60 ]; do
-    out=$(timeout 8 $FB getvar product 2>&1)
-    if echo "$out" | grep -qE "product|OKAY"; then say "fb_wait($1): device answers: $(echo "$out" | head -2 | tr '\n' ' ')"; return 0; fi
-    n=$((n+1)); sleep 2
+door() {  # the NAS fastboot door: re-apply 0666 on every 18d1 node (harmless if open)
+  for s in /sys/bus/usb/devices/*; do
+    [ -f "$s/idVendor" ] || continue
+    grep -q 18d1 "$s/idVendor" 2>/dev/null || continue
+    b=$(cat "$s/busnum" 2>/dev/null); n=$(cat "$s/devnum" 2>/dev/null)
+    [ -n "$b" ] && [ -n "$n" ] && chmod 0666 "/dev/bus/usb/$(printf %03d "$b")/$(printf %03d "$n")" 2>/dev/null
   done
-  say "fb_wait($1): TIMEOUT (120 s, no fastboot device)"; return 1
 }
 
+fb() {  # L1+L2: door, then fastboot with REAL output captured; $1=label, rest = args
+  label=$1; shift
+  door
+  t0=$(date +%s)
+  out=$(timeout "$FBTO" fastboot "$@" 2>&1); rc=$?
+  dt=$(( $(date +%s) - t0 ))
+  say "fb $label: rc=$rc ${dt}s :: $(echo "$out" | grep -E "OKAY|FAIL|error|finished|Finished" | tail -2 | tr '\n' ' ')"
+  return $rc
+}
+
+fb_stage() {  # L3: stage with the OKAY gate and x3 retry
+  label=$1; file=$2
+  n=1
+  while [ $n -le 3 ]; do
+    door
+    t0=$(date +%s)
+    out=$(timeout 300 fastboot stage "$file" 2>&1); rc=$?
+    dt=$(( $(date +%s) - t0 ))
+    if [ $rc -eq 0 ] && echo "$out" | grep -q OKAY; then
+      say "stage $label: ACCEPTED (try $n, rc=$rc, ${dt}s): $(echo "$out" | tail -1)"
+      return 0
+    fi
+    say "stage $label: REJECTED try $n (rc=$rc, ${dt}s): $(echo "$out" | tail -1)"
+    n=$((n + 1)); sleep 6
+  done
+  say "ABORT: $label staging failed 3x -- a stale-buffer merge must be impossible (the attempt-1 law)"
+  exit 4
+}
+
+fb_wait() {  # $1=label; poll for a fastboot device (door applied each pass)
+  n=0
+  while [ $n -lt 60 ]; do
+    door
+    out=$(timeout 8 fastboot getvar product 2>&1)
+    if echo "$out" | grep -qE "product"; then
+      say "fb_wait($1): $(echo "$out" | head -1)"
+      return 0
+    fi
+    n=$((n + 1)); sleep 2
+  done
+  say "fb_wait($1): TIMEOUT (600 s)"; return 1
+}
+
+FBTO=30
+say "=== R59 session v2 begin (pid $$) ==="
+
+# ---- the prerequisite gate
+[ -f "$DIR/raphael-r59-flashboot-fw-nv.apfs" ] || { say "ABORT: fw-nv missing"; exit 2; }
+[ -f "$DIR/r59.xnup" ] || { say "ABORT: r59.xnup missing"; exit 2; }
+say "materials: fw-nv $(ls -la "$DIR/raphael-r59-flashboot-fw-nv.apfs" | awk '{print $5}') B, xnup $(ls -la "$DIR/r59.xnup" | awk '{print $5}') B"
+
 # ---- phase 1: TWRP -> ABL fastboot
-say "phase 1: adb reboot bootloader"
-timeout 15 adb reboot bootloader 2>&1 | say "adb: $*"
+FBTO=15
+if adb get-state >/dev/null 2>&1; then
+  say "phase 1: adb reboot bootloader"
+  out=$(timeout 15 adb reboot bootloader 2>&1); say "adb: rc=$? :: $out"
+else
+  say "phase 1: no adb device (already in a bootloader state)"
+fi
 fb_wait ABL || exit 3
 sleep 2
 
-# ---- phase 2: ABL -> XNULOADER (the boot partition already carries the r54 gpu image;
-#      NO fastboot flash anywhere in this session -- the single-variable law)
-say "phase 2: fastboot reboot -> XNULOADER"
-timeout 15 $FB reboot 2>&1 | say "fb reboot: $*"
+# ---- phase 2: ABL -> XNULOADER (NO fastboot flash anywhere -- L4)
+FBTO=15
+fb reboot || exit 3
 sleep 8
 fb_wait LOADER || exit 3
 
-# ---- phase 3: the staging trio (the 启动卷律: oem ramdisk -> stage flashboot -> stage xnup -> oem run)
-say "phase 3: the staging trio"
-timeout 30 $FB oem ramdisk 2>&1 | say "oem ramdisk: $*"; sleep 1
-say "staging the fw-nv flashboot (113 MB -- the network file is inside)"
-timeout 300 $FB stage "$DIR/raphael-r59-flashboot-fw-nv.apfs" 2>&1 | say "stage fw-nv: $*"; sleep 1
-say "staging the r59 xnup (24 MB, wifi_join=1 in the payload cmdline)"
-timeout 180 $FB stage "$DIR/r59.xnup" 2>&1 | say "stage xnup: $*"; sleep 1
+# ---- phase 3: the staging trio (启动卷律: oem ramdisk -> stage fw-nv -> stage xnup)
+FBTO=30
+say "phase 3: the staging trio (v2: OKAY-gated, retried)"
+fb oem ramdisk || exit 3
+sleep 2                          # the attempt-1 law: let any re-enumeration settle
+fb_stage fw-nv "$DIR/raphael-r59-flashboot-fw-nv.apfs" || exit 4
+fb_stage xnup "$DIR/r59.xnup" || exit 4
 
 # ---- phase 4: ignition
+FBTO=60
 T0=$(date +%s)
 say "phase 4: oem run -- T0 = $(date +%H:%M:%S), epoch $T0"
-timeout 60 $FB oem run 2>&1 | say "oem run: $*"
+fb oem run || say "oem run rc=$? (the loader may drop the bus as the kernel takes over -- not fatal by itself)"
 
 # ---- phase 5: the dwell (past the R58 1943 s record)
-say "phase 5: dwell ${DWELL}s (past the R58 record)"
+say "phase 5: dwell ${DWELL}s"
 sleep "$DWELL"
 
-# ---- phase 6: the stop + the operational law (+5 s) + the logdump
-say "phase 6: oem stop, then the 5 s law, then the logdump"
-timeout 60 $FB oem stop 2>&1 | say "oem stop: $*"
-sleep 5
-timeout 120 $FB oem logdump 2>&1 | say "oem logdump: $*"
+# ---- phase 6: the stop + the 5 s law + the logdump
+FBTO=60
+say "phase 6: oem stop, +5 s, then the logdump"
+fb oem stop; sleep 5
+FBTO=120
+fb oem logdump
 sleep 2
-timeout 300 $FB get_staged "$DIR/../r59-logdump.bin" 2>&1 | say "get_staged: $*"
-ls -la "$DIR/../r59-logdump.bin" 2>/dev/null | say "captured: $*"
+FBTO=300
+out=$(timeout 300 fastboot get_staged "$DIR/../r59-logdump.bin" 2>&1); rc=$?
+say "get_staged: rc=$rc :: $(echo "$out" | tail -1) :: $(ls -la "$DIR/../r59-logdump.bin" 2>/dev/null | awk '{print $5}') B"
 
-# ---- phase 7: the TWRP fallback read (the R54 law -- if the loader fell back to TWRP)
-if timeout 12 adb get-state 2>/dev/null | grep -q device; then
-  say "phase 7: a device answers adb -- TWRP fallback read of the full 64 MB partition"
-  timeout 15 adb shell 'dd if=/dev/block/by-name/logdump bs=4194304 count=16 2>/dev/null | sha256sum' > "$DIR/../r59-partition.sha" 2>&1
-  cat "$DIR/../r59-partition.sha" | say "partition sha: $*"
-  timeout 180 adb shell 'dd if=/dev/block/by-name/logdump bs=4194304 count=16 2>/dev/null' > "$DIR/../r59-logdump-partition.bin" 2>/dev/null
+# ---- phase 7: the TWRP fallback read (the R54 law)
+sleep 10
+if adb get-state >/dev/null 2>&1; then
+  say "phase 7: TWRP answers adb -- the full 64 MB partition read"
+  out=$(timeout 15 adb shell 'dd if=/dev/block/by-name/logdump bs=4194304 count=16 2>/dev/null | sha256sum'); say "partition sha: $out"
+  timeout 300 adb shell 'dd if=/dev/block/by-name/logdump bs=4194304 count=16 2>/dev/null' > "$DIR/../r59-logdump-partition.bin" 2>/dev/null
   say "partition read: $(ls -la "$DIR/../r59-logdump-partition.bin" 2>/dev/null | awk '{print $5}') B"
+else
+  say "phase 7: no adb device (loader keeps the bus) -- the get_staged capture stands"
 fi
 
-say "=== R59 session end -- judge with scripts/r59_judge.py ==="
+say "=== R59 session v2 end -- judge with scripts/r59_judge.py ==="
