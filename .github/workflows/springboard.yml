@@ -5,15 +5,15 @@ on:
       round:
         description: "轮次短名（r41/r42/…）：缓存键、产物与资产文件名的唯一来源"
         required: true
-        default: "r54"
+        default: "r60"
       release_tag:
         description: "Release tag（直链的一部分）"
         required: true
-        default: "r54-springboard"
+        default: "r60-springboard"
       release_name:
         description: "Release 标题"
         required: true
-        default: "R54 · 纯血 hackios SpringBoard · 预取解码轮（R53 解码定谳：垃圾三元组 = dyld 静态模板的 chained-fixup 编码、上游 slide 算术把链碎片走进地址；R54 刀 = 预取前解码 target 低 36 位 + dyld_base 算术 + census 解码计数；判决树 HR11）"
+        default: "R60 · 纯血 hackios SpringBoard · 关联重试轮（R59 定谳：SAE commit+confirm 全成、AP 收 SAE 认证后关联拒 status 53 = PMKSA 落定窗的 try-again-later；R60 刀 = 关联循环对拒答也重试 + 200ms 退避 ×5；判决树 HR16）"
       # 教训（run 41040910832）：GitHub Release name 上限 256 字符——判读叙事全部
       # 写进 release_body（无此上限），release_name 只留一行标题。
       kernel_repo:
@@ -27,7 +27,7 @@ on:
       base_daily_url:
         description: "底板日常镜像直链（SHA 必填；本轮日常镜像的来源）"
         required: true
-        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r52-springboard/raphael-xnu-r52-flash.img"
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r54-springboard/raphael-xnu-r54-flash.img"
       base_daily_sha:
         description: "底板日常镜像 sha256（对官方字节硬校验）"
         required: true
@@ -35,15 +35,15 @@ on:
       base_gpu_url:
         description: "底板 GPU 镜像直链（外科手术的底板）"
         required: true
-        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r52-springboard/raphael-xnu-r52-gpu-flash.img"
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r54-springboard/raphael-xnu-r54-gpu-flash.img"
       base_gpu_sha:
         description: "底板 GPU 镜像 sha256"
         required: true
-        default: "176fd691d16ad2c72531a179ae4aea2f9ee5f9771e2d74e8d90113d445ef7ec5"
+        default: "37b0ee8aa089b89a99603a32a977c97ab364e99227a37333714b4e310b8eed92"
       base_flashboot_url:
         description: "底板启动卷直链（原样转发进 Release）"
         required: true
-        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r52-springboard/raphael-r52-flashboot.apfs"
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r54-springboard/raphael-r54-flashboot.apfs"
       base_flashboot_sha:
         description: "底板启动卷 sha256"
         required: true
@@ -53,12 +53,12 @@ on:
         required: false
         default: |
           loader.efi=4bf828e425e4b59d3668461ff89ef290dfbf3215cceec903f1662255fe45a3db
-          kernel=aaa907011985bebe828cbae3593f0f881a59df6724c8c1f60d7b31fd72d82b6e
+          kernel=36438a970047370fe1b435a4ab58f337542188abe2035af6b68ef8ab15455947
           ramdisk=5b9bbbcb6b5ede61d734bf8144fc639d4e419a22bb81e7d6cf93141f4fbe8746
       base_id_cmd:
         description: "底板判读命令（可选；空 = 跳过。占位符：$BASE_DAILY $BASE_GPU $BASE_IDFILE）"
         required: false
-        default: "python3 tools/r54-kernel-id.py \"$BASE_DAILY\" \"$BASE_GPU\" | tee \"$BASE_IDFILE\""
+        default: "python3 tools/r60-kernel-id.py \"$BASE_DAILY\" \"$BASE_GPU\" | tee \"$BASE_IDFILE\""
       base_id_gates:
         description: "底板判读门禁（bash；占位符：$BASE_IDFILE。空 = 跳过）"
         required: false
@@ -93,13 +93,14 @@ on:
           assert n('R50: the registers name the syscall behind every failure') == 0, 'the retired R50 marker still rides'
           assert n('R51: the prefault names the math behind every exec fault') == 0, 'the retired R51 marker still rides'
           assert n('R52: the archaeology reads the bytes that dyld delivered') == 0, 'the retired R52 marker still rides'
+          assert n('R54: the decoder turns dyld fixup chains into real pages') == 0, 'the retired R54 marker still rides'
           for mark, why in [
               ('raphael-display: three scanout buffers, VIG0/CTL0, hardware TE', 'the display round (adreno side)'),
               ('display: raphael command TE:', 'the TE phase measurement (display.c)'),
               ('page flips retained (fb_scan=1)', 'the fb_scan boot-arg'),
               ('wifi: raphael needs WCN3990 SNOC/ath10k and MPSS service 0x45', 'the raphael Wi-Fi branch'),
               ('raphael-display: flip did not latch at TE, restoring boot framebuffer', 'the flip fallback'),
-              ('R54: the decoder turns dyld fixup chains into real pages', 'THE R54 decoder marker'),
+              ('R60: the association asks the access point, try it again', 'THE R60 association marker'),
           ]:
               assert n(mark) == 1, '%s x%d != 1 (%s)' % (mark, n(mark), why)
           assert n('sigbirth: %s[%d] signal %d code 0x%llx from 0x%llx by %s[%d]\n') == 1, 'the sigbirth format x%d != 1 (the birth wire must be packed)' % n('sigbirth: %s[%d] signal %d code 0x%llx from 0x%llx by %s[%d]\n')
