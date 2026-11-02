@@ -1891,6 +1891,7 @@ station_join(struct lx_radio *radio, const struct redwood_sta_join *what)
                 if ((skb = frame_new(radio, 28 + 300, &frame)) == NULL) {
                         break;
                 }
+                lx_tell("lx: the association asks, attempt %u of 5\n", attempt + 1);
                 frame = management(radio, frame, 0x00);
                 /* capabilities: an infrastructure network, protected, and of the access point's own what a station repeats */
                 frame[0] = (uint8_t)(0x01 | 0x10 | (target->capability & 0x20));
@@ -1902,9 +1903,25 @@ station_join(struct lx_radio *radio, const struct redwood_sta_join *what)
                 frame_send(radio, skb);
                 answer = answer_wait(radio, 500);
         }
-        lx_tell("lx: ASSOCIATION: %s (status %u); we are its station number %u; its answer has %u bytes of elements\n", answer ==
-            ANSWER_ASSOCIATED ? "THE ACCESS POINT ACCEPTS" : answer == ANSWER_NONE ? "NO ANSWER from the access point to three "
-            "requests" : "THE ACCESS POINT REFUSES", radio->answer_status, radio->aid, radio->answer_length);
+        lx_tell("lx: ASSOCIATION: %s (status %u); we are its station number %u; its answer has %u bytes of elements, after %u asks\n", answer ==
+            ANSWER_ASSOCIATED ? "THE ACCESS POINT ACCEPTS" : answer == ANSWER_NONE ? "NO ANSWER from the access point" :
+            "THE ACCESS POINT REFUSES", radio->answer_status, radio->aid, radio->answer_length, attempt);
+        if (answer != ANSWER_ASSOCIATED && radio->answer_length) {
+                /* the R61 evidence knife: a refusal (or a silence after refusals) that carries IEs is the
+                 * access point's own word on WHY -- its RSN law, a comeback time, a reason code.  The R60
+                 * capture held 67 bytes nobody could read; read them out in hex, sixteen to a line, and the
+                 * next round's knife aims at what they say. */
+                for (unsigned i = 0; i < radio->answer_length && i < ELEMENTS_MOST; i += 16) {
+                        char hex[49];
+                        unsigned m = radio->answer_length - i < 16 ? radio->answer_length - i : 16;
+                        for (unsigned j = 0; j < m; j++)
+                                hex[j * 3] = "0123456789abcdef"[radio->answer_elements[i + j] >> 4],
+                                hex[j * 3 + 1] = "0123456789abcdef"[radio->answer_elements[i + j] & 15],
+                                hex[j * 3 + 2] = ' ';
+                        hex[m * 3] = 0;
+                        lx_tell("lx: the association answer, bytes %u..%u: %s\n", i, i + m - 1, hex);
+                }
+        }
         if (answer != ANSWER_ASSOCIATED) {
                 error = answer == ANSWER_NONE ? ETIMEDOUT : ECONNREFUSED;
                 goto out;

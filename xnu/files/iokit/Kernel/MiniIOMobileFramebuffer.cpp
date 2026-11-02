@@ -58,13 +58,14 @@ extern "C" void *raphael_display_back(bool preserve);
 extern "C" bool raphael_display_present(void);
 extern "C" void redwood_gpu_report(const char *why);
 
-/* R60's own record, and the kernel-id tool's name for this build (the used-marker
+/* R61's own record, and the kernel-id tool's name for this build (the used-marker
  * tradition: loader_return.c's XNULIVE4 is the precedent).  Same byte length as the
- * R54 marker it replaces, so the round's diff stays the association-retry law
- * (wifi/lx/src/lx_80211.c: the status-53 loop) plus this string -- the payload
- * layout the gate pins does not move. */
-__attribute__((used)) static const char r60_assoc_mark[] =
-    "R60: the association asks the access point, try it again";
+ * R60 marker it replaces, so the round's diff stays the evidence law
+ * (wifi/lx/src/lx_80211.c: the association answer's own elements read out in hex,
+ * the honest ask count) plus this string -- the payload layout the gate pins does
+ * not move. */
+__attribute__((used)) static const char r61_assoc_mark[] =
+    "R61: the association answer read aloud in hex, all bytes";
 static IOLock *gScanoutLock;
 
 /* IOConnectCallMethod selectors of the framebuffer user client (iOS 16.5) */

@@ -5,11 +5,11 @@ on:
       round:
         description: "轮次短名（r41/r42/…）：缓存键、产物与资产文件名的唯一来源"
         required: true
-        default: "r60"
+        default: "r61"
       release_tag:
         description: "Release tag（直链的一部分）"
         required: true
-        default: "r60-springboard"
+        default: "r61-springboard"
       release_name:
         description: "Release 标题"
         required: true
@@ -27,7 +27,7 @@ on:
       base_daily_url:
         description: "底板日常镜像直链（SHA 必填；本轮日常镜像的来源）"
         required: true
-        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r54-springboard/raphael-xnu-r54-flash.img"
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r60-springboard/raphael-xnu-r60-flash.img"
       base_daily_sha:
         description: "底板日常镜像 sha256（对官方字节硬校验）"
         required: true
@@ -35,15 +35,15 @@ on:
       base_gpu_url:
         description: "底板 GPU 镜像直链（外科手术的底板）"
         required: true
-        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r54-springboard/raphael-xnu-r54-gpu-flash.img"
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r60-springboard/raphael-xnu-r60-gpu-flash.img"
       base_gpu_sha:
         description: "底板 GPU 镜像 sha256"
         required: true
-        default: "37b0ee8aa089b89a99603a32a977c97ab364e99227a37333714b4e310b8eed92"
+        default: "0a0683f1e7771dc99c23446afad42c255b5001137210685a888fd3ab69f296fe"
       base_flashboot_url:
         description: "底板启动卷直链（原样转发进 Release）"
         required: true
-        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r54-springboard/raphael-r54-flashboot.apfs"
+        default: "https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/releases/download/r60-springboard/raphael-r60-flashboot.apfs"
       base_flashboot_sha:
         description: "底板启动卷 sha256"
         required: true
@@ -53,12 +53,12 @@ on:
         required: false
         default: |
           loader.efi=4bf828e425e4b59d3668461ff89ef290dfbf3215cceec903f1662255fe45a3db
-          kernel=36438a970047370fe1b435a4ab58f337542188abe2035af6b68ef8ab15455947
+          kernel=e0570b2adfa46400f38834aab1fa95dc4f838dd18cd700368817535bf8c106a7
           ramdisk=5b9bbbcb6b5ede61d734bf8144fc639d4e419a22bb81e7d6cf93141f4fbe8746
       base_id_cmd:
         description: "底板判读命令（可选；空 = 跳过。占位符：$BASE_DAILY $BASE_GPU $BASE_IDFILE）"
         required: false
-        default: "python3 tools/r60-kernel-id.py \"$BASE_DAILY\" \"$BASE_GPU\" | tee \"$BASE_IDFILE\""
+        default: "python3 tools/r61-kernel-id.py \"$BASE_DAILY\" \"$BASE_GPU\" | tee \"$BASE_IDFILE\""
       base_id_gates:
         description: "底板判读门禁（bash；占位符：$BASE_IDFILE。空 = 跳过）"
         required: false
@@ -70,7 +70,7 @@ on:
           # 门禁必须 grep 工具的真实判定词，不能写起草者假设的那句（run 40838276403 教训）：
           grep -c "the ramdisk entry is R39..R54" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::GPU 底板的小卷不是 R39..R54 卷（5b9bbbcb）"; exit 1; }
           grep -c "the ramdisk entry is R13..R33" "$BASE_IDFILE" | grep -qx 1 || { echo "::error::日常底板的小卷不是 R13 谱系"; exit 1; }
-          grep -q "the kernel entry is R54 (the decode round" "$BASE_IDFILE" || { echo "::error::GPU 底板判词不是 R54 解码轮（r60-kernel-id 的真实判词）"; exit 1; }
+          grep -q "the kernel entry is R60 (the association-retry round" "$BASE_IDFILE" || { echo "::error::GPU 底板判词不是 R54 解码轮（r60-kernel-id 的真实判词）"; exit 1; }
       pre_gate_py:
         description: "门禁一/二（python，argv[1]=新内核路径）：谱系 + 换代件标记逐字在字节里"
         required: false
@@ -95,13 +95,14 @@ on:
           assert n('R51: the prefault names the math behind every exec fault') == 0, 'the retired R51 marker still rides'
           assert n('R52: the archaeology reads the bytes that dyld delivered') == 0, 'the retired R52 marker still rides'
           assert n('R54: the decoder turns dyld fixup chains into real pages') == 0, 'the retired R54 marker still rides'
+          assert n('R60: the association asks the access point, try it again') == 0, 'the retired R60 marker still rides'
           for mark, why in [
               ('raphael-display: three scanout buffers, VIG0/CTL0, hardware TE', 'the display round (adreno side)'),
               ('display: raphael command TE:', 'the TE phase measurement (display.c)'),
               ('page flips retained (fb_scan=1)', 'the fb_scan boot-arg'),
               ('wifi: raphael needs WCN3990 SNOC/ath10k and MPSS service 0x45', 'the raphael Wi-Fi branch'),
               ('raphael-display: flip did not latch at TE, restoring boot framebuffer', 'the flip fallback'),
-              ('R60: the association asks the access point, try it again', 'THE R60 association marker'),
+              ('R61: the association answer read aloud in hex, all bytes', 'THE R61 association marker'),
           ]:
               assert n(mark) == 1, '%s x%d != 1 (%s)' % (mark, n(mark), why)
           assert n('sigbirth: %s[%d] signal %d code 0x%llx from 0x%llx by %s[%d]\n') == 1, 'the sigbirth format x%d != 1 (the birth wire must be packed)' % n('sigbirth: %s[%d] signal %d code 0x%llx from 0x%llx by %s[%d]\n')
@@ -132,15 +133,15 @@ on:
       kernel_gate_cmd:
         description: "门禁三命令模板（可选；占位符：$BASE_KERNEL $K $KU $KSHA $REL $R）"
         required: false
-        default: "python3 tools/r60_kernel_gate.py --base-kernel \"$BASE_KERNEL\" --r60-kernel \"$K\" --report \"$REL/${R}-kernel-gate.txt\" | tee \"$REL/${R}-kernel-gate-run.txt\""
+        default: "python3 tools/r61_kernel_gate.py --base-kernel \"$BASE_KERNEL\" --r60-kernel \"$K\" --report \"$REL/${R}-kernel-gate.txt\" | tee \"$REL/${R}-kernel-gate-run.txt\""
       flash_build_cmd:
         description: "④ 手术命令模板（必填；占位符：$BASE_DAILY $BASE_GPU $K $REL $R）"
         required: true
-        default: "python3 tools/r60_flash_build.py --daily \"$BASE_DAILY\" --gpu \"$BASE_GPU\" --kernel \"$K\" --out-daily \"$REL/raphael-xnu-${R}-flash.img\" --out-gpu \"$REL/raphael-xnu-${R}-gpu-flash.img\" | tee \"$REL/${R}-pack.txt\""
+        default: "python3 tools/r61_flash_build.py --daily \"$BASE_DAILY\" --gpu \"$BASE_GPU\" --kernel \"$K\" --out-daily \"$REL/raphael-xnu-${R}-flash.img\" --out-gpu \"$REL/raphael-xnu-${R}-gpu-flash.img\" | tee \"$REL/${R}-pack.txt\""
       kernel_id_cmd:
         description: "⑤ 判读命令模板（必填；占位符：$REL $R $KSHA）"
         required: true
-        default: "python3 tools/r60-kernel-id.py \"$REL/raphael-xnu-${R}-flash.img\" \"$REL/raphael-xnu-${R}-gpu-flash.img\" --expect-loader-sha 4bf828e425e4b59d3668461ff89ef290dfbf3215cceec903f1662255fe45a3db --expect-kernel-sha \"$KSHA\" --expect-volume-sha 5b9bbbcb6b5ede61d734bf8144fc639d4e419a22bb81e7d6cf93141f4fbe8746 | tee \"$IDFILE\""
+        default: "python3 tools/r61-kernel-id.py \"$REL/raphael-xnu-${R}-flash.img\" \"$REL/raphael-xnu-${R}-gpu-flash.img\" --expect-loader-sha 4bf828e425e4b59d3668461ff89ef290dfbf3215cceec903f1662255fe45a3db --expect-kernel-sha \"$KSHA\" --expect-volume-sha 5b9bbbcb6b5ede61d734bf8144fc639d4e419a22bb81e7d6cf93141f4fbe8746 | tee \"$IDFILE\""
       id_gates:
         description: "⑤ 复证门禁（bash；占位符：$IDFILE。教训：必须 grep 工具的真实判定词，run 40838276403）"
         required: true
@@ -167,83 +168,73 @@ on:
         description: "README.txt 全文（逐字进 Release 资产）"
         required: true
         default: |
-          raphael (K20 Pro) R60 交付包：**关联重试轮（status-53 律）**。
+          raphael (K20 Pro) R61 交付包：**关联应答出卷轮（证据刀）**。
 
-          R59 两发真机判读入账：attempt-1 立案 stage 静默失败律（oem ramdisk 触发
-          loader USB 重枚举、新节点回 root:plugdev 0660 关门 → 113MB stage 1 秒
-          假完成 → loader 温复位存续的旧 fw-nv 与新内核合成 boot：固件链全起、独
-          network 缺席，HR15-0）——三律入册：stage 未唱 OKAY 即非 stage / 门前置
-          每个 fastboot 调用 / 脚本输出禁管道展开吞字。attempt-2 手工指挥全 OKAY：
-          凭据链全案清白（name 7 B / passphrase 9 B 交付实锤）→ SAE 前弧全通
-          （SAE commit response status 0 → group 19 H&P auth 0 → 认证被收
-          status 0）→ 墙体命名：ASSOCIATION: THE ACCESS POINT REFUSES
-          (status 53) = 802.11 "rejected temporarily; try again later"，AP 的
-          PMKSA 落定窗字面义 → step-15 失败连锁 → 优雅停车全链第二次完整入卷
-          （DSP stop → TZ 交还 zap shader → MSA 收回 → RMTFS 终审 6144 读 0 写
-          → radio-off → END OF LOG）。内核本体全绿：decode 58/0、零 panic、
-          SpringBoard、adreno 812、madvise-ro 1813。
+          R60 真机判读入账（HR16-2）：重试刀机械兑现（五问环 + 200ms 退避），AP 形状 =
+          一次 53 拒（携 67 字节 elements、AID 11475 非常规）+ 四问沉默 —— PMKSA 落定窗
+          假说削弱：沉默型拒绝指向请求本身不合法（RSN 构造律）强于"稍后再试"窗。SAE
+          交换全通（hostap 本尊、commit/confirm 双 0、AUTH accepts）⇒ PMK/PMKID 与 AP
+          必然一致，加密无罪。内核本体全绿：epoch 存活 2,094s 史上最高、零 panic、
+          decode 58/0、adreno 843 行、stop 0.001s / logdump 0.012s / get_staged 净收、
+          loader 保留总线（历轮最健康停车形状）。
 
-          R60 一刀：关联状态机听得懂 "try again later"——attempt < 3 &&
-          answer == ANSWER_NONE 换为 attempt < 5 && answer != ANSWER_ASSOCIATED，
-          拒答后 lx_pause_ms(200) 退避重入（5 次窗口覆盖 1s 级 PMKSA 落定窗）；
-          标记同长换替。内核沿 R54 稳态（decode 律在膛），cmdline 零改动。
+          R61 一刀（证据轮）：关联应答的 elements 十六进制出卷（每行 16 字节）——67 字节
+          里可能写着 comeback time、AP 自己的 RSN 律、或拒绝理由；诚实计数（真实问数
+          入卷，R60 的 "three requests" 陈旧文案退役）；逐问自报（attempt N of 5）。
+          标记同长换替（R61: the association answer read aloud in hex, all bytes）。
+          cmdline 零改动。
 
           【刷机与取证】
-          1. fastboot flash boot raphael-xnu-r60-gpu-flash.img; fastboot reboot
+          1. fastboot flash boot raphael-xnu-r61-gpu-flash.img; fastboot reboot
           2. 启动卷律（必守）：oem ramdisk 臂 → fastboot stage
-             raphael-r60-flashboot.apfs → stage XNUP → oem run（漏
+             raphael-r61-flashboot.apfs → stage XNUP → oem run（漏
              stage = launchd ENOENT panic）
-          3. 凭据：fw-nv 版启动卷内 network 文件两行（SSID 1-32 B / PSK 8-63 B，
-             隐私律：日志只记长度）
-          4. 让它跑 >= 15 分钟；oem stop 后候 5s 再 logdump（瞬态窗律）；
-             分区写失败 = TWRP dd 直读兜底
-          【判决树 HR16（预注册）】
-          HR16-1（全胜）= join 链复现 + 关联被收（THE NETWORK IS JOINED）+
-                wifi_hold=90 帧计数窗 > 0 ⇒ 本机入网；
-          HR16-2 = 5 次重试后仍 status 53 ⇒ PMKSA 落定窗 > 1s 或需 auth 重跑
-                （R60b：refused 后 sae_authenticate 整轮重入）；
-          HR16-3 = 关联收而 4-way 握手断（HANDSHAKE 形）⇒ lx_wpa 对账；
-          HR16-4 = panic/异常按码分诊。回滚 = 刷回 r54 GPU 镜像。
+          3. 凭据：fw-nv 版启动卷内 network 文件两行（SSID 1-32 B / PSK 8-63 B）
+          4. oem stop 后候 5s 再 logdump；分区写失败 = TWRP dd 兜底
+          【判决树 HR17（预注册）】
+          HR17-1 = 67B elements 点名可修律（comeback time / RSN 差异 / 理由码）⇒
+                R62 按单修；
+          HR17-2 = 元素出卷后 AP 应答形状变化 ⇒ 按新形状分诊；
+          HR17-3 = 关联被收（THE NETWORK IS JOINED + 帧计数窗 > 0）⇒ 计划 R37 行
+                后半终兑现；
+          HR17-4 = panic/异常按码分诊。回滚 = r60 GPU 镜像。
           【镜像说明】
-          - raphael-xnu-r60-flash.img = 日常控制组
-          - raphael-xnu-r60-gpu-flash.img = 本轮目标镜像（仅 kernel 条目换新）
-          - 启动卷 stage 一次：raphael-r60-flashboot.apfs 或固件+NV 版
+          - raphael-xnu-r61-flash.img = 日常控制组
+          - raphael-xnu-r61-gpu-flash.img = 本轮目标镜像（仅 kernel 条目换新）
+          - 启动卷 stage 一次：raphael-r61-flashboot.apfs 或固件+NV 版
           ⚠️ 含 Apple 版权内容，仅供个人研究；下载完成后请尽快删除本 Release。
       release_body:
         description: "GitHub Release 正文"
         required: true
         default: |
-          raphael (K20 Pro) R60 交付包：**关联重试轮（status-53 律）**。
+          raphael (K20 Pro) R61 交付包：**关联应答出卷轮（证据刀）**。
 
-          R59 attempt-2 定案：SAE 前弧全通（commit status 0 / group 19 H&P 0 /
-          认证被收 status 0），墙体 = ASSOCIATION REFUSES status 53（"try again
-          later"，AP 的 PMKSA 落定窗）；join 状态机一次拒答即走 step-15 拆台。
-          内核本体全绿（decode 58/0、零 panic）。
+          R60 定案：五问全拒/沉默（53 + 67B elements + AID 11475），墙在关联请求
+          构造侧或 AP 的应答语义里 —— 67 字节无人读过。SAE 加密链全清白（hostap
+          本尊 + AP 已验 confirm）。epoch 存活 2,094s 史上最高、零 panic。
 
-          R60 一刀：关联重试——attempt < 5 && answer != ANSWER_ASSOCIATED +
-          lx_pause_ms(200) 退避；标记同长换替。cmdline 零改动，R54 稳态沿袭。
+          R61 一刀：应答 elements 十六进制出卷（16 字节/行）+ 真实问数 + 逐问
+          自报；标记同长换替。cmdline 零改动，R60 重试律在膛。
 
-          本轮判决问题（HR16 预注册）：关联被收 + THE NETWORK IS JOINED +
-          帧计数窗 > 0 ⇒ HR16-1 全胜（本机入网）；5 次后仍 53 ⇒ HR16-2
-          （R60b：auth 整轮重入）；关联收而握手断 ⇒ HR16-3 lx_wpa 对账；
-          panic ⇒ HR16-4 分诊；回滚 = r54 GPU 镜像。
+          本轮判决问题（HR17 预注册）：elements 点名可修律 ⇒ R62 按单修；关联
+          被收 ⇒ 计划 R37 行后半终兑现；panic ⇒ 按码分诊；回滚 = r60 GPU 镜像。
 
-          内核 = R54 稳态 + 关联重试刀（lx_80211.c 关联循环换替 + R60 标记）；
-          loader/cmdline/卷 = r54 原字节；日常镜像 = r54 逐字节控制组。
-          WiFi 固件+NV 走 flashboot 用户侧重建（R56 律沿袭）。
+          内核 = R60 稳态 + 出卷刀（lx_80211.c 应答 hex 打印 + 诚实计数）；
+          loader/cmdline/卷 = r60 release 原字节（= r54 谱系）；日常镜像 =
+          r60 逐字节控制组。WiFi 固件+NV 走 flashboot 用户侧重建（R56 律沿袭）。
       checksum_files:
         description: "进 SHA256SUMS 的文件名（空格分隔，相对 release/；通常是双镜像+启动卷+md1）"
         required: true
-        default: "raphael-xnu-r60-flash.img raphael-xnu-r60-gpu-flash.img raphael-r60-flashboot.apfs r60-md1-root.apfs"
+        default: "raphael-xnu-r61-flash.img raphael-xnu-r61-gpu-flash.img raphael-r61-flashboot.apfs r61-md1-root.apfs"
       release_files:
         description: "进 Release 的文件（每行一个，相对 release/）"
         required: true
         default: |
-          raphael-xnu-r60-flash.img
-          raphael-xnu-r60-gpu-flash.img
-          raphael-r60-flashboot.apfs
-          r60-md1-root.apfs
-          r60-kernel-gate.txt
+          raphael-xnu-r61-flash.img
+          raphael-xnu-r61-gpu-flash.img
+          raphael-r61-flashboot.apfs
+          r61-md1-root.apfs
+          r61-kernel-gate.txt
           SHA256SUMS
           README.txt
           toolchain-versions.txt
