@@ -124,7 +124,13 @@ fi
 # ---- phase 3: the staging trio (启动卷律: oem ramdisk -> stage fw-nv -> stage xnup)
 FBTO=30
 say "phase 3: the staging trio (v2: OKAY-gated, retried)"
-fb oem ramdisk || exit 3
+rm_try=1
+while [ $rm_try -le 3 ]; do
+  if fb oem ramdisk; then break; fi
+  say "oem ramdisk try $rm_try failed (the settling-window law) -- retry in 3 s"
+  rm_try=$((rm_try + 1)); sleep 3
+done
+[ $rm_try -le 3 ] || exit 3
 sleep 2                          # the attempt-1 law: let any re-enumeration settle
 fb_stage fw-nv "$DIR/raphael-r59-flashboot-fw-nv.apfs" || exit 4
 fb_stage xnup "$DIR/r59.xnup" || exit 4
