@@ -339,14 +339,26 @@ def main():
         return any(s.startswith(p) for p in RUN_PREFIXES)
 
     def allowed_gain(s):
-        return s == R61_MARKER or s.startswith(b'redwood-exec:') or \
+        # the R61 gains: the evidence round's own words (the hex dump, the per-ask
+        # print, the honest ask count on the summary, the shortened NO-ANSWER)
+        return s == R61_MARKER or \
+            s.startswith(b'lx: the association answer, bytes ') or \
+            s.startswith(b'lx: the association asks, attempt ') or \
+            s.startswith(b'lx: ASSOCIATION: %s (status %u); we are its station number %u; its answer has %u bytes of elements, after') or \
+            s == b'NO ANSWER from the access point' or \
+            s.startswith(b'redwood-exec:') or \
             s.startswith(b'redwood-fault:') or \
             s.startswith(b'redwood-pager:') or s.startswith(b'sigcensus:') or \
             s.startswith(b'siglive:') or s.startswith(b'r49-deliver:') or \
             run_like(s) or DARWIN.search(s)
 
     def allowed_loss(s):
-        return s == R54_MARKER or run_like(s) or \
+        # the R61 losses: the retired R60 marker and the two association strings it
+        # replaced (the old summary without the ask count, the stale "three requests")
+        return s == R60_MARKER or \
+            s == b'NO ANSWER from the access point to three requests' or \
+            s.startswith(b'lx: ASSOCIATION: %s (status %u); we are its station number %u; its answer has %u bytes of elements\n') or \
+            run_like(s) or \
             s.startswith(b'redwood-pager:') or s.startswith(b'sigcensus:') or \
             s.startswith(b'redwood-exec:') or \
             DARWIN.search(s)
@@ -355,8 +367,8 @@ def main():
     bad_loss = [s for s in lost if not allowed_loss(s)]
     assert not bad_gain, 'r60 gains unexpected strings (outside symtab/load cmds, code segs masked): %s' % [s[:64] for s in bad_gain[:5]]
     assert not bad_loss, 'r60 loses unexpected strings: %s' % [s[:64] for s in bad_loss[:5]]
-    assert R61_MARKER in gained, 'the R60 marker is missing from the masked delta'
-    assert R54_MARKER in lost, 'the R54 marker did not show up as a masked loss (it must be retired from rodata)'
+    assert R61_MARKER in gained, 'the R61 marker is missing from the masked delta'
+    assert R60_MARKER in lost, 'the R60 marker did not show up as a masked loss (it must be retired from rodata)'
     # the decode formats are PREFIXES of their printable runs (each is its
     # own cstring, NUL-bounded like the rest) -- the run-1 lesson
     # (41159150831), now the general law: a prefix does not sit in the gained
@@ -390,14 +402,14 @@ def main():
         'the r54 kernel lost every pointer-table run form'
     assert any(run_like(s) and s.startswith(b'(4(') for s in o_str), \
         'the r54 base lost every pointer-table run form?'
-    assert not in_masks(new.find(R54_MARKER), mask_n), \
-        'the R54 marker sits inside a masked span -- smuggled?'
+    assert not in_masks(new.find(R61_MARKER), mask_n), \
+        'the R61 marker sits inside a masked span -- smuggled?'
     say('strings law: masked delta (code segs masked too -- machine code is not strings, the run-12 law):'
-        ' gained %d (the R54 marker + the decode formats + %d Darwin stamp lines + %d layout-run forms),'
-        ' lost %d (the R52 marker + %d Darwin stamp lines + %d layout-run forms); the marker at %#x rides real rodata'
+        ' gained %d (the R61 marker + the evidence words + %d Darwin stamp lines + %d layout-run forms),'
+        ' lost %d (the R60 marker + the two association strings it replaced + %d Darwin stamp lines + %d layout-run forms); the marker at %#x rides real rodata'
         % (len(gained), sum(1 for s in gained if DARWIN.search(s)), sum(1 for s in gained if run_like(s)),
            len(lost), sum(1 for s in lost if DARWIN.search(s)), sum(1 for s in lost if run_like(s)),
-           new.find(R54_MARKER)))
+           new.find(R61_MARKER)))
 
     # 6. symtab census
     assert sym_n['nsyms'] >= sym_o['nsyms'], \
