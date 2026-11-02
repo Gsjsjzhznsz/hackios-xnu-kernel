@@ -2017,3 +2017,17 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 - **归档编排**：r59-2g-partition.bin（3d7b10a1）+ r59-attempt1-retry.bin（938a8dc3）+ r59-attempt2-partition.bin（a85c4f02，容器副本回填归档 —— R59.5 会话曾按同名覆写 attempt-2 分区文件，副本救回）三件各归其名；R58 考古翻案律（TWRP 直读终审兜底）持续兑现。
 
 **R60 会话执行（同日接续）**：R60 dispatch fix 3（release env 四 input 默认仍钉 R54 —— run 41331680831 尸检 `sha256sum $CHECKSUM_FILES` 四连 No such file；checksum_files/release_files/release_readme/release_body 换替 R60，base_* URL 依法保留 r54 资产名 = R60 基底正是 r54 release 资产；离线证明 9/9 复绿）→ **CI run 41439630833 SUCCESS 全 13 步**，Release r60-springboard 在架。**R60 join 包**（tools/r60_flash_pack.py）：基底 = r60 release gpu 镜像（0a0683f1），loader/ramdisk/usb = r54 律字节，**entry sha 律：CI env 的 KSHA 20a25ec9 是打包前形态，entry sha = e0570b2a（17,027,112 B = R54 内核同字节数 —— 同长标记换替跨代保持段律）**；R60 关联重试标记 ×1、R54 标记被同长换替退场（解码代码仍在膛）、R33 脊柱 ×2；cmdline 单换 join 令牌组。**r60.xnup 24,126,920 B sha 98dd8fe8**（与 r59.xnup 同字节数）。会话脚本 R59_XNUP 旋钮（fw-nv = 轮次无关凭据载具，payload 诚实自名）。**R60 点火 T0 = 20:53:37**（NAS 时），fw-nv ACCEPTED 4.526s + xnup 0.946s 物理诚实速率，驻留 2100s 至 ~21:28。
+
+## R60 关联重试轮真机判读（2026-11-02，HR16-2 定谳：重试刀机械兑现三问、AP 沉默应 53 —— 墙钉死在关联请求构造侧；R61 = 关联请求构造刀）
+
+**会话（本轮最健康停车形状）**：R59_XNUP 旋钮首次实战（r60.xnup 98dd8fe8 诚实自名）→ TWRP→ABL→XNULOADER→staging trio 全 OKAY（ramdisk rc=0、fw-nv 4.526s / xnup 0.946s 物理诚实速率）→ **oem run T0 = 20:53:37** → 驻留 2100s → **oem stop rc=0 0.001s、oem logdump rc=0 0.012s（5s 律兑现）、get_staged 4MB rc=0**（sha 3f4a0c5f）——**loader 保留总线**（手机未落 TWRP，与 R59.5 的"stop 后 loader 沉默落 TWRP"成对照：stop 应答快慢与 loader 存活强相关）。get_staged 捕获改名 r60-staged.bin 入档。
+
+**HR16 判决（预注册树对表）**：
+- **HR16-2 开火（PMKSA 落定窗假说削弱）**：join 链复现（ch11 -43 dBm 强信号、`WPA3 SAE` 认定、key 交付 0ms、信道 40MHz@2452）→ SAE commit status 0 → group 19 H&P 0 → AUTHENTICATION accepts 0 → **`ASSOCIATION: NO ANSWER from the access point to three requests (status 53); we are its station number 11475; its answer has 67 bytes of elements`** —— 重试环真实跑了 **三问**（总结行；`attempt < 5` 与三问的差 = R61 读刀码点名）、**逐次标记行（"the association asks the access point, try it again"）零印**（运行时条件未满足，R61 名之）；AP 对关联请求**沉默**（非忙拒）+ 53 + 67B elements 在答 —— **沉默型拒绝指向请求本身不合法（RSN IE 构造律）强于"稍后再试"窗**。HR16-1 未达（未入网）、HR16-3 未达（无关联则无握手）。
+- **AID 异常入档**：R59/R59.5 的拒绝答 AID = 0，R60 答 AID = **11475**（0x2CD3）—— 拒绝响应携非零 AID 非常规（成功响应才携 AID）；或为应答缓冲的跨交换残读。67B elements 逐字节读 = R61 第一刀。
+- **内核本体全绿 + 寿命新高**：decode 58/0、verdicts 0、madvise-ro 1,813、births 15/9、traps 0、零 panic、SpringBoard、adreno 843 行、**epoch 存活 2,094s = 史上最高**（R58 1,939s → +155s；本轮 launchd 全程活跃，epoch 跨度 = 真窗）+ END OF LOG 在卷 + join 后 step-15 优雅停车链完整（R59.5 同族）。扫描 6 网（RF 环境轮替：kira 2.4G -43dBm ch11 被选、kira 5G -51dBm ch40 在列 —— beacon 计数轮替属 RF 常态非故障）。
+- **R59.5 的 survival 门误报在本轮自证**：同判读器、epoch 跨度 2,094s ✓ —— 门律升级版（END OF LOG + stop 应答 = 寿命成立）与 epoch 跨度双轨并行如实记录。
+
+**新观察（操作律）**：loader 与 ABL 的 `fastboot reboot recovery`（两种写法均 OKAY）**实际落点都是 ABL fastboot** —— 手动 TWRP 路由全闭，TWRP 只经 stop-path 自然落（R49/R54/R58 家族形状）；R60 分区终审顺延至下次自然 TWRP 落座（logdump OKAY 0.012s = 分区写已落地，非阻塞）。手机终态 = ABL fastboot 稳态停车（18d1:d00d，R58 前夜同族）。
+
+**R61 预注册（关联请求构造轮）**：三刀并列 —— ① **67B 应答 elements 逐字节读**（AP 想要什么：RSN IE/PMKID/KDE？）；② **fork 的 sae assoc-side 律**（r36work 在库：AKM 8 套件选择、PMF required 置位、PMKID-in-RSNIE、confirm-before-assoc 次序）对读现役 lx 的关联请求构造；③ **R60 hunk 的环/打印形状**（三问 vs attempt<5 的差、逐次标记行的运行时条件、AID 11475 的来源）。判据预注册：HR17-1 = 请求构造修后关联被收（THE NETWORK IS JOINED + 帧计数窗）⇒ 计划 R37 行后半终兑现；HR17-2 = 67B elements 点名新律（如 PMF 套件不匹配）⇒ 按单修；HR17-3 = AP 仍沉默 ⇒ fork 的 "连接仍不稳定" 风险线取证（microdump + wifi_diag 随行）。回滚律沿袭（cmdline-append 不含 join 重跑 R58 稳态）。
