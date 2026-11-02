@@ -167,107 +167,83 @@ on:
         description: "README.txt 全文（逐字进 Release 资产）"
         required: true
         default: |
-          raphael (K20 Pro) R54 交付包：**预取解码轮（询凶续集Ⅷ）**。
+          raphael (K20 Pro) R60 交付包：**关联重试轮（status-53 律）**。
 
-          R52 真机判读入账（run 41176250741 收割全绿 + run1 存活 1379.5 秒 = 23.0
-          分钟零 panic 项目新纪录）：HR10 定谳 (a) 分支——infos-hex 5 套跨不同
-          aii_addr 逐位相同 = 同一份 dyld 静态模板字节，页供给诚实；version 17
-          精确在位（映射错位 (d) 排除）；四字段"低 36 位小 offset + 高位固定簇"
-          = dyld 自己的 chained-fixup 编码态（dyld 未执行一条指令，fixup 引擎
-          未跑）。
+          R59 两发真机判读入账：attempt-1 立案 stage 静默失败律（oem ramdisk 触发
+          loader USB 重枚举、新节点回 root:plugdev 0660 关门 → 113MB stage 1 秒
+          假完成 → loader 温复位存续的旧 fw-nv 与新内核合成 boot：固件链全起、独
+          network 缺席，HR15-0）——三律入册：stage 未唱 OKAY 即非 stage / 门前置
+          每个 fastboot 调用 / 脚本输出禁管道展开吞字。attempt-2 手工指挥全 OKAY：
+          凭据链全案清白（name 7 B / passphrase 9 B 交付实锤）→ SAE 前弧全通
+          （SAE commit response status 0 → group 19 H&P auth 0 → 认证被收
+          status 0）→ 墙体命名：ASSOCIATION: THE ACCESS POINT REFUSES
+          (status 53) = 802.11 "rejected temporarily; try again later"，AP 的
+          PMKSA 落定窗字面义 → step-15 失败连锁 → 优雅停车全链第二次完整入卷
+          （DSP stop → TZ 交还 zap shader → MSA 收回 → RMTFS 终审 6144 读 0 写
+          → radio-off → END OF LOG）。内核本体全绿：decode 58/0、零 panic、
+          SpringBoard、adreno 812、madvise-ro 1813。
 
-          R53 离线解码定谳（r53_fixup_decode_proof.py 七组裁决 ALL GREEN，无
-          dispatch 无手机动作）：五字段全部纯 rebase（bind/auth/high8/unused
-          全 0）；真值表 target + 0x180000000 逐位复现 R51 在册值（infos 自指
-          0x18008c000、img → dyld mach header）；内核 slide = aii_addr −
-          infos_encoded 逐位（50/50 事件）；kind1/kind2 addr 公式逐位（14/14、
-          36/36）；正确算术 dyld_base = aii_addr − infos_target（0x8c000），真
-          页 = trunc16k(dyld_base + target)；broken = real + 0xFF70000000000000
-          常数（next 链碎片流过 slide 减法的唯一残迹）；影响面 = 50 起全 kr 0x1
-          no-map-entry fail-fast（零 pager I/O、单次微秒级无害）——真代价 =
-          三个 dyld 预取页（notifier 页/dyld 文本首页/aii 页）自始未预热，
-          launch 预取优化静默死。
-
-          R54 一刀：exec_prefault_data 预取前解码——target = field & 0xFFFFFFFFF
-          （36 位）；dyld_base = aii_addr − infos_target；三发预取（notif/img/
-          version）走 trunc16k(dyld_base + target) 真页；第四发（infos）保持
-          上游算术（aii_encoded + slide ≡ aii_addr 代数恒等，R53 V5 永不失败）。
-          守卫：四字段必须全纯 rebase 且 infos self-target 非零，否则整体保持
-          上游算术（skip++，上游 non-fatal 姿态保全）。census 新行 sigcensus:
-          decode ok/skip 计数；decode 首例打 redwood-exec: decode 全息（前 4 例
-          + 每 16 例，带 flush）。标记同长换替（R54: the decoder turns dyld fixup chains into real pages）。
-          R52 考古刀（infos-hex + 通道指纹）沿袭在膛——解码骑在考古之上，每
-          boot 自证供给。
+          R60 一刀：关联状态机听得懂 "try again later"——attempt < 3 &&
+          answer == ANSWER_NONE 换为 attempt < 5 && answer != ANSWER_ASSOCIATED，
+          拒答后 lx_pause_ms(200) 退避重入（5 次窗口覆盖 1s 级 PMKSA 落定窗）；
+          标记同长换替。内核沿 R54 稳态（decode 律在膛），cmdline 零改动。
 
           【刷机与取证】
-          1. fastboot flash boot raphael-xnu-r54-gpu-flash.img; fastboot reboot
+          1. fastboot flash boot raphael-xnu-r60-gpu-flash.img; fastboot reboot
           2. 启动卷律（必守）：oem ramdisk 臂 → fastboot stage
-             raphael-r54-flashboot.apfs → stage XNUP → oem run（漏
+             raphael-r60-flashboot.apfs → stage XNUP → oem run（漏
              stage = launchd ENOENT panic）
-          3. 让它跑 >= 15 分钟（R52 run1 存活 23.0 分钟零 panic）
-          4. oem logdump / oem log 抓全量日志回传
-          【判决树 HR11（预注册）】
-          HR11-1（全胜）= census decode ok 在场且 skip=0 + prefault kind1/2
-                全息零条 + ask read-exec 判词归零（R52 45 条）+ 存活 >= 1379.5s
-                零 panic ⇒ 预取解码闭环（launch 预取优化复活），R55 =
-                first-touch 软故障定量（faults vs R52 129,339）；
-          HR11-2（守卫开火）= decode skip > 0 ⇒ 模板形态变异，decode skip 行
-                入档，解码律按新形态修订；
-          HR11-3（判词不归零）= ask read-exec 残留 ⇒ 判词漏斗另有喂食者，按
-                pid/addr/kind 分诊；
-          HR11-4（panic/新墙）⇒ logdump 按码分诊；回滚 = 刷回 r52 GPU 镜像。
-                附带：census 双唱/通道指纹/SB2-SB5 全部沿袭。
+          3. 凭据：fw-nv 版启动卷内 network 文件两行（SSID 1-32 B / PSK 8-63 B，
+             隐私律：日志只记长度）
+          4. 让它跑 >= 15 分钟；oem stop 后候 5s 再 logdump（瞬态窗律）；
+             分区写失败 = TWRP dd 直读兜底
+          【判决树 HR16（预注册）】
+          HR16-1（全胜）= join 链复现 + 关联被收（THE NETWORK IS JOINED）+
+                wifi_hold=90 帧计数窗 > 0 ⇒ 本机入网；
+          HR16-2 = 5 次重试后仍 status 53 ⇒ PMKSA 落定窗 > 1s 或需 auth 重跑
+                （R60b：refused 后 sae_authenticate 整轮重入）；
+          HR16-3 = 关联收而 4-way 握手断（HANDSHAKE 形）⇒ lx_wpa 对账；
+          HR16-4 = panic/异常按码分诊。回滚 = 刷回 r54 GPU 镜像。
           【镜像说明】
-          - raphael-xnu-r54-flash.img = 日常控制组（= r52 逐字节原样）
-          - raphael-xnu-r54-gpu-flash.img = 本轮目标镜像（仅 kernel 条目换新）
-          - 启动卷 stage 一次：raphael-r54-flashboot.apfs 或固件+NV 版
+          - raphael-xnu-r60-flash.img = 日常控制组
+          - raphael-xnu-r60-gpu-flash.img = 本轮目标镜像（仅 kernel 条目换新）
+          - 启动卷 stage 一次：raphael-r60-flashboot.apfs 或固件+NV 版
           ⚠️ 含 Apple 版权内容，仅供个人研究；下载完成后请尽快删除本 Release。
       release_body:
         description: "GitHub Release 正文"
         required: true
         default: |
-          raphael (K20 Pro) R54 交付包：**预取解码轮（询凶续集Ⅷ）**。
+          raphael (K20 Pro) R60 交付包：**关联重试轮（status-53 律）**。
 
-          R52 真机定案（run 41176250741）：收割全绿（KSHA aaa90701）；
-          run1 存活 1379.5 秒 = 23.0 分钟零 panic（新纪录）；HR10 定谳
-          (a) 分支——页供给诚实，垃圾 = dyld 静态模板的 chained-fixup
-          编码态。
+          R59 attempt-2 定案：SAE 前弧全通（commit status 0 / group 19 H&P 0 /
+          认证被收 status 0），墙体 = ASSOCIATION REFUSES status 53（"try again
+          later"，AP 的 PMKSA 落定窗）；join 状态机一次拒答即走 step-15 拆台。
+          内核本体全绿（decode 58/0、零 panic）。
 
-          R53 离线解码定谳（七组裁决 ALL GREEN）：五字段全纯 rebase；
-          dyld_base = aii_addr − infos_target（0x8c000）；broken = real +
-          0xFF70000000000000（链碎片常数）；50 起失败全 kr 0x1 fail-fast
-          无害，真代价 = 三个 dyld 预取页从未预热（launch 预取优化静默
-          死，上游 xnu-8796 同病）。
+          R60 一刀：关联重试——attempt < 5 && answer != ANSWER_ASSOCIATED +
+          lx_pause_ms(200) 退避；标记同长换替。cmdline 零改动，R54 稳态沿袭。
 
-          R54 一刀：exec_prefault_data 预取前解码（target = field &
-          0xFFFFFFFFF；dyld_base = aii_addr − infos_target；notif/img/
-          version 三发走真页；infos 发代数恒等保持上游）+ 纯 rebase 守卫
-          （skip 保上游姿态）+ census decode ok/skip 计数行 + decode 全息
-          （前 4 例 + 每 16 例）。标记同长换替。R52 考古刀沿袭。
+          本轮判决问题（HR16 预注册）：关联被收 + THE NETWORK IS JOINED +
+          帧计数窗 > 0 ⇒ HR16-1 全胜（本机入网）；5 次后仍 53 ⇒ HR16-2
+          （R60b：auth 整轮重入）；关联收而握手断 ⇒ HR16-3 lx_wpa 对账；
+          panic ⇒ HR16-4 分诊；回滚 = r54 GPU 镜像。
 
-          本轮判决问题（HR11 预注册）：decode ok 在场且 skip=0 + kind1/2
-          全息零条 + ask read-exec 判词归零 + 存活 >= 1379.5s ⇒ HR11-1
-          全胜（预取解码闭环）；skip>0 = HR11-2 守卫开火；判词残留 =
-          HR11-3 漏斗另有喂食者；panic = HR11-4 logdump 分诊；回滚 =
-          r52 GPU 镜像。
-
-          内核 = R52 + 解码刀（redwood.patch kern_exec.c + raphael_adreno.c
-          census decode 行 + R54 标记）；loader/cmdline/卷 = r52 原字节；
-          日常镜像 = r52 逐字节控制组。WiFi 固件+NV 走 flashboot 用户侧
-          重建（已知遗留）。
+          内核 = R54 稳态 + 关联重试刀（lx_80211.c 关联循环换替 + R60 标记）；
+          loader/cmdline/卷 = r54 原字节；日常镜像 = r54 逐字节控制组。
+          WiFi 固件+NV 走 flashboot 用户侧重建（R56 律沿袭）。
       checksum_files:
         description: "进 SHA256SUMS 的文件名（空格分隔，相对 release/；通常是双镜像+启动卷+md1）"
         required: true
-        default: "raphael-xnu-r54-flash.img raphael-xnu-r54-gpu-flash.img raphael-r54-flashboot.apfs r54-md1-root.apfs"
+        default: "raphael-xnu-r60-flash.img raphael-xnu-r60-gpu-flash.img raphael-r60-flashboot.apfs r60-md1-root.apfs"
       release_files:
         description: "进 Release 的文件（每行一个，相对 release/）"
         required: true
         default: |
-          raphael-xnu-r54-flash.img
-          raphael-xnu-r54-gpu-flash.img
-          raphael-r54-flashboot.apfs
-          r54-md1-root.apfs
-          r54-kernel-gate.txt
+          raphael-xnu-r60-flash.img
+          raphael-xnu-r60-gpu-flash.img
+          raphael-r60-flashboot.apfs
+          r60-md1-root.apfs
+          r60-kernel-gate.txt
           SHA256SUMS
           README.txt
           toolchain-versions.txt
