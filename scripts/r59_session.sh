@@ -101,10 +101,25 @@ fb_wait ABL || exit 3
 sleep 2
 
 # ---- phase 2: ABL -> XNULOADER (NO fastboot flash anywhere -- L4)
+#     the entry-state law (attempt-2 手工指挥 + the R59.5 fires): the reboot
+#     transient window (~0 s rc=1 failures while ABL settles) is retried x3/3 s,
+#     and a session re-fired while the phone is ALREADY in XNULOADER must skip
+#     the reboot -- `fastboot reboot` inside the loader would walk the phone back
+#     OUT of it
 FBTO=15
-fb reboot || exit 3
-sleep 8
-fb_wait LOADER || exit 3
+if timeout 10 fastboot getvar product 2>&1 | grep -q xnuloader; then
+  say "phase 2: already in XNULOADER (the entry-state law) -- reboot skipped"
+else
+  rb=1
+  while [ $rb -le 3 ]; do
+    if fb reboot; then break; fi
+    say "reboot try $rb failed (the transient law; the fb line has the real rc) -- retry in 3 s"
+    rb=$((rb + 1)); sleep 3
+  done
+  [ $rb -le 3 ] || exit 3
+  sleep 8
+  fb_wait LOADER || exit 3
+fi
 
 # ---- phase 3: the staging trio (启动卷律: oem ramdisk -> stage fw-nv -> stage xnup)
 FBTO=30
