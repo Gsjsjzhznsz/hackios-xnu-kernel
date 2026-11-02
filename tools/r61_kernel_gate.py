@@ -185,13 +185,13 @@ def main():
         ' may fit __TEXT padding; the law is the accounting, not the sign)' % delta)
 
     # 2. the markers
-    assert new.count(R61_MARKER) == 1, 'the R60 marker rides x%d, want exactly 1' % new.count(R61_MARKER)
-    assert old.count(R61_MARKER) == 0, 'the r54 base already carries the R60 marker?'
+    assert new.count(R61_MARKER) == 1, 'the R61 marker rides x%d, want exactly 1' % new.count(R61_MARKER)
+    assert old.count(R61_MARKER) == 0, 'the r60 base already carries the R61 marker?'
     assert new.count(R54_MARKER) == 0, 'the R54 marker still rides in r61 -- it was to be retired'
-    assert old.count(R54_MARKER) == 1, 'the r60 base kernel lost its own elder marker'
+    assert old.count(R54_MARKER) == 0, 'the r60 base still carries the retired R54 marker?'
     assert new.count(R60_MARKER) == 0, 'the R60 marker still rides in r61 -- it was to be retired'
     assert old.count(R60_MARKER) == 1, 'the r60 base kernel lost its own marker'
-    say('marker law:  the R61 marker x1 in r61, x0 in r60; the R60 marker retired (x0 in r61, x1 in r60); same length (56 B)')
+    say('marker law:  the R61 marker x1 in r61, x0 in r60; the R60 marker retired (x0 in r61, x1 in r60); the R54 marker retired in both (x0/x0); same length (56 B)')
 
     # 3. lineage
     for mark, want in R33_MARKS:
