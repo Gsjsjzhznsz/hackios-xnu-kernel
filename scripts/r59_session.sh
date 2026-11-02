@@ -88,10 +88,13 @@ fb_wait() {  # $1=label; poll for a fastboot device (door applied each pass)
 FBTO=30
 say "=== R59 session v2 begin (pid $$) ==="
 
-# ---- the prerequisite gate
+# ---- the prerequisite gate (the xnup path is an env knob: R59_XNUP defaults to
+#      $DIR/r59.xnup; a later round stages its own payload honestly named, e.g.
+#      R59_XNUP=$DIR/r60.xnup -- the fw-nv (the credential carrier) is round-agnostic)
+XNUP="${R59_XNUP:-$DIR/r59.xnup}"
 [ -f "$DIR/raphael-r59-flashboot-fw-nv.apfs" ] || { say "ABORT: fw-nv missing"; exit 2; }
-[ -f "$DIR/r59.xnup" ] || { say "ABORT: r59.xnup missing"; exit 2; }
-say "materials: fw-nv $(ls -la "$DIR/raphael-r59-flashboot-fw-nv.apfs" | awk '{print $5}') B, xnup $(ls -la "$DIR/r59.xnup" | awk '{print $5}') B"
+[ -f "$XNUP" ] || { say "ABORT: xnup missing at $XNUP"; exit 2; }
+say "materials: fw-nv $(ls -la "$DIR/raphael-r59-flashboot-fw-nv.apfs" | awk '{print $5}') B, xnup $(ls -la "$XNUP" | awk '{print $5}') B ($XNUP)"
 
 # ---- phase 1: TWRP -> ABL fastboot
 FBTO=15
@@ -137,7 +140,7 @@ done
 [ $rm_try -le 3 ] || exit 3
 sleep 2                          # the attempt-1 law: let any re-enumeration settle
 fb_stage fw-nv "$DIR/raphael-r59-flashboot-fw-nv.apfs" || exit 4
-fb_stage xnup "$DIR/r59.xnup" || exit 4
+fb_stage xnup "$XNUP" || exit 4
 
 # ---- phase 4: ignition
 FBTO=60
