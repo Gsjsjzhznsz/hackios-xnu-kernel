@@ -39,7 +39,11 @@ door() {  # the NAS fastboot door: re-apply 0666 on every 18d1 node (harmless if
 }
 
 fb() {  # L1+L2: door, then fastboot with REAL output captured; $1=label, rest = args
-  label=$1; shift
+  label=$1   # the label IS fastboot's first real argument: `fb oem ramdisk` must
+             # run `fastboot oem ramdisk` -- the shift here ate the first real arg
+             # and every fb call (oem ramdisk / reboot / oem run / oem stop) ran
+             # the WRONG command (rc=1 in ~0s, "transients" that never were)
+             # until the R59.5 fires cornered it
   door
   t0=$(date +%s)
   out=$(timeout "$FBTO" fastboot "$@" 2>&1); rc=$?
