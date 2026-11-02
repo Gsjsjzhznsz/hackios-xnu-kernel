@@ -1879,7 +1879,8 @@ station_join(struct lx_radio *radio, const struct redwood_sta_join *what)
 
         /* association: what we can do, and that we want its protection */
         answer = ANSWER_NONE;
-        for (unsigned attempt = 0; attempt < 5 && answer != ANSWER_ASSOCIATED; attempt++) {
+        unsigned attempt = 0;                   /* survives the loop: the summary prints the honest ask count */
+        for (; attempt < 5 && answer != ANSWER_ASSOCIATED; attempt++) {
                 if (attempt) {
                         /* the R59 status-53 law: the access point's "association rejected temporarily" after a
                          * completed SAE exchange is its own "try again later" -- the PMKSA it just committed is
