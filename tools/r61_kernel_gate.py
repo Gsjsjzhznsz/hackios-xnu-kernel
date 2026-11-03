@@ -355,9 +355,14 @@ def main():
     def allowed_loss(s):
         # the R61 losses: the retired R60 marker and the two association strings it
         # replaced (the old summary without the ask count, the stale "three requests")
+        # RUN-SPACE LAW (run 41472979841): masked_strings() extracts printable runs
+        # of [\x20-\x7e] -- \n (0x0a) is NOT printable, so every run is \n-free even
+        # when the source literal ends with one; masks must be spelled in run-space,
+        # never copied from the source literal (the compiler keeps the \n in the
+        # cstring, the extractor cuts it out -- run 41472979841 died on this seam).
         return s == R60_MARKER or \
             s == b'NO ANSWER from the access point to three requests' or \
-            s.startswith(b'lx: ASSOCIATION: %s (status %u); we are its station number %u; its answer has %u bytes of elements\n') or \
+            s.startswith(b'lx: ASSOCIATION: %s (status %u); we are its station number %u; its answer has %u bytes of elements') or \
             run_like(s) or \
             s.startswith(b'redwood-pager:') or s.startswith(b'sigcensus:') or \
             s.startswith(b'redwood-exec:') or \

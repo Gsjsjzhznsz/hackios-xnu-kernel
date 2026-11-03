@@ -13,7 +13,7 @@ on:
       release_name:
         description: "Release 标题"
         required: true
-        default: "R60 · 纯血 hackios SpringBoard · 关联重试轮（R59 定谳：SAE commit+confirm 全成、AP 收 SAE 认证后关联拒 status 53 = PMKSA 落定窗的 try-again-later；R60 刀 = 关联循环对拒答也重试 + 200ms 退避 ×5；判决树 HR16）"
+        default: "R61 · 纯血 hackios SpringBoard · 关联应答出卷轮（证据刀：67 字节 elements 十六进制出卷 + 诚实问数 + 逐问自报；判决树 HR17）"
       # 教训（run 41040910832）：GitHub Release name 上限 256 字符——判读叙事全部
       # 写进 release_body（无此上限），release_name 只留一行标题。
       kernel_repo:
