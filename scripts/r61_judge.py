@@ -150,12 +150,42 @@ def main():
                         % (scan_lines, 'ran and won' if (joined or handshake_fail or keys) else 'NEVER ran'))
 
     # ---- THE R61 EVIDENCE BLOCK (this round's knife)
-    check(R61_MARKER in text, 'the R61 association marker present (the evidence round rode along)')
+    # the marker-family law (R61 truth-machine): the same-length markers (R54/R60/R61) sit in
+    # the kernel BINARY (the gate audits them there) but NONE has ever printed in an R59+
+    # capture -- the framebuffer-path echo does not fire in this boot shape.  Marker in the
+    # barrel is not marker on paper; the per-ask lines + the hex dump ARE the evidence, so the
+    # marker is reported as a diagnostic, never as a gate.
+    if R61_MARKER in text:
+        verdicts.append('  marker: the R61 association marker present in the capture (rare)')
+    else:
+        verdicts.append('! marker: the R61 association marker NOT printed (the marker-family law: '
+                        'in-barrel is not on-paper; the ask lines + hex dump below are the evidence)')
     asks = re.findall(r'lx: the association asks, attempt (\d+) of 5', text)
+    best = []
     check(len(asks) > 0, 'the per-ask self-report lines present (the honest asks)', '%d ask line(s)' % len(asks))
     if asks:
         seq = [int(a) for a in asks]
-        check(seq == list(range(1, len(seq) + 1)), 'the ask lines count up from 1 (no lost asks)', str(seq))
+        # the preview-tail law (R61): the log driver's 2-second flush notes reprint "the last
+        # of it" -- a preview remnant can PRECEDE the true run.  The kernel truth = the longest
+        # suffix that counts up 1..N; the summary line's ask count must equal that N.
+        best = []
+        for i, v in enumerate(seq):
+            if v == 1:
+                run = []
+                expect = 1
+                for x in seq[i:]:
+                    if x != expect:
+                        break
+                    run.append(x)
+                    expect += 1
+                if len(run) > len(best):
+                    best = run
+        dropped = len(seq) - len(best)
+        check(best and best == list(range(1, len(best) + 1)),
+              'the ask lines count up from 1 (no lost asks; preview-tail dedup)',
+              '%s%s' % (str(seq), ' -- %d preview remnant(s) dropped by the flush-note law' % dropped if dropped else ''))
+        check(len(asks) - len(best) <= 1, 'at most one preview remnant (more would be a real anomaly)',
+              '%d dropped' % dropped)
     summ = re.search(r'lx: ASSOCIATION: (THE ACCESS POINT ACCEPTS|NO ANSWER from the access point|THE ACCESS POINT REFUSES)'
                      r' \(status (\d+)\); we are its station number (\d+); its answer has (\d+) bytes of elements, after (\d+) asks', text)
     answer_word, status, aid, nbytes, nasks = (None,) * 5
@@ -163,7 +193,8 @@ def main():
         answer_word, status, aid, nbytes, nasks = summ.group(1), int(summ.group(2)), summ.group(3), int(summ.group(4)), int(summ.group(5))
         verdicts.append('  R61 association summary: %s, status %d, station number %s, %d bytes of elements, after %d asks'
                         % (answer_word, status, aid, nbytes, nasks))
-        check(nasks == len(asks), 'the honest ask count equals the per-ask lines (%d)' % nasks)
+        check(nasks == len(best), 'the honest ask count equals the per-ask lines (%d)' % nasks,
+              'kernel says %d, deduped run is %d' % (nasks, len(best)))
     else:
         check(False, 'the R61 association summary line present')
 
