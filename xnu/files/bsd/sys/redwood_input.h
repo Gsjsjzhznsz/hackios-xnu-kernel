@@ -124,6 +124,11 @@ bool redwood_gpu_done(uint32_t fence);
 uint32_t redwood_gpu_last(void);
 void redwood_gpu_worked(uint64_t *microseconds, uint32_t *submissions, uint32_t by[7]);
 void redwood_gpu_report(const char *why);
+/* D1: the stall's own words.  The report (above) reads the command processor's IB1
+ * registers; this side of the wall is RedwoodGPU.cpp's, which holds the submission
+ * ledger and the buffers' kernel map, and reads the stalled command stream aloud.
+ * Defined there, called from raphael_adreno.c's redwood_gpu_report(). */
+void redwood_gpu_dump_stalled_ib(uint64_t base, uint32_t rem_words);
 bool redwood_gpu_recover(void);
 void redwood_gpu_stop(void);
 #endif

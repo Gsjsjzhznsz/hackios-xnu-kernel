@@ -5491,6 +5491,9 @@ void
 redwood_gpu_report(const char *why)
 {
         uint32_t context = smmu_context(&core_space);
+        uint64_t ib1_base = (uint64_t)rd(gpu.base + CP_IB1_BASE + 4) << 32 | rd(gpu.base + CP_IB1_BASE);
+        uint64_t ib2_base = (uint64_t)rd(gpu.base + CP_IB2_BASE + 4) << 32 | rd(gpu.base + CP_IB2_BASE);
+        uint32_t ib1_rem = rd(gpu.base + CP_IB1_REM_SIZE), ib2_rem = rd(gpu.base + CP_IB2_REM_SIZE);
 
         printf("adreno: gpu: %s: submission %u is the last, the core has done %u; ring: read up to %u, written up to %u; status "
             "%#x, interrupts %#x; command processor: fault %#x, interrupts %#x, protection %#x\n", why, gpu_fence,
@@ -5498,8 +5501,19 @@ redwood_gpu_report(const char *why)
             rd(gpu.base + RBBM_STATUS), rd(gpu.base + RBBM_INT_0_STATUS), rd(gpu.base + CP_HW_FAULT),
             rd(gpu.base + CP_INTERRUPT_STATUS), rd(gpu.base + CP_PROTECT_STATUS));
         printf("adreno: gpu:   in the first command buffer at %#llx, %u words to go; in the second at %#llx, %u to go\n",
-            (uint64_t)rd(gpu.base + CP_IB1_BASE + 4) << 32 | rd(gpu.base + CP_IB1_BASE), rd(gpu.base + CP_IB1_REM_SIZE),
-            (uint64_t)rd(gpu.base + CP_IB2_BASE + 4) << 32 | rd(gpu.base + CP_IB2_BASE), rd(gpu.base + CP_IB2_REM_SIZE));
+            ib1_base, ib1_rem, ib2_base, ib2_rem);
+        /*
+         * D1: the words the stalled core was left fetching.  The registers are
+         * raphael_adreno.c's to read; the buffer they name is the ledger's to identify --
+         * redwood_gpu_dump_stalled_ib() (RedwoodGPU.cpp) holds the submission ledger and
+         * the buffers' kernel map, and reads the stalled command stream aloud: the words
+         * around the stop, and every operand of the shape the SMMU refused (0x3500, the
+         * address that has stood at three generations of this crime -- R39 shutdown, R41
+         * reset, D0b runtime).  The values handed over are the same instant's as the ones
+         * printed above -- one snapshot, no second read in between.  It runs before the
+         * flush below, so one logdump carries the whole story.
+         */
+        redwood_gpu_dump_stalled_ib(ib1_base, ib1_rem);
         /*
          * R41: the snapshot is only as good as its ride to the storage.  The loader's own
          * capture stops when its notes end (NOTE_SECONDS), and after that the logdump
