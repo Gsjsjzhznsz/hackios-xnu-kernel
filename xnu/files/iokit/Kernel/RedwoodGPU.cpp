@@ -234,6 +234,12 @@ static struct {
  * the report arrives both under the lock (gpuWait's no-answer path, submit's ring-full
  * path) and without it (the framebuffer's dropped-frame path).
  */
+#define GPU_STALL_RING  48              /* the last so many submissions the ledger holds */
+#define GPU_STALL_IBS   8               /* the most command buffers of one submission it records */
+#define GPU_STALL_BOS   16              /* the most buffer ranges of one submission it records */
+#define GPU_STALL_WORDS 96              /* the words read around the stop (the pre-registered half-before, half-after) */
+#define GPU_STALL_HUNT_WORDS    16384   /* the most the hunt scans across the record's command buffers */
+#define GPU_STALL_HUNT_HITS     6       /* the most hits of each shape the hunt prints */
 struct gpu_stall_range {
 	uint64_t        base, size;             /* a named buffer's place in the GPU's address space */
 };
@@ -253,12 +259,6 @@ struct gpu_stall_record {
 	struct gpu_stall_ib     ib[GPU_STALL_IBS];
 	struct gpu_stall_range  bo[GPU_STALL_BOS];
 };
-#define GPU_STALL_RING  48              /* the last so many submissions the ledger holds */
-#define GPU_STALL_IBS   8               /* the most command buffers of one submission it records */
-#define GPU_STALL_BOS   16              /* the most buffer ranges of one submission it records */
-#define GPU_STALL_WORDS 96              /* the words read around the stop (the pre-registered half-before, half-after) */
-#define GPU_STALL_HUNT_WORDS    16384   /* the most the hunt scans across the record's command buffers */
-#define GPU_STALL_HUNT_HITS     6       /* the most hits of each shape the hunt prints */
 static struct gpu_stall_record gGPUStall[GPU_STALL_RING];
 static uint32_t gGPUStallAt;            /* where the next entry goes; wraps at GPU_STALL_RING, never %'d off a wrapped uint32 */
 

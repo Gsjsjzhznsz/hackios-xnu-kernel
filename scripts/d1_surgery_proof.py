@@ -121,6 +121,17 @@ for f in ('stall_ib[count].address = addresses[count];', 'stall_ib[count].words 
           'stall_ib[count].kernel = b->kernel;'):
     assert f in rgpu, 'P4: the capture lost %r' % f
 assert 'if (count < GPU_STALL_IBS) {' in rgpu, 'P4: the capture is not bounded by the IBS cap'
+# P4b, the run #41 law (CI 41866501957 named it): a #define used as an array
+# bound must precede the struct that binds it -- the proof policed the values
+# and missed the order; the order is now its own assertion, on raw byte offsets.
+rgpu_bytes = (FILES / 'iokit' / 'Kernel' / 'RedwoodGPU.cpp').read_bytes()
+ring_at = rgpu_bytes.find(b'#define GPU_STALL_RING')
+assert ring_at >= 0 and rgpu_bytes.find(b'#define GPU_STALL_RING', ring_at + 1) == -1, 'P4b: the RING define is not unique'
+for user in (b'struct gpu_stall_range {', b'struct gpu_stall_ib {', b'struct gpu_stall_record {'):
+    at = rgpu_bytes.find(user)
+    assert at > ring_at, 'P4b: %s precedes the defines (define-after-use: CI run 41 died exactly here)' % user.decode()
+assert rgpu_bytes.find(b'#define GPU_STALL_HUNT_HITS') < rgpu_bytes.find(b'struct gpu_stall_range {'), \
+    'P4b: the define block is not wholly before the structs'
 dump = rgpu[rgpu.index('redwood_gpu_dump_stalled_ib(uint64_t base, uint32_t rem_words)'):]
 dump = dump[:dump.index('\nbool\nMiniIOSurfaceDrawn')]
 assert 'static bool said;' in dump and 'if (said || gGPULock == NULL) {' in dump, 'P4: the single-fire gate moved'
