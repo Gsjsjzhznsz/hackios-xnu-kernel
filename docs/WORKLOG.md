@@ -2100,3 +2100,16 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 **CI dispatch 待发**：基底 = r61-springboard（gpu 39c6e70e 载 R61 内核 8ef12fef，daily b0f9f6df，flashboot 14485e7c 与 r60/r54 逐字节同）。产物：raphael-xnu-d1-gpu-flash.img（内核 entry = D1 构建）+ r61 谱系原字节。会话轮换包 d1.xnup 本地打包（D0b cmdline 形状：DAILY + gpu=1 + fb_scan=1 + wifi=0，93B）。**HD1 判决树已预注册**（README 内）：0x3500 在流内 ⇒ D2 单变量修；不在流内而链坏 ⇒ 按单修；流完好 ⇒ GPU 侧深挖；panic ⇒ 按码分诊。回滚 = r61 GPU 镜像。
 
 **D1 CI run#41 尸检 + 修复（2026-11-05：编译器点名 define-after-use，证明的盲区由 CI 补上）**：dispatch 已发（run 41866501957 on 17f7dd0，2026-11-04T16:22Z）——**步③ 内核构建死于 RedwoodGPU.cpp:253:29 `use of undeclared identifier 'GPU_STALL_IBS'`（:254 同 GPU_STALL_BOS）**：六枚 GPU_STALL_* #define 块被放在使用它们的 struct 之后（gpu_stall_record 的 ib[GPU_STALL_IBS]/bo[GPU_STALL_BOS] 数组界）——C 需要"界先于用界者"。**证明盲区定谳**：P4 管了常量的值（48/8/16/96/16384/6）没管常量的序——离线证明与编译器的分工缝在"语义值 vs 声明序"，后者只有编译器看得见。修复 = 字节级搬移（scripts/d1_run41_fix.py：整块上移至 struct gpu_stall_range 之前，6+/6-，raw diff == -w diff，断言块唯一 + 计数守恒 + 尾接 static 行）。**P4b 律入册**（d1_surgery_proof.py 新增）：#define 用作数组界必须在绑用 struct 之前——按裸字节偏移断言三个 struct 全在 define 块之后。证明复跑 11 法全绿。重 dispatch = run 42（4a4dfa1，https://github.com/Gsjsjzhznsz/hackios-xnu-kernel/actions/runs/42010259868）。**教训入册：离线证明管语义、CI 管声明序，两者都过才算数；数组界常量的"值"与"序"是两条独立的法。d0 取证物已从 /tmp 幸存区恢复至 download/d0/（d0.xnup 04d3ab67 / d0b.xnup 91c62c30 / r61 gpu 39c6e70e 复核吻合）。**
+
+
+## D2 · 3D 核 VA0 守卫（2026-11-05 夜，真机 D1 卷定谳后的第一刀）
+
+**判读定谳（D1 卷 `f9efdfad`，4 MB staged）**：HD1-3 成立。猎杀 1245 词（记录的 8/11 命令缓冲）**零命中**——流内无 0x3500、无近 NULL 形状；IB1 `0x206b8000`（72 词待发，CP 停在 CB7 第 0 词）与 IB2 `0x20640000`（0 待发）皆 sane，环 `read 1307 == written 1307` 已排空；SMMU 拒 3D 核的地址是 **`0x1000`**（不是 0x3500），我方 walk `L1[0]=0xfef6e003 → L2[0]=0`。⇒「0x3500 三代同现 = 模板级固定值」降级为「小 VA 未映射访问」，坏访问来自命令流之外（描述符 / BO / 页表 / VFD）。
+覆盖度注记：CB 8/11、BO 区间 16/64；卷尾 `1188-2130 s`（swap 345-348）为上一代残迹（预览残迹律）；死链首现在 loader 时钟 890 s ≈ **T0+290 s**，`DWELL=300` 只剩 ~10 s 余量 ⇒ 窗口律补丁：D2 起 `DWELL ≥ 600 s`。
+
+**刀（单变量）**：`xnu/files/bsd/dev/raphael_adreno.c` 的 `core_space` 在 VA `0x0..0x3FFF` 映射四页零页（`CORE_GUARD_ADDRESS/SIZE`，`PTE_CORE`，KMA_ZERO 保证零填），高半截丢失的基址指针落到这里读零而非吃致命 SMMU 故障。零新打印串（strings 律不动），标记**故意不换**（D1 标记沿用，`tools/d1_*` 保持可用；本轮以 sha 识别）——这是本轮记账的**欠债**，下一轮补 D2 标记换代。
+
+**工具**：`scripts/gen_d2_flash_build.py` 断言式单命中克隆 `tools/d1_flash_build.py` → `tools/d2_flash_build.py`，只动两个常量（底板 GPU 镜 `a4f1c330` = d1 release、底板内核 entry `85448240` = D1 内核），其余律与断言逐字节不动。
+
+**dispatch 形状**：round=d2 / tag=d2-springboard / 底板三件 = d1-springboard 资产（daily `b0f9f6df`、gpu `a4f1c330`、flashboot `14485e7c`）/ base_entry kernel=`85448240` / `pre_gate_py`、`kernel_gate_cmd`、`kernel_id_cmd`、`id_gates`、`base_id_cmd`、`base_id_gates` **全部留空**（工作流对空输入有 `if [ -n ]` 守卫）——本轮门禁 = 构建工具自身断言；D1 代门禁脚本对 D2 不适用（标记未换），门禁债同上。
+**回滚**：r61 GPU 镜像 `39c6e70e`（或 d1 镜像 `a4f1c330`）。

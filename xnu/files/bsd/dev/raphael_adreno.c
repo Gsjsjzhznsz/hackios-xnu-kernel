@@ -3538,6 +3538,18 @@ step_core_power(void)
 #define CORE_SQE_ADDRESS        0x01100000u
 #define CORE_SCRATCH_ADDRESS    0x01200000u
 #define CORE_TARGET_ADDRESS     0x10000000u
+/*
+ * D2: the guard.  D1's conviction (2026-11-05, the D1 logdump) put the SMMU's
+ * refusal at address 0x1000 -- an unmapped page 1 of the 3D core's own space,
+ * L1[0] valid, L2[0] zero -- while the hunt over 1245 words of the recorded
+ * command buffers found no 0x3500 and no near-NULL shape at all.  Whatever
+ * fetched there lost the high half of its base pointer; four pages of zeros
+ * at virtual 0 give such a fetch something to read instead of a fatal fault,
+ * so the command processor can go on and the frame can land.  The pages are
+ * ordinary core memory (PTE_CORE), zeroed at allocation by KMA_ZERO.
+ */
+#define CORE_GUARD_ADDRESS      0x00000000u
+#define CORE_GUARD_SIZE         0x4000u
 #define CORE_NOWHERE            0x7f000000u     /* never given anything */
 
 #define GBIF_QSB_SIDE0          (4 * 0x03)      /* of the bus interface (step 6) */
@@ -3614,7 +3626,7 @@ static struct gpu_space second_space = {
  * 0x401 (one entry for streams 0 and 1) and the gmu streams 0x400. */
 static uint32_t core_match = CORE_MATCH, second_match = SECOND_MATCH;
 static bool second_space_is_on, second_stream_is_on;
-static struct gpu_block core_ring, core_sqe, core_scratch, core_target;
+static struct gpu_block core_ring, core_sqe, core_scratch, core_target, core_guard;
 static bool core_space_is_on, core_runs, zap_is_loaded;
 static bool zap_refused_seen;           /* R28k: TrustZone saw the image and said no */
 #define RING_WORDS              (CORE_RING_SIZE / 4)
@@ -3713,7 +3725,8 @@ step_core_space(void)
         if (microcode == NULL || size < 8 || size > 0x40000 ||
             !block_new(&core_space, &core_ring, CORE_RING_ADDRESS, CORE_RING_SIZE, PTE_CORE) ||
             !block_new(&core_space, &core_sqe, CORE_SQE_ADDRESS, (uint32_t)size - 4, PTE_CORE | PTE_READ_ONLY) ||
-            !block_new(&core_space, &core_scratch, CORE_SCRATCH_ADDRESS, 4096, PTE_CORE)) {
+            !block_new(&core_space, &core_scratch, CORE_SCRATCH_ADDRESS, 4096, PTE_CORE) ||
+            !block_new(&core_space, &core_guard, CORE_GUARD_ADDRESS, CORE_GUARD_SIZE, PTE_CORE)) {
                 return false;
         }
         memcpy((void *)core_sqe.memory, microcode + 4, size - 4);       /* the file's first word is not microcode */
