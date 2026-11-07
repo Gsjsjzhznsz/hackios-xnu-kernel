@@ -169,8 +169,10 @@ cp obj/child root/bin/child
 # The data volume into the flash and back (src/var_store.c), and the job that saves it when a run
 # ends: the program and its job together, away from the iOS job list below, which several working
 # copies are editing at once.
-[ -f obj/var_store ] && cp obj/var_store root/bin/
-cp com.hakios.varstore.plist root/LaunchDaemons/
+if [ -f obj/var_store ]; then
+	cp obj/var_store root/bin/
+	cp com.hakios.varstore.plist root/LaunchDaemons/
+fi
 echo "Darwin on hakios: image built $(date '+%Y-%m-%d %H:%M')" > root/etc/motd
 # 300000 bytes, byte i = (i*31 + (i>>8)) & 0xff; init verifies it through read() and mmap()
 python3 -c "import sys; sys.stdout.buffer.write(bytes((i*31 + (i>>8)) & 0xff for i in range(300000)))" > root/share/pattern.bin
