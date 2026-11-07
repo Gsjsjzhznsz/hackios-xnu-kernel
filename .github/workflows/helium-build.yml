@@ -44,13 +44,17 @@ jobs:
         run: |
           set -euo pipefail
           cd helium
-          export PATH="$THEOS/toolchain/linux/iphone/bin:$PATH"
-          test "$(command -v clang)" = "$THEOS/toolchain/linux/iphone/bin/clang"
-          test "$(command -v clang++)" = "$THEOS/toolchain/linux/iphone/bin/clang++"
+          mkdir -p /tmp/helium-clang
+          ln -s "$THEOS/toolchain/linux/iphone/bin/clang" /tmp/helium-clang/clang
+          ln -s "$THEOS/toolchain/linux/iphone/bin/clang++" /tmp/helium-clang/clang++
+          export PATH="/tmp/helium-clang:$PATH"
+          test "$(command -v clang)" = /tmp/helium-clang/clang
+          test "$(command -v clang++)" = /tmp/helium-clang/clang++
+          command -v ld
           xnu/apply.sh
           if ! xnu-deps/setup.sh; then
             echo 'Dependency setup failed; relevant host build logs follow:'
-            for log in xnu-deps/mig-build.log xnu-deps/unifdef-build.log xnu-deps/exporthdrs.log; do
+            for log in xnu-deps/mig-build.log xnu-deps/mm_bootstrap_cmds/config.log xnu-deps/unifdef-build.log xnu-deps/exporthdrs.log; do
               if [ -f "$log" ]; then echo "--- $log ---"; tail -100 "$log"; fi
             done
             exit 1
