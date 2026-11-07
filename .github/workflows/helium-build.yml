@@ -30,11 +30,11 @@ jobs:
           git -C /tmp/theos-sdks sparse-checkout set iPhoneOS16.5.sdk
           mkdir -p "$THEOS/sdks"
           cp -a /tmp/theos-sdks/iPhoneOS16.5.sdk "$THEOS/sdks/"
-          test -x "$THEOS/toolchain/linux/iphone/bin/clang"
-          test -x "$THEOS/toolchain/linux/iphone/bin/ld64"
-          test -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include"
-          "$THEOS/toolchain/linux/iphone/bin/clang" --version
-          "$THEOS/toolchain/linux/iphone/bin/clang" --version | grep -q eabca92
+          test -x "$THEOS/toolchain/linux/iphone/bin/clang" || { echo 'Toolchain clang missing'; exit 1; }
+          test -x "$THEOS/toolchain/linux/iphone/bin/ld" || { echo 'Theos linker ld missing'; exit 1; }
+          test -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include" || { echo 'iOS SDK headers missing'; exit 1; }
+          "$THEOS/toolchain/linux/iphone/bin/clang" --version | tee /tmp/helium-clang-version.txt
+          grep -q eabca92 /tmp/helium-clang-version.txt || { echo 'Unexpected clang build'; exit 1; }
       - name: Fetch pinned Helium source
         run: |
           set -euo pipefail
