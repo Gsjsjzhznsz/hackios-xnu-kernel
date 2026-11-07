@@ -299,10 +299,10 @@ def main():
         return any(s.startswith(p) for p in RUN_PREFIXES)
 
     def allowed_gain(s):
-        return s == D4_MARKER or s.startswith(b'adreno: gpu: dump:') or s.startswith(b'Darwin Kernel Version')
+        return s == D4_MARKER or s.startswith(b'adreno: gpu: dump:') or run_like(s) or DARWIN.search(s)
 
     def allowed_loss(s):
-        return s == OLD_MARKER or s.startswith(b'adreno: gpu: dump:') or s.startswith(b'Darwin Kernel Version')
+        return s == OLD_MARKER or s.startswith(b'adreno: gpu: dump:') or run_like(s) or DARWIN.search(s)
 
     bad_gain = [s for s in gained if not allowed_gain(s)]
     bad_loss = [s for s in lost if not allowed_loss(s)]

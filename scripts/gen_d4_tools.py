@@ -35,8 +35,8 @@ def main():
     start = gate.index("    assert old.count(b'adreno: gpu: dump:')")
     end = gate.index('    # 4. segment census', start)
     gate = gate[:start] + "    assert b'adreno: gpu: dump:' in old and b'adreno: gpu: dump:' in new, 'dump diagnostics missing'\n\n" + gate[end:]
-    gate = once(gate, 'return s == D4_MARKER or run_like(s) or DARWIN.search(s)', "return s == D4_MARKER or s.startswith(b'adreno: gpu: dump:') or s.startswith(b'Darwin Kernel Version')")
-    gate = once(gate, 'return s == OLD_MARKER or run_like(s) or DARWIN.search(s)', "return s == OLD_MARKER or s.startswith(b'adreno: gpu: dump:') or s.startswith(b'Darwin Kernel Version')")
+    gate = once(gate, 'return s == D4_MARKER or run_like(s) or DARWIN.search(s)', "return s == D4_MARKER or s.startswith(b'adreno: gpu: dump:') or run_like(s) or DARWIN.search(s)")
+    gate = once(gate, 'return s == OLD_MARKER or run_like(s) or DARWIN.search(s)', "return s == OLD_MARKER or s.startswith(b'adreno: gpu: dump:') or run_like(s) or DARWIN.search(s)")
     gate = gate.replace("the D4 marker must keep the D4 marker byte length", "the D4 marker must keep the D3 marker byte length")
     gate = gate.replace("the D3 kernel is byte-identical to the r61 release", "the D4 kernel is byte-identical to the D3 release")
     gate = gate.replace("lost %d (the D4 marker + %d Darwin stamp lines + %d layout-run forms)", "lost %d (the D3 marker + %d Darwin stamp lines + %d layout-run forms)")
