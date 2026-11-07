@@ -3543,13 +3543,13 @@ step_core_power(void)
  * refusal at address 0x1000 -- an unmapped page 1 of the 3D core's own space,
  * L1[0] valid, L2[0] zero -- while the hunt over 1245 words of the recorded
  * command buffers found no 0x3500 and no near-NULL shape at all.  Whatever
- * fetched there lost the high half of its base pointer; four pages of zeros
- * at virtual 0 give such a fetch something to read instead of a fatal fault,
- * so the command processor can go on and the frame can land.  The pages are
- * ordinary core memory (PTE_CORE), zeroed at allocation by KMA_ZERO.
+ * fetched there may have lost its base pointer. D2's four-page guard moved
+ * the fault to 0x4600; D3 tests a 2 MiB guard to observe what happens next.
+ * These are ordinary writable core pages (PTE_CORE), initially zeroed by
+ * KMA_ZERO; mapping them can hide invalid accesses and is diagnostic only.
  */
 #define CORE_GUARD_ADDRESS      0x00000000u
-#define CORE_GUARD_SIZE         0x4000u
+#define CORE_GUARD_SIZE         0x200000u
 #define CORE_NOWHERE            0x7f000000u     /* never given anything */
 
 #define GBIF_QSB_SIDE0          (4 * 0x03)      /* of the bus interface (step 6) */

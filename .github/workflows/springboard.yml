@@ -306,6 +306,10 @@ jobs:
           set -euo pipefail
           git clone --depth 1 "https://github.com/${{ inputs.kernel_repo }}.git" hackios
           cd hackios
+          # Pin the source to the workflow dispatch commit, not a moving default branch.
+          git fetch --depth 1 origin "${{ github.sha }}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
           echo "→ 内核树 @ $(git log -1 --format='%h %s')"
           mkdir -p base
           curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o base/daily.img      "$U_DAILY"

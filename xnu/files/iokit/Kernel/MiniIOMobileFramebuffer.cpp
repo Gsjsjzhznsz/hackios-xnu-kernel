@@ -58,15 +58,9 @@ extern "C" void *raphael_display_back(bool preserve);
 extern "C" bool raphael_display_present(void);
 extern "C" void redwood_gpu_report(const char *why);
 
-/* D1's own record, and the kernel-id tool's name for this build (the used-marker
- * tradition: loader_return.c's XNULIVE4 is the precedent).  Same byte length as the
- * R61 marker it replaces, so the round's diff stays the evidence law
- * (bsd/dev/raphael_adreno.c + iokit/Kernel/RedwoodGPU.cpp: the stalled command
- * stream's words read aloud from the submission ledger -- the dump at the swap gate,
- * the 0x3500 hunt, the pool-reuse note) plus this string -- the payload layout the
- * gate pins does not move. */
-__attribute__((used)) static const char d1_stall_mark[] =
-    "D1: the stalled command buffers read aloud, word by word";
+/* D3's same-length generation marker distinguishes the diagnostic build from D2. */
+__attribute__((used)) static const char d3_guard_mark[] =
+    "D3: the 3D core guard covers two megabytes for diagnosis";
 static IOLock *gScanoutLock;
 
 /* IOConnectCallMethod selectors of the framebuffer user client (iOS 16.5) */

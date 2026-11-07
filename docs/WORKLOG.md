@@ -2151,3 +2151,9 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 **与 helium 的差异面（回答"为什么它正常"）**：helium 无 `RedwoodGPU.cpp`（GPU = `hakios.adreno.c` 178 KB + `hakios.gpu.cpp` 单一路径，无 4 MB 池、无池复用、无 Mesa reloc 回填）；我们 = `raphael_adreno.c`（349 KB，SMMU 同源 7/7/11/11）+ `RedwoodGPU.cpp`（60 KB 池化提交）+ Mesa reloc。差异在**提交层**，不在 SMMU 层 —— D3-B 就是对齐的第一步。
 
 **归档**：`d2-logdump.bin`（`86c09d6e`，4 MB，NAS + 桌面 sessions/）、`d2-session.log`（NAS）、`d2.xnup`（`c3e703d6`）、`raphael-xnu-d2-forensic.img`（`cb1f917f`）、判读脚本 `sessions/cmp_d1_d2.py`、`sessions/d2_hits.py`、`sessions/scan_d2.py`。
+
+## D3-A · 本地准备（2026-11-07，尚未构建或点火）
+
+按上述预注册将 `CORE_GUARD_SIZE` 从 `0x4000` 增至 `0x200000`，行为变化仅此一项；源码检查确认 512 个 4 KiB 页覆盖 D2 的 `0x4600`，不与 `0x01000000` 环地址重叠。映射为可写的 2 MiB 内存，可能掩盖非法访问，仅用于诊断。D2 的六个命中来自与停滞 IB1 不匹配的账本记录，不能据此断言其为故障指针或与该故障属于同一次提交。
+
+代际标记已同长换为 `D3: the 3D core guard covers two megabytes for diagnosis`；工作流固定检出 dispatch 对应的提交，防止默认分支移动造成构建错版。尚欠完整门禁验证、构建、产物复核及真机验证；不得将源码检查当作构建或运行验证。设备已通过本机 ADB 5038 端口识别为 `raphael` recovery，未执行重启或刷写。
