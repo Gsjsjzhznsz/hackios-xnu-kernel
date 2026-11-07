@@ -45,12 +45,26 @@ jobs:
           set -euo pipefail
           cd helium
           mkdir -p /tmp/helium-clang
-          ln -s "$THEOS/toolchain/linux/iphone/bin/clang" /tmp/helium-clang/clang
-          ln -s "$THEOS/toolchain/linux/iphone/bin/clang++" /tmp/helium-clang/clang++
+          cat > /tmp/helium-clang/clang <<'SH'
+          #!/bin/bash
+          set -e
+          driver=clang
+          [[ "$(basename "$0")" == clang++ ]] && driver=clang++
+          for arg in "$@"; do
+            case "$arg" in
+              arm64-apple-ios*) exec "$THEOS/toolchain/linux/iphone/bin/$driver" "$@" ;;
+            esac
+          done
+          exec "/usr/bin/$driver" "$@"
+          SH
+          chmod +x /tmp/helium-clang/clang
+          ln -s clang /tmp/helium-clang/clang++
           export PATH="/tmp/helium-clang:$PATH"
           test "$(command -v clang)" = /tmp/helium-clang/clang
           test "$(command -v clang++)" = /tmp/helium-clang/clang++
           command -v ld
+          printf 'int main(void) { return 0; }\n' | clang -x c - -o /tmp/host-compiler-check
+          /tmp/host-compiler-check
           xnu/apply.sh
           if ! xnu-deps/setup.sh; then
             echo 'Dependency setup failed; relevant host build logs follow:'
