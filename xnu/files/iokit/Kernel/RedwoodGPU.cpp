@@ -218,49 +218,28 @@ static struct {
 	uint64_t making;                        /* ... and the time it took to make the others */
 } gGPUStat;
 
-/*
- * D1: the submission ledger the stall reads.  Every submission the core is given leaves
- * its command buffers here -- where each indirect buffer sits in the GPU's address space,
- * how many words it carries, and the buffer it was cut from (its place, its size, and
- * where it is in the kernel's own map) -- plus the buffer ranges the submission's bos
- * named.  When the core stalls, redwood_gpu_report() (raphael_adreno.c) hands the CP's
- * own IB1 reading over, redwood_gpu_dump_stalled_ib() (below) finds the submission whose
- * buffer that is and reads the stalled words aloud from the kernel's map.  The read stays
- * safe for as long as the stall stands: a submission the core never finishes holds its
- * buffers (freeBuffer keeps the memory -- "they stay its own" -- and reap() waits for the
- * fence), so no kernel pointer in the ledger can dangle behind a stalled fence.  Written
- * under gGPULock at submit time; read back at report time with IOLockTryLock (upstream
- * xnu-8796.121.2 IOLocks.h: a macro under IOLOCKS_INLINE, an extern otherwise), because
- * the report arrives both under the lock (gpuWait's no-answer path, submit's ring-full
- * path) and without it (the framebuffer's dropped-frame path).
- */
-#define GPU_STALL_RING  48              /* the last so many submissions the ledger holds */
-#define GPU_STALL_IBS   8               /* the most command buffers of one submission it records */
-#define GPU_STALL_BOS   16              /* the most buffer ranges of one submission it records */
-#define GPU_STALL_WORDS 96              /* the words read around the stop (the pre-registered half-before, half-after) */
-#define GPU_STALL_HUNT_WORDS    16384   /* the most the hunt scans across the record's command buffers */
-#define GPU_STALL_HUNT_HITS     6       /* the most hits of each shape the hunt prints */
+/* D4: bounded metadata only, written and read under gGPULock; no historical KVA. */
+#define GPU_STALL_RING  48
+#define GPU_STALL_IBS   GPU_SUBMIT_CMDS
+#define GPU_STALL_BOS   64
+#define GPU_STALL_PRINT 32              /* maximum matching entries printed */
 struct gpu_stall_range {
-	uint64_t        base, size;             /* a named buffer's place in the GPU's address space */
+	uint64_t        base, size;
+	uint32_t        index;                  /* index in the submitted BO array */
 };
 struct gpu_stall_ib {
-	uint64_t        address;                /* the indirect buffer's place: buffer + submit offset */
-	uint32_t        words;                  /* its length in words */
-	uint64_t        buf_base;               /* the carrying buffer's own place */
-	uint64_t        buf_size;               /* ... and its whole size */
-	uint8_t *       kernel;                 /* the carrying buffer in the kernel's map */
+	uint64_t        address, buf_base, buf_size;
+	uint32_t        words, index;           /* index in the submitted command array */
 };
 struct gpu_stall_record {
-	uint32_t        fence;                  /* the submission's number (0: this slot is empty) */
-	uint32_t        ibs;                    /* recorded of its command buffers... */
-	uint32_t        ib_all;                 /* ... of how many it had (beyond GPU_STALL_IBS: counted, not recorded) */
-	uint32_t        bos;                    /* recorded of its buffer ranges... */
-	uint32_t        bo_all;                 /* ... of how many the submission named */
+	uint32_t        fence;                  /* 0: empty */
+	uint32_t        ibs, ib_all;
+	uint32_t        bos, bo_all, bo_invalid, bo_omitted;
 	struct gpu_stall_ib     ib[GPU_STALL_IBS];
 	struct gpu_stall_range  bo[GPU_STALL_BOS];
 };
 static struct gpu_stall_record gGPUStall[GPU_STALL_RING];
-static uint32_t gGPUStallAt;            /* where the next entry goes; wraps at GPU_STALL_RING, never %'d off a wrapped uint32 */
+static uint32_t gGPUStallAt;            /* next slot, wrapped at GPU_STALL_RING */
 
 /* Wait for the 3D core to be done with submission `fence`; with the lock held, which is let go of while waiting. */
 static bool
@@ -300,206 +279,90 @@ gpuWait(uint32_t fence, uint64_t milliseconds)
 }
 
 
-/*
- * D1: the stalled command buffer's words, read aloud.  raphael_adreno.c's report reads
- * the command processor's own IB1 registers and hands them here; this side holds the
- * submission ledger (gGPUStall: every submission left its command buffers' places and
- * lengths, and the carrying buffers' kernel addresses), so the words the core stalled on
- * can be named and read from the kernel's own map.  One dump per boot: every caller of
- * redwood_gpu_report() is gated by a static already, and this one is the dump's own.
- *
- * The lock: the report comes from the wait paths with gGPULock held and from the
- * framebuffer's dropped-frame path without it, so the ledger is read under
- * IOLockTryLock -- taken, the read is clean; refused, the read goes on unlocked and says
- * so (the ring's writer is submit() alone, and the first dropped frame's report fires
- * while the ring's tail still holds the stalled submission).
- *
- * The hunt: the SMMU refused 0x3500 three generations running (R39 shutdown, R41 reset,
- * D0b runtime), so the words are scanned for that exact value and for its pointer shape
- * (a 64-bit operand whose high word is zero and whose low word is near NULL -- an
- * unpatched intra-buffer offset on a pool-reused buffer is the family suspect), and
- * every hit is classified against the ranges the submission itself named: inside one of
- * its buffers, or inside no range at all.
- */
+/* The report may already hold gGPULock; never wait for it or inspect the ledger without it. */
 extern "C" void
 redwood_gpu_dump_stalled_ib(uint64_t base, uint32_t rem_words)
 {
-	static bool said;
-	bool locked;
-	const struct gpu_stall_record * found = NULL, * newest = NULL;
-	uint32_t found_ib = 0, held = 0;
+	static bool said;                        /* protected by gGPULock */
+	uint32_t held = 0, candidates = 0, invalid = 0, omitted = 0, truncated = 0, incomplete = 0;
+	uint32_t matches[3] = {}, printed[3] = {}, total_printed = 0;
+	bool candidate[GPU_STALL_RING] = {};
 
-	if (said || gGPULock == NULL) {
+	if (gGPULock == NULL || !IOLockTryLock(gGPULock)) {
+		printf("adreno: gpu: dump: ledger skipped: gGPULock unavailable; one-shot not consumed, another report is not guaranteed\n");
+		return;
+	}
+	if (said) {
+		IOLockUnlock(gGPULock);
 		return;
 	}
 	said = true;
-	locked = IOLockTryLock(gGPULock);
-	if (!locked) {
-		printf("adreno: gpu: dump: the ledger's read runs without the lock (the report's own path holds it); the words are read as they lay\n");
-	}
-	for (uint32_t i = 0; i < GPU_STALL_RING; i++) {         /* newest first */
-		const struct gpu_stall_record * r =
-		    &gGPUStall[(gGPUStallAt + GPU_STALL_RING - 1 - i) % GPU_STALL_RING];
+	printf("adreno: gpu: dump: IB1 %#llx, %u words remaining; registers sampled before ledger lock, ledger may have changed or recovery occurred; matches are evidence, not proof\n",
+	    base, rem_words);
+	/* Exact IBs take priority over containing IBs, then BO ranges. */
+	for (uint32_t kind = 0; kind < 3; kind++) {
+		for (uint32_t i = 0; i < GPU_STALL_RING; i++) { /* newest first */
+			const struct gpu_stall_record * r =
+			    &gGPUStall[(gGPUStallAt + GPU_STALL_RING - 1 - i) % GPU_STALL_RING];
+			bool shown = false;
 
-		if (r->fence == 0) {
-			continue;
-		}
-		held++;
-		if (newest == NULL) {
-			newest = r;
-		}
-		if (found == NULL) {
-			for (uint32_t j = 0; j < r->ibs; j++) {
-				if (r->ib[j].address == base) {
-					found = r;
-					found_ib = j;
-					break;
-				}
-			}
-		}
-	}
-	if (held == 0) {
-		printf("adreno: gpu: dump: the ledger is empty -- no submission the core was given is on record; the words of %#llx stay unread\n", base);
-		if (locked) {
-			IOLockUnlock(gGPULock);
-		}
-		return;
-	}
-	if (found == NULL) {
-		found = newest;
-		printf("adreno: gpu: dump: the CP's first command buffer %#llx is not in the ledger's %u records; the newest (submission %u) is read instead\n",
-		    base, held, newest->fence);
-	} else {
-		printf("adreno: gpu: dump: submission %u names the CP's first command buffer %#llx (its command buffer %u of the %u recorded)\n",
-		    found->fence, base, found_ib, found->ibs);
-	}
-	printf("adreno: gpu: dump: submission %u: %u of %u command buffers recorded, %u of %u buffer ranges recorded\n",
-	    found->fence, found->ibs, found->ib_all, found->bos, found->bo_all);
-	for (uint32_t j = 0; j < found->ibs; j++) {
-		printf("adreno: gpu: dump:   command buffer %u at %#llx, %u words (from the buffer at %#llx, %llu B, kernel %p)\n",
-		    j, found->ib[j].address, found->ib[j].words, found->ib[j].buf_base, found->ib[j].buf_size,
-		    found->ib[j].kernel);
-	}
-	for (uint32_t i = 0; i < GPU_STALL_RING; i++) {         /* the pool's reuse: who else ran from this place */
-		const struct gpu_stall_record * r =
-		    &gGPUStall[(gGPUStallAt + GPU_STALL_RING - 1 - i) % GPU_STALL_RING];
-
-		if (r->fence == 0 || r == found) {
-			continue;
-		}
-		for (uint32_t j = 0; j < r->ibs; j++) {
-			if (r->ib[j].address == base) {
-				printf("adreno: gpu: dump:   the same place was submission %u's command buffer %u too (the pool gave it out again)\n", r->fence, j);
-				break;
-			}
-		}
-	}
-	const struct gpu_stall_ib * ib = &found->ib[found_ib];
-	unsigned long total = ib->words, done, scanned = 0, all_words = 0, hits = 0;
-	bool clamped = false;
-
-	for (uint32_t j = 0; j < found->ibs; j++) {
-		all_words += found->ib[j].words;
-	}
-	if (ib->kernel == NULL || total == 0) {
-		printf("adreno: gpu: dump: the carrying buffer's kernel address is gone from the record (%u words recorded); the words stay unread\n",
-		    found->ibs);
-	} else {
-		unsigned long start, end;
-		const uint32_t * w = (const uint32_t *)(ib->kernel + (unsigned long)(ib->address - ib->buf_base));
-
-		if ((uint64_t) rem_words > total) {
-			printf("adreno: gpu: dump: the register says %u words to go but the ledger says the buffer carries %lu: they disagree, the buffer is read from its first word\n",
-			    rem_words, total);
-			done = 0;
-		} else {
-			done = total - rem_words;
-			printf("adreno: gpu: dump: the CP stopped %lu words into command buffer %u (the register said %u to go of %lu)\n",
-			    done, found_ib, rem_words, total);
-		}
-		start = done >= GPU_STALL_WORDS / 2 ? done - GPU_STALL_WORDS / 2 : 0;
-		end = start + GPU_STALL_WORDS;
-		if (end > total) {
-			end = total;
-		}
-		if (end - start < GPU_STALL_WORDS && start > 0) {
-			start = end > GPU_STALL_WORDS ? end - GPU_STALL_WORDS : 0;
-		}
-		printf("adreno: gpu: dump: the words around the stop, %lu of them from word %lu (the stop is word %lu):\n",
-		    end - start, start, done);
-		for (unsigned long i = start; i < end; i += 8) {
-			unsigned long n = end - i < 8 ? end - i : 8;
-
-			printf("adreno: gpu: dump:   [%4lu]", i);
-			for (unsigned long k = 0; k < n; k++) {
-				printf(" %08x", w[i + k]);
-			}
-			printf("\n");
-		}
-	}
-	/* the hunt: 0x3500 and its pointer shape, across the record's own command buffers */
-	for (uint32_t j = 0; j < found->ibs && scanned < GPU_STALL_HUNT_WORDS; j++) {
-		const uint32_t * h;
-		unsigned long n;
-
-		if (found->ib[j].kernel == NULL || found->ib[j].words == 0) {
-			continue;
-		}
-		h = (const uint32_t *)(found->ib[j].kernel +
-		    (unsigned long)(found->ib[j].address - found->ib[j].buf_base));
-		n = found->ib[j].words;
-		if (scanned + n > GPU_STALL_HUNT_WORDS) {
-			n = GPU_STALL_HUNT_WORDS - scanned;
-			clamped = true;
-		}
-		scanned += n;
-		for (unsigned long k = 0; k < n; k++) {
-			uint64_t shaped = 0;
-
-			if (h[k] == 0x3500) {
-				shaped = 0x3500;
-			} else if (h[k] != 0 && h[k] < 0x10000 && k + 1 < n && h[k + 1] == 0) {
-				shaped = h[k];          /* a 64-bit operand whose high word is zero, whose low word is near NULL */
-			}
-			if (shaped == 0 || hits >= GPU_STALL_HUNT_HITS) {
+			if (r->fence == 0) {
 				continue;
 			}
-			hits++;
-			uint32_t which = 0;
-			uint64_t off = 0;
-			bool inside = false;
+			if (kind == 0) {
+				held++;
+				invalid += r->bo_invalid;
+				omitted += r->bo_omitted;
+				truncated += r->ibs < r->ib_all;
+				incomplete += r->ibs < r->ib_all || r->bo_invalid != 0 || r->bo_omitted != 0;
+			}
+			uint32_t n = kind == 2 ? r->bos : r->ibs;
+			for (uint32_t j = 0; j < n; j++) {
+				const struct gpu_stall_ib * ib = kind == 2 ? NULL : &r->ib[j];
+				const struct gpu_stall_range * bo = kind == 2 ? &r->bo[j] : NULL;
+				bool match = kind == 0 ? base == ib->address : kind == 1 ?
+				    base > ib->address && base - ib->address < (uint64_t) ib->words * 4 :
+				    base >= bo->base && base - bo->base < bo->size;
 
-			for (uint32_t q = 0; q < found->bos; q++) {
-				if (shaped >= found->bo[q].base && shaped < found->bo[q].base + found->bo[q].size) {
-					which = q;
-					off = shaped - found->bo[q].base;
-					inside = true;
-					break;
+				if (!match) {
+					continue;
+				}
+				if (!candidate[i]) {
+					candidate[i] = true;
+					candidates++;
+				}
+				matches[kind]++;
+				if (total_printed >= GPU_STALL_PRINT) {
+					continue;
+				}
+				printed[kind]++;
+				total_printed++;
+				shown = true;
+				if (kind == 2) {
+					printf("adreno: gpu: dump: candidate fence %u: BO range index %u, base %#llx size %llu B\n",
+					    r->fence, bo->index, bo->base, bo->size);
+				} else {
+					printf("adreno: gpu: dump: candidate fence %u: %s cmd index %u, IB base %#llx size %llu B, BO base %#llx size %llu B\n",
+					    r->fence, kind == 0 ? "exact" : "range", ib->index, ib->address,
+					    (uint64_t) ib->words * 4, ib->buf_base, ib->buf_size);
 				}
 			}
-			if (inside) {
-				printf("adreno: gpu: dump:   hunt: command buffer %u word %lu = %#llx: inside the submission's buffer range %u at +%#llx (context %#x %#x | %#x %#x)\n",
-				    j, k, shaped, which, off,
-				    k >= 2 ? h[k - 2] : 0, k >= 1 ? h[k - 1] : 0,
-				    k + 1 < n ? h[k + 1] : 0, k + 2 < n ? h[k + 2] : 0);
-			} else {
-				printf("adreno: gpu: dump:   hunt: command buffer %u word %lu = %#llx: in no range the submission named (context %#x %#x | %#x %#x)\n",
-				    j, k, shaped,
-				    k >= 2 ? h[k - 2] : 0, k >= 1 ? h[k - 1] : 0,
-				    k + 1 < n ? h[k + 1] : 0, k + 2 < n ? h[k + 2] : 0);
+			if (shown) {
+				printf("adreno: gpu: dump: fence %u coverage: commands %u/%u (truncated %s), BO ranges %u/%u (invalid %u, omitted by cap %u, truncated %s)\n",
+				    r->fence, r->ibs, r->ib_all, r->ibs < r->ib_all ? "yes" : "no",
+				    r->bos, r->bo_all, r->bo_invalid, r->bo_omitted, r->bo_omitted ? "yes" : "no");
 			}
 		}
 	}
-	if (clamped) {
-		printf("adreno: gpu: dump: the hunt scanned %lu of %lu words across the record's command buffers (the cap stopped it): %lu hits\n",
-		    scanned, all_words, hits);
-	} else {
-		printf("adreno: gpu: dump: the hunt scanned %lu of %lu words across the record's command buffers: %lu hits\n",
-		    scanned, all_words, hits);
+	printf("adreno: gpu: dump: %u records of at most %u, %u candidate submissions; %u incomplete records (%u with truncated commands), %u invalid BOs, %u BOs omitted by cap\n",
+	    held, GPU_STALL_RING, candidates, incomplete, truncated, invalid, omitted);
+	for (uint32_t kind = 0; kind < 3; kind++) {
+		printf("adreno: gpu: dump: %s matches %u, printed %u, omitted from output %u\n",
+		    kind == 0 ? "exact" : kind == 1 ? "IB" : "BO",
+		    matches[kind], printed[kind], matches[kind] - printed[kind]);
 	}
-	if (locked) {
-		IOLockUnlock(gGPULock);
-	}
+	printf("adreno: gpu: dump: this bounded history cannot rule out missing evidence; historical command words are not read\n");
+	IOLockUnlock(gGPULock);
 }
 
 bool
@@ -1180,7 +1043,6 @@ RedwoodGPUUserClient::submit(struct msm_gem_submit * request)
 	struct msm_gem_submit_cmd * cmds = NULL;
 	uint64_t addresses[GPU_SUBMIT_CMDS];
 	uint32_t words[GPU_SUBMIT_CMDS], count = 0;
-	struct gpu_stall_ib stall_ib[GPU_STALL_IBS];   /* D1: the first GPU_STALL_IBS command buffers, for the stall ledger; every slot read is written this submission */
 	uint64_t began, nanos, again;
 	IOReturn ret = kIOReturnBadArgument;
 
@@ -1251,14 +1113,6 @@ RedwoodGPUUserClient::submit(struct msm_gem_submit * request)
 		}
 		addresses[count] = b->address + cmds[i].submit_offset;
 		words[count] = cmds[i].size / 4;
-		if (count < GPU_STALL_IBS) {
-			/* D1: the command buffer enters the stall ledger with its carrying buffer */
-			stall_ib[count].address = addresses[count];
-			stall_ib[count].words = words[count];
-			stall_ib[count].buf_base = b->address;
-			stall_ib[count].buf_size = b->size;
-			stall_ib[count].kernel = b->kernel;
-		}
 		count++;
 	}
 	request->fence = redwood_gpu_submit(addresses, words, count);
@@ -1276,33 +1130,39 @@ RedwoodGPUUserClient::submit(struct msm_gem_submit * request)
 		}
 	}
 
-	/*
-	 * D1: the submission enters the stall ledger.  Under the lock, as everything here
-	 * is; a slot of the ring is overwritten in place, the index wraps at the ring's own
-	 * bound (a uint32 %'d off a power of two that is not its divisor would wander at the
-	 * wrap).  Only a submission the core was actually given is recorded: fence 0 means
-	 * the ring never took it.
-	 */
+	/* Successful submissions only. Rebuild the static slot under gGPULock. */
 	if (request->fence != 0) {
 		struct gpu_stall_record * r = &gGPUStall[gGPUStallAt];
 
-		/*
-		 * No zeroing first: every field the stall's dump ever reads (fence, ibs,
-		 * ib_all, bos, bo_all, and the ib[]/bo[] entries below their own counts)
-		 * is written here before the ring moves on -- a reused slot's stale tail
-		 * is never read, the loops bound by the record's own counts.
-		 */
 		r->fence = request->fence;
+		r->ibs = 0;
 		r->ib_all = count;
-		r->ibs = count < GPU_STALL_IBS ? count : GPU_STALL_IBS;
-		for (uint32_t i = 0; i < r->ibs; i++) {
-			r->ib[i] = stall_ib[i];
-		}
+		r->bos = 0;
 		r->bo_all = request->nr_bos;
-		for (uint32_t i = 0; i < request->nr_bos && r->bos < GPU_STALL_BOS; i++) {
-			struct gpu_buffer * b = buffer(bos[i].handle);
+		r->bo_invalid = 0;
+		r->bo_omitted = 0;
+		for (uint32_t i = 0; i < request->nr_cmds; i++) {
+			if (cmds[i].type == MSM_SUBMIT_CMD_BUF && r->ibs < GPU_STALL_IBS) {
+				struct gpu_buffer * b = &fBuffers[bos[cmds[i].submit_idx].handle - 1];
+				struct gpu_stall_ib * ib = &r->ib[r->ibs++];
 
-			if (b != NULL) {
+				ib->index = i;
+				ib->address = b->address + cmds[i].submit_offset;
+				ib->words = cmds[i].size / 4;
+				ib->buf_base = b->address;
+				ib->buf_size = b->size;
+			}
+		}
+		for (uint32_t i = 0; i < request->nr_bos; i++) {
+			uint32_t handle = bos[i].handle;
+			struct gpu_buffer * b = handle != 0 && handle <= GPU_BUFFERS ? &fBuffers[handle - 1] : NULL;
+
+			if (b == NULL || b->memory == NULL) {
+				r->bo_invalid++;
+			} else if (r->bos == GPU_STALL_BOS) {
+				r->bo_omitted++;
+			} else {
+				r->bo[r->bos].index = i;
 				r->bo[r->bos].base = b->address;
 				r->bo[r->bos].size = b->size;
 				r->bos++;

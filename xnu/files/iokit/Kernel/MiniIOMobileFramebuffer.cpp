@@ -58,9 +58,9 @@ extern "C" void *raphael_display_back(bool preserve);
 extern "C" bool raphael_display_present(void);
 extern "C" void redwood_gpu_report(const char *why);
 
-/* D3's same-length generation marker distinguishes the diagnostic build from D2. */
-__attribute__((used)) static const char d3_guard_mark[] =
-    "D3: the 3D core guard covers two megabytes for diagnosis";
+/* D4's same-length generation marker identifies the ledger diagnostic build. */
+__attribute__((used)) static const char d4_ledger_mark[] =
+    "D4: the GPU ledger reports its candidates safely at last";
 static IOLock *gScanoutLock;
 
 /* IOConnectCallMethod selectors of the framebuffer user client (iOS 16.5) */
