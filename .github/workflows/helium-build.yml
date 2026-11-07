@@ -1,0 +1,76 @@
+name: Helium raphael kernel build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 200
+    env:
+      THEOS: /home/runner/theos
+      HELIUM_SHA: 57722468a3774e2ec60017705ec356ae9b31f40e
+      JOBS: '4'
+    steps:
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential clang lld llvm flex bison m4 perl python3 python3-dev autoconf automake libtool libtinfo6 xz-utils uuid-dev 7zip ripgrep
+      - name: Prepare Theos and SDK
+        run: |
+          set -euo pipefail
+          git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
+          mkdir -p "$THEOS/toolchain"
+          curl -fsSL --retry 3 https://github.com/L1ghtmann/llvm-project/releases/download/main-update_3-eabca92/iOSToolchain-x86_64.tar.xz | tar -xJ -C "$THEOS/toolchain/"
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/theos-sdks
+          git -C /tmp/theos-sdks sparse-checkout set iPhoneOS16.5.sdk
+          mkdir -p "$THEOS/sdks"
+          cp -a /tmp/theos-sdks/iPhoneOS16.5.sdk "$THEOS/sdks/"
+          test -x "$THEOS/toolchain/linux/iphone/bin/clang"
+          test -x "$THEOS/toolchain/linux/iphone/bin/ld64"
+          test -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include"
+          "$THEOS/toolchain/linux/iphone/bin/clang" --version
+          "$THEOS/toolchain/linux/iphone/bin/clang" --version | grep -q eabca92
+      - name: Fetch pinned Helium source
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch raphael-bringup https://github.com/HeliumStudio-Dev/hackios-xnu-kernel.git helium
+          test "$(git -C helium rev-parse HEAD)" = "$HELIUM_SHA"
+      - name: Build raphael kernel
+        run: |
+          set -euo pipefail
+          cd helium
+          export PATH="$THEOS/toolchain/linux/iphone/bin:$PATH"
+          test "$(command -v clang)" = "$THEOS/toolchain/linux/iphone/bin/clang"
+          test "$(command -v clang++)" = "$THEOS/toolchain/linux/iphone/bin/clang++"
+          xnu/apply.sh
+          xnu-deps/setup.sh
+          export CC="$THEOS/toolchain/linux/iphone/bin/clang"
+          python3 tools/mk-ath10k.py
+          test -s xnu-deps/build/ath10k/out/ath10k.o
+          export WIFI_OBJECT="$PWD/xnu-deps/build/ath10k/out/ath10k.o"
+          ./xnu-build.sh -j4 -k BUILD_DSYM=0
+          K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
+          test -s "$K"
+          python3 - "$K" <<'PY'
+          import hashlib, pathlib, struct, sys
+          p = pathlib.Path(sys.argv[1])
+          data = p.read_bytes()
+          assert struct.unpack_from('<II', data) == (0xfeedfacf, 0x100000c), 'not ARM64 Mach-O'
+          assert b'hakios' in data.lower(), 'missing HakiOS marker'
+          print('Helium kernel bytes:', len(data), 'sha256:', hashlib.sha256(data).hexdigest())
+          PY
+          mkdir -p "$GITHUB_WORKSPACE/output"
+          cp "$K" "$GITHUB_WORKSPACE/output/helium-raphael-kernel.bin"
+          sha256sum "$GITHUB_WORKSPACE/output/helium-raphael-kernel.bin" > "$GITHUB_WORKSPACE/output/SHA256SUMS"
+      - name: Upload kernel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: helium-raphael-kernel
+          path: output/
+          if-no-files-found: error
+          retention-days: 3
