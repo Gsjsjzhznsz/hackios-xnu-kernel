@@ -1,0 +1,116 @@
+name: Helium raphael GLES userspace
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gles:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 200
+    env:
+      THEOS: /home/runner/theos
+      HELIUM_SHA: 57722468a3774e2ec60017705ec356ae9b31f40e
+      JOBS: '4'
+    steps:
+      - name: Install host dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential clang lld llvm flex bison m4 perl python3 python3-dev python3-venv autoconf automake libtool libtinfo6 xz-utils uuid-dev 7zip ripgrep meson ninja-build pkg-config patch
+      - name: Prepare toolchain and pinned source
+        run: |
+          set -euo pipefail
+          git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
+          mkdir -p "$THEOS/toolchain"
+          curl -fsSL --retry 3 -o /tmp/ios-toolchain.tar.xz https://github.com/L1ghtmann/llvm-project/releases/download/main-update_3-eabca92/iOSToolchain-x86_64.tar.xz
+          printf '%s  %s\n' cc9fbc7f8a3f9336f926cd4fb7cc2233a17b2ba40504cc8c0ff3211bd9df27e3 /tmp/ios-toolchain.tar.xz | sha256sum -c -
+          tar -xJf /tmp/ios-toolchain.tar.xz -C "$THEOS/toolchain/"
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/theos-sdks
+          git -C /tmp/theos-sdks sparse-checkout set iPhoneOS16.5.sdk
+          mkdir -p "$THEOS/sdks"
+          cp -a /tmp/theos-sdks/iPhoneOS16.5.sdk "$THEOS/sdks/"
+          test -x "$THEOS/toolchain/linux/iphone/bin/clang"
+          test -x "$THEOS/toolchain/linux/iphone/bin/ld"
+          test -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include"
+          git clone --depth 1 --branch raphael-bringup https://github.com/HeliumStudio-Dev/hackios-xnu-kernel.git helium
+          test "$(git -C helium rev-parse HEAD)" = "$HELIUM_SHA"
+      - name: Build Mesa and project libraries
+        run: |
+          set -euo pipefail
+          cd helium
+          mkdir -p /tmp/helium-clang
+          cat > /tmp/helium-clang/clang <<'SH'
+          #!/bin/bash
+          set -e
+          driver=clang
+          [[ "$(basename "$0")" == clang++ ]] && driver=clang++
+          for arg in "$@"; do
+            case "$arg" in arm64-apple-ios*) exec "$THEOS/toolchain/linux/iphone/bin/$driver" "$@" ;; esac
+          done
+          exec "/usr/bin/$driver" "$@"
+          SH
+          chmod +x /tmp/helium-clang/clang
+          ln -s clang /tmp/helium-clang/clang++
+          export PATH="/tmp/helium-clang:/usr/bin:/bin"
+          if ! xnu-deps/setup.sh --stage1; then
+            for log in xnu-deps/mig-build.log xnu-deps/mm_bootstrap_cmds/config.log xnu-deps/tcsh-build.log; do
+              if [ -f "$log" ]; then echo "--- $log ---"; tail -80 "$log"; fi
+            done
+            exit 1
+          fi
+          source ./xnu-env.sh
+          export CC=/usr/bin/clang CXX=/usr/bin/clang++ AR=/usr/bin/llvm-ar NM=/usr/bin/llvm-nm RANLIB=/usr/bin/llvm-ranlib STRIP=/usr/bin/llvm-strip
+          for x in "$CC" "$CXX" "$AR" "$NM" "$RANLIB" "$STRIP"; do test -x "$x"; done
+          for x in llvm-ar llvm-ranlib llvm-strip; do test "$(command -v "$x")" = "/usr/bin/$x"; done
+          for x in nm install_name_tool; do test "$(readlink -f "$(command -v "$x")")" = "$(readlink -f "$THEOS/toolchain/linux/iphone/bin/$x")"; done
+          if ! DRIVERS=softpipe,freedreno tools/mk-mesa.sh; then
+            for log in xnu-deps/build/mesa/meson-setup.log xnu-deps/build/mesa/ninja.log; do
+              if [ -f "$log" ]; then echo "--- $log ---"; tail -100 "$log"; fi
+            done
+            exit 1
+          fi
+          M="$PWD/xnu-deps/build/mesa/out"
+          test -s "$M/libOSMesa.8.dylib" && test -s "$M/gl.xml" && test -s "$M/exported-gl.txt"
+          grep -qx glClear "$M/exported-gl.txt"
+          mkdir -p userland/obj "$GITHUB_WORKSPACE/output"
+          DYN=(xnu-clang -arch arm64 -isysroot "$THEOS/sdks/iPhoneOS16.5.sdk" -O1)
+          O="$GITHUB_WORKSPACE/output"
+          ./userland/mkeagl.py userland/src/eagl_slots.txt "$M/gl.xml" "$M/exported-gl.txt" userland/src/eagl.c > userland/obj/eagl_gen.h
+          "${DYN[@]}" -dynamiclib -install_name /redwood/lib/libhakios.gl.dylib -Iuserland/obj -framework CoreFoundation -framework IOKit -framework IOSurface -lobjc "$M/libOSMesa.8.dylib" -o "$O/libhakios.gl.dylib" userland/src/eagl.c userland/src/gl_osmesa.c
+          "${DYN[@]}" -dynamiclib -install_name /redwood/lib/libhakios.dylib -framework CoreFoundation -framework IOKit -lobjc -o "$O/libhakios.dylib" userland/src/inject.c
+          "${DYN[@]}" -dynamiclib -install_name /redwood/lib/libhakios.sb.dylib -framework CoreFoundation -framework IOKit -lobjc -o "$O/libhakios.sb.dylib" userland/src/inject_sb.c
+          "${DYN[@]}" -O2 -dynamiclib -install_name /redwood/lib/libhakios.media.dylib -framework CoreFoundation -framework CoreMedia -framework CoreVideo -framework IOSurface -lobjc -o "$O/libhakios.media.dylib" userland/src/inject_media.c userland/src/camera_device.c userland/src/camera_isp.c
+          "${DYN[@]}" -dynamiclib -install_name /redwood/lib/libhakios.tweaks.dylib -framework CoreFoundation -lobjc -o "$O/libhakios.tweaks.dylib" userland/src/inject_tweaks.c
+          "${DYN[@]}" -dynamiclib -install_name /redwood/lib/libhakios.app.dylib -lobjc -o "$O/libhakios.app.dylib" userland/src/inject_app.c
+          "${DYN[@]}" -framework CoreFoundation -framework IOKit "$M/libOSMesa.8.dylib" -o "$O/gl_test" userland/src/gl_test.c
+          install -m 0644 "$M/libOSMesa.8.dylib" "$O/libOSMesa.8.dylib"
+          python3 - "$O" <<'PY'
+          import pathlib, struct, sys
+          root = pathlib.Path(sys.argv[1])
+          libraries = ('libOSMesa.8.dylib', 'libhakios.gl.dylib', 'libhakios.dylib', 'libhakios.sb.dylib', 'libhakios.media.dylib', 'libhakios.tweaks.dylib', 'libhakios.app.dylib')
+          for name in (*libraries, 'gl_test'):
+              data = (root / name).read_bytes()
+              magic, cpu, _, filetype = struct.unpack_from('<IIII', data)
+              assert (magic, cpu, filetype) == (0xfeedfacf, 0x100000c, 6 if name in libraries else 2), name
+          PY
+          cd "$O"
+          sha256sum libOSMesa.8.dylib libhakios.gl.dylib libhakios.dylib libhakios.sb.dylib libhakios.media.dylib libhakios.tweaks.dylib libhakios.app.dylib gl_test > SHA256SUMS
+      - name: Upload project userspace binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: helium-gles-userspace
+          path: |
+            output/libOSMesa.8.dylib
+            output/libhakios.gl.dylib
+            output/libhakios.dylib
+            output/libhakios.sb.dylib
+            output/libhakios.media.dylib
+            output/libhakios.tweaks.dylib
+            output/libhakios.app.dylib
+            output/gl_test
+            output/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 3
