@@ -2156,4 +2156,10 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 
 按上述预注册将 `CORE_GUARD_SIZE` 从 `0x4000` 增至 `0x200000`，行为变化仅此一项；源码检查确认 512 个 4 KiB 页覆盖 D2 的 `0x4600`，不与 `0x01000000` 环地址重叠。映射为可写的 2 MiB 内存，可能掩盖非法访问，仅用于诊断。D2 的六个命中来自与停滞 IB1 不匹配的账本记录，不能据此断言其为故障指针或与该故障属于同一次提交。
 
-代际标记已同长换为 `D3: the 3D core guard covers two megabytes for diagnosis`；工作流固定检出 dispatch 对应的提交，防止默认分支移动造成构建错版。首个 CI run 42337726873 因门禁未要求机器代码变化主动取消；补充了编译树源码一致性、守卫常量检查及代码段变化检查，标记替换负控制应失败。代码变化不证明守卫生效，真机页表日志仍是运行证据。尚欠真实构建、产物复核及真机验证；设备通过本机 ADB 5038 端口识别为 `raphael` recovery。
+代际标记已同长换为 `D3: the 3D core guard covers two megabytes for diagnosis`；工作流固定检出 dispatch 对应的提交，防止默认分支移动造成构建错版。首个 CI run 42337726873 因门禁未要求机器代码变化主动取消；补充编译树源码一致性、守卫常量检查及代码段变化检查，标记替换负控制失败。代码变化不证明守卫生效，仍需真机页表日志。
+
+**D3 真机（2026-11-07）**：CI run 42338620590（head `45ad6d7`）全绿。GPU 镜像 `ea07f5e8a9ec582449a7518f537cd6b8b7a57a2062457f7307503974f68c95cf`，内核 `58ae90f5b3beeba742580e9fac723fb3eeab5d58766e65c1f8983f1db55db9c6`；会话包 `7296bde85788793397b83e7215f18b4a3a347e2e8cc5ac665b8f49c8663dedf8`。用户授权后刷 boot，XNULOADER 三件 stage 全 OKAY，12:43:15 run，605 s 后 stop/logdump；`d3-logdump.bin` 4 MiB，SHA256 `aeaf1d2892c86d76544d0c89b309ddd6780c87a64c6669e1aa4dddc6220851c8`。用户证词：仍黑屏。
+
+**有效段判读**：仅取首个 `== END OF LOG ==` 之前；后面是历史残留。`[83.120162]` 记录 `the 3D core sees 0..0x1fffff`，确认 2 MiB 守卫映射在位。`[160.083162]` swap 30 超时，submission 32 / done 29；`[160.097921]` SMMU status `0x80000402`、address `0x1016e00`、syndrome `0x20003`，walk `L2[8]` 有表但 `L3[22]=0`。地址高于守卫，也在 ring `0x1000000..0x1007fff` 外；两次故障地址不同不足以断言同一访问者、线性访问或根因。有效段报告 frame 34 及 AppleLogo dismiss，但不等于成功上屏；没有实际 panic 的证据。`[696.089008]` 结束前仍 busy。
+
+**取证边界**：CP IB1 `0x20658000` 不在 32 条账本记录，回退读 submission 32，记录 3/3 命令缓冲但只保留 16/62 ranges。猎杀 4379 词 6 命中属于回退记录，不可判为当前故障提交或实际指针。下一轮优先修正停滞提交的记录匹配与范围覆盖，再追踪访问来源；不再单凭扩守卫推断修复。
