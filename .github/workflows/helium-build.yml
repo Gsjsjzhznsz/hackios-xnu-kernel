@@ -88,9 +88,26 @@ jobs:
           assert b'hakios' in data.lower(), 'missing HakiOS marker'
           print('Helium kernel bytes:', len(data), 'sha256:', hashlib.sha256(data).hexdigest())
           PY
-          mkdir -p "$GITHUB_WORKSPACE/output"
+          mkdir -p "$GITHUB_WORKSPACE/output" userland/obj
           cp "$K" "$GITHUB_WORKSPACE/output/helium-raphael-kernel.bin"
-          sha256sum "$GITHUB_WORKSPACE/output/helium-raphael-kernel.bin" > "$GITHUB_WORKSPACE/output/SHA256SUMS"
+          source ./xnu-env.sh
+          cd userland
+          CC='xnu-clang -arch arm64 -Os -static -nostdlib -ffreestanding -fno-stack-protector -fno-builtin -Wall -Wextra'
+          LD='-Wl,-e,_start -Wl,-pagezero_size,0x100000000'
+          $CC -Ilibmini -c libmini/mini.c -o obj/mini.o
+          $CC -c libmini/start.S -o obj/start.o
+          for prog in init stage0 child; do
+            $CC -Ilibmini $LD -o "$GITHUB_WORKSPACE/output/helium-$prog" "src/$prog.c" obj/mini.o obj/start.o
+          done
+          python3 - "$GITHUB_WORKSPACE/output/helium-init" <<'PY'
+          import pathlib, sys
+          data = pathlib.Path(sys.argv[1]).read_bytes()
+          assert b'kern.hakios_switch_root' in data
+          assert b'the prepared system image is the root, read from flash' in data
+          print('Prepared-system init strings verified')
+          PY
+          cd "$GITHUB_WORKSPACE/output"
+          sha256sum helium-raphael-kernel.bin helium-init helium-stage0 helium-child > SHA256SUMS
       - name: Upload kernel artifact
         uses: actions/upload-artifact@v4
         with:
