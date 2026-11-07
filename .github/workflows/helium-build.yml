@@ -48,7 +48,13 @@ jobs:
           test "$(command -v clang)" = "$THEOS/toolchain/linux/iphone/bin/clang"
           test "$(command -v clang++)" = "$THEOS/toolchain/linux/iphone/bin/clang++"
           xnu/apply.sh
-          xnu-deps/setup.sh
+          if ! xnu-deps/setup.sh; then
+            echo 'Dependency setup failed; relevant host build logs follow:'
+            for log in xnu-deps/mig-build.log xnu-deps/unifdef-build.log xnu-deps/exporthdrs.log; do
+              if [ -f "$log" ]; then echo "--- $log ---"; tail -100 "$log"; fi
+            done
+            exit 1
+          fi
           export CC="$THEOS/toolchain/linux/iphone/bin/clang"
           python3 tools/mk-ath10k.py
           test -s xnu-deps/build/ath10k/out/ath10k.o
