@@ -2113,3 +2113,41 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 
 **dispatch 形状**：round=d2 / tag=d2-springboard / 底板三件 = d1-springboard 资产（daily `b0f9f6df`、gpu `a4f1c330`、flashboot `14485e7c`）/ base_entry kernel=`85448240` / `pre_gate_py`、`kernel_gate_cmd`、`kernel_id_cmd`、`id_gates`、`base_id_cmd`、`base_id_gates` **全部留空**（工作流对空输入有 `if [ -n ]` 守卫）——本轮门禁 = 构建工具自身断言；D1 代门禁脚本对 D2 不适用（标记未换），门禁债同上。
 **回滚**：r61 GPU 镜像 `39c6e70e`（或 d1 镜像 `a4f1c330`）。
+
+
+## D2 判读定谳（2026-11-06 01:07 取卷 `86c09d6e`）· 守卫奏效，病灶上移一级
+
+**点火**：CI run **#44**（42065112367，head `94c36a1`）全绿 → release `d2-springboard`；产物 gpu 镜像 `8f44f076`（12,669,039 B，内核 `82a3e023` 17,027,320 B）、`d2.xnup` `c3e703d6`（24,126,984 B）。T0 = 00:57:02，`DWELL=600`，01:07:02 `oem stop` OKAY → 01:07:09 `get_staged` 4 MB。
+
+**路障三连（已解）**：① 手机从 loader 臂掉回 TWRP（`18d1:d001`）→ `adb devices` 可见 45c2b4ec，`adb reboot bootloader` 救回；② NAS 上遗留 root adb server 让 admin 的 `adb devices` 空 → `sudo pkill -f 'adb.*fork-server'` 后以 admin 重启；③ `fastboot reboot` 返回 **rc=1 无输出且设备根本没重启**（白等 180s 超时一次）→ 重试 x3 + 轮询 `getvar product`，第三跳才进臂。⇒ **reboot 瞬态律**入册。
+
+**卷内铁证**：
+```
+[  33.374] adreno: 18: the 3D core sees 0..0x3fff in memory of ours (0xfefd4000)     ← 守卫在膛
+[ 110.854] swap 29: the GPU is not done with surface 3 after 500 ms; frame dropped
+[ 110.854] submission 31 is the last, the core has done 28; ring read 1267 == written 1267; status 0xc40005
+[ 110.854] in the first command buffer at 0x20668000, 555 words to go; second 0x20679080, 0 to go
+[ 110.854] the CP's first command buffer 0x20668000 is not in the ledger's 31 records   ← 账本丢记录
+[ 110.855] the register says 555 words but the ledger says 156: they disagree
+[ 110.855] hunt: CB2 word 199 = 0xc78 / 208 = 0xc58 / 217 = 0xc79 / 226 = 0xc59 / 235 = 0xc7a / 244 = 0xc5a
+           "in no range the submission named"
+[ 110.855] the hunt scanned 4379 of 4379 words: 6 hits
+[ 110.867] THE SMMU REFUSED the 3D core: status 0x80000402, address 0x4600, syndrome 0x20003
+[ 110.867] our tables for 0x4600: L1[0]=0xfef7e003, L2[0]=0xfefd1003, L3[4]=0
+```
+
+**定谳（三条）**：
+1. **守卫生效，方向正确**：故障 VA `0x1000`（syndrome **0x20002** = level 2，L2[0]=0）→ `0x4600`（syndrome **0x20003** = level 3，L3[4]=0）。walk 多走一层 = GPU 真在读那 4 页附近 ⇒ 访问者 = **近零基址 + 小偏移**，不是随机噪声。
+2. **D1 的 HD1-1 否定是覆盖度假象，真结论是 HD1-1 复活**：D1 只记录 8/11 CB、猎杀 1245 词 = 0 命中；D2 记录 3/3 CB、猎杀 **4379 词 = 6 命中**（CB2 word 199..244，间隔 9 词，同一命令模板重复四次，值域 0xc58..0xc7a）。这些值 **不在本 submission 自名的任何缓冲区间内** ⇒ 未转 IOVA 的近似指针 / handle 低 32 位被当地址。⇒ **P8 覆盖度律**入册：「零命中」只在猎杀范围 == 记录范围 == 提交范围时才可判。
+3. **账本与寄存器打架**：CP 首 CB `0x20668000` 不在账本 31 条记录里（48 环溢出被覆盖），寄存器 555 词 vs 账本 156 词 ⇒ 下一刀必须先把账本做成"当前提交必在册"，否则 dump 读的是邻居。
+
+**判决树**：D2-1（守卫奏效则上帧）**不成立**（swap 29 照样丢帧，有效段帧仍 38 一带，frame 500/520 = 上一代残迹）；D2-2（地址迁移按新 VA 分诊）**成立**（0x4600 在守卫 4 页外 0x600）。⇒ 守卫窗口太小；真坏指针在流内。
+
+**D3 预注册（单变量，优先 A）**：
+- **A**：`CORE_GUARD_SIZE` 0x4000 → **0x200000**（整个 L2[0] 块）。看故障再上移 / 消失。故障消失但 GC 仍停 ⇒ 坏指针就是那 6 个值，转 B。
+- **B**：`RedwoodGPU.cpp` submit 侧点名 CB2 word 199..244 六个值的来路（reloc 前/后、所属 BO、是否 handle 未转 IOVA），并把 48 环账本改成"当前提交必在册 + 62 区间"。
+- 回滚：d2 `8f44f076` / d1 `a4f1c330` / r61 `39c6e70e`。
+
+**与 helium 的差异面（回答"为什么它正常"）**：helium 无 `RedwoodGPU.cpp`（GPU = `hakios.adreno.c` 178 KB + `hakios.gpu.cpp` 单一路径，无 4 MB 池、无池复用、无 Mesa reloc 回填）；我们 = `raphael_adreno.c`（349 KB，SMMU 同源 7/7/11/11）+ `RedwoodGPU.cpp`（60 KB 池化提交）+ Mesa reloc。差异在**提交层**，不在 SMMU 层 —— D3-B 就是对齐的第一步。
+
+**归档**：`d2-logdump.bin`（`86c09d6e`，4 MB，NAS + 桌面 sessions/）、`d2-session.log`（NAS）、`d2.xnup`（`c3e703d6`）、`raphael-xnu-d2-forensic.img`（`cb1f917f`）、判读脚本 `sessions/cmp_d1_d2.py`、`sessions/d2_hits.py`、`sessions/scan_d2.py`。
