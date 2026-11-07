@@ -66,6 +66,34 @@ jobs:
           for x in "$CC" "$CXX" "$AR" "$NM" "$RANLIB" "$STRIP"; do test -x "$x"; done
           for x in llvm-ar llvm-ranlib llvm-strip; do test "$(command -v "$x")" = "/usr/bin/$x"; done
           for x in nm install_name_tool; do test "$(readlink -f "$(command -v "$x")")" = "$(readlink -f "$THEOS/toolchain/linux/iphone/bin/$x")"; done
+          # Configure the existing Mesa cross-build to use the iOS SDK's zlib and libc++.
+          SDK="$THEOS/sdks/iPhoneOS16.5.sdk"
+          test -s "$SDK/usr/include/zlib.h" && test -s "$SDK/usr/lib/libz.tbd"
+          mkdir -p /tmp/helium-sdk-pc
+          cat > /tmp/helium-sdk-pc/zlib.pc <<PC
+          prefix=$SDK
+          includedir=\${prefix}/usr/include
+          libdir=\${prefix}/usr/lib
+          Name: zlib
+          Description: iPhoneOS SDK zlib
+          Version: 1.2.11
+          Cflags: -I\${includedir}
+          Libs: -L\${libdir} -lz
+          PC
+          export PKG_CONFIG_PATH=/tmp/helium-sdk-pc PKG_CONFIG_LIBDIR=/tmp/helium-sdk-pc
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('tools/mk-mesa.sh')
+          s = p.read_text()
+          changes = {
+              "pkg-config = 'false'": "pkg-config = 'pkg-config'",
+              "cpp = ['$CC++', '-arch', 'arm64', '-isysroot', '$SDK', '-fuse-cxa-atexit']": "cpp = ['$CC++', '-arch', 'arm64', '-isysroot', '$SDK', '-nostdinc++', '-isystem', '$SDK/usr/include/c++/v1', '-fuse-cxa-atexit']",
+          }
+          for old, new in changes.items():
+              assert s.count(old) == 1, old
+              s = s.replace(old, new)
+          p.write_text(s)
+          PY
           if ! DRIVERS=softpipe,freedreno tools/mk-mesa.sh; then
             for log in xnu-deps/build/mesa/meson-setup.log xnu-deps/build/mesa/ninja.log; do
               if [ -f "$log" ]; then echo "--- $log ---"; tail -100 "$log"; fi
