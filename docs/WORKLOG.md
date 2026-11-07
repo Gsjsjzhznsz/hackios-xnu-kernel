@@ -2173,3 +2173,9 @@ owner = panicked thread **自己** = **RW 锁递归死**。链条：vm_fault_int
 **CI 首轮**：run 42342492271（`13ad809`）内核编译成功但字符串门禁失败；核查诊断内核 `0479eca152cf8ae01fac26947fd88135f51c38cacdad76cdb9aced3cbaa7d0b3` 的完整增减集合，除预期的 dump 与换代标记外只有两处 Darwin 构建时间及已知指针布局影子。恢复 D3 门禁已使用的 `DARWIN.search` 和 `run_like` 规则后，实际失败内核离线重过六法；该规则仍有前缀/子串宽容范围，负控制与 CI 复验不可省。首轮没有发布镜像。
 
 参考 Helium `raphael-bringup` commit `57722468a3774e2ec60017705ec356ae9b31f40e`：其 `hakios.gpu.cpp` 同样缓存 BO，且顶层 submit 同样拒绝非零 reloc、使用 BO 地址加偏移；旧交接“无池复用、差异只在提交层”不成立。参考 `hakios.adreno.c` 的 A640 GPU GET_PARAM 与本树 GMEM_BASE、GMEM_SIZE、HIGHEST_BANK_BIT、MACROTILE_MODE 不同（参考 0x100000/1 MiB/15/0，本树 0/512 KiB/14/1）。本树同时按 14 配置 UBWC 寄存器，不能只改参数而假定配置正确；是否适合本设备须另证，本轮不更改参数。旧交接将 GPU 称为 Adreno 618，与本树 A640 芯片 ID/固件说明及 SM8150 设备树的 A640 配置冲突，未以此作为根因结论。
+
+**D4 真机（2026-11-07）**：CI run 42343774716（head `11f0680`）全绿；GPU 镜像 SHA256 `d57d11aa75bac2ed355cb5f7684517c46f15f54d40e1c50d3937dbdd22563df9`，内核 `113983346ac570e219c0d7d55d9288df722426f48d21b15f508de607db74f9ff`，会话包 `c60684e43237fc2ba6bcdfea0115d8a9d80a200da2c63a3cb877e0ccd11daa2c`。用户授权后刷 boot，stage 三件 OKAY，13:53:10 run，605 s 后 stop/logdump；4 MiB `d4-logdump.bin` SHA256 `3ca31dc2dba97d6c6b1a040f863a11f59b6229bafb90909b5014477f159d6228`。设备停在 XNULOADER；屏幕表现待用户证词。
+
+**有效段判读**：首个 `== END OF LOG ==` 前为本轮；其后为残留。`[117.713249]` swap 29 超时，`[117.713308]` last submission 31、core done 28、ring read=write=1259；IB1 `0x20658000`、剩 555 词。账本找到一个精确候选：fence 29、提交命令数组 index 10（第 11 项），IB `0x20658000` 长 16044 B，BO `0x20440000` 长 4 MiB；该记录 commands 11/11、BO 64/64，均未截断。旧上限 8 会漏掉该项；done 28 与候选 fence 29 相邻，增强关联，但寄存器采样早于取账本锁，不能证明故障来源或单凭此定根因。31 条记录皆无截断，BO range 命中 31 个（池共享），故仅 BO 包含不足以唯一识别提交。
+
+`[117.726638]` SMMU status `0x80000402`、address `0x10190c0`、syndrome `0x20003`、stream 0，L3[25]=0；报告时间比丢帧晚约 13 ms，不代表故障确切发生时间。守卫仍映射 `0..0x1fffff`，结束时 GPU 仍忙；有效段 GL 最高 frame 39，不代表成功上屏。下一轮应在持锁及生命周期可验证前提下，聚焦该未完成候选的命令字与故障地址，并核查 GET_PARAM 差异，勿把候选直接判为根因。
