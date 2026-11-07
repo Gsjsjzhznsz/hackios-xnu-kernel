@@ -227,10 +227,15 @@ def main():
         ' the decode hologram x1 + the decode census line x1 + the decode counter symbol ride on BOTH sides (the R54 knives stay);'
         ' the flush symbol rides in BOTH strtabs (the recorders keep the R47 law)')
 
+    old_exec = [(name, old[off:off + size]) for name, off, size in segs_o if name == b'__TEXT_EXEC']
+    new_exec = [(name, new[off:off + size]) for name, off, size in segs_n if name == b'__TEXT_EXEC']
+    assert len(old_exec) == len(new_exec) == 1, 'missing or duplicate __TEXT_EXEC segment'
+    assert old_exec[0][1] != new_exec[0][1], 'executable code is unchanged from D2'
+    say('code law: executable segment differs from D2 (not proof of runtime behavior)')
     assert old.count(b'adreno: gpu: dump:') > 0, 'D2 lost D1 dump diagnostics'
     assert new.count(b'adreno: gpu: dump:') == old.count(b'adreno: gpu: dump:'), 'D1 dump diagnostics changed'
-    old_dump = set(re.findall(rb'adreno: gpu: dump:[\x20-\x7e]*', old))
-    new_dump = set(re.findall(rb'adreno: gpu: dump:[\x20-\x7e]*', new))
+    old_dump = sorted(re.findall(rb'adreno: gpu: dump:[\x20-\x7e]*', old))
+    new_dump = sorted(re.findall(rb'adreno: gpu: dump:[\x20-\x7e]*', new))
     assert old_dump == new_dump, 'D1 dump diagnostics changed'
 
     # 4. segment census (the R42/R43 shape: __TEXT grows or pads, the rest shifts, sizes pinned)

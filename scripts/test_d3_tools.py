@@ -40,6 +40,22 @@ def main():
         new = td / 'synthetic'; new.write_bytes(test)
         gate = ROOT / 'tools/d3_kernel_gate.py'
         ident = ROOT / 'tools/d3-kernel-id.py'
+        run(gate, '--base-kernel', old, '--d2-kernel', new, ok=False, needle='executable code is unchanged')
+        # Synthetic code change tests gate mechanics only, not the real guard instruction.
+        changed_code = bytearray(test)
+        ncmds = struct.unpack_from('<I', changed_code, 16)[0]
+        off = 32
+        for _ in range(ncmds):
+            cmd, size = struct.unpack_from('<II', changed_code, off)
+            if cmd == 0x19 and changed_code[off + 8:off + 24].rstrip(b'\0') == b'__TEXT_EXEC':
+                fileoff = struct.unpack_from('<Q', changed_code, off + 40)[0]
+                changed_code[fileoff] ^= 1
+                break
+            off += size
+        else:
+            raise AssertionError('missing __TEXT_EXEC')
+        test = bytes(changed_code)
+        new.write_bytes(test)
         run(gate, '--base-kernel', old, '--d2-kernel', new, needle='GATE GREEN')
         run(gate, '--base-kernel', old, '--d2-kernel', old, ok=False, needle='byte-identical')
         run(gate, '--base-kernel', new, '--d2-kernel', new, ok=False, needle='not the release byte')

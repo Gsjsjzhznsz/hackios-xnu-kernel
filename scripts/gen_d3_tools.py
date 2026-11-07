@@ -42,7 +42,12 @@ def main():
         return s == OLD_MARKER or run_like(s) or DARWIN.search(s)
 
 ''')
-    gate = once(gate, '    # 4. segment census', '''    assert old.count(b'adreno: gpu: dump:') > 0, 'D2 lost D1 dump diagnostics'
+    gate = once(gate, '    # 4. segment census', '''    old_exec = [(name, old[off:off + size]) for name, off, size in segs_o if name == b'__TEXT_EXEC']
+    new_exec = [(name, new[off:off + size]) for name, off, size in segs_n if name == b'__TEXT_EXEC']
+    assert len(old_exec) == len(new_exec) == 1, 'missing or duplicate __TEXT_EXEC segment'
+    assert old_exec[0][1] != new_exec[0][1], 'executable code is unchanged from D2'
+    say('code law: executable segment differs from D2 (not proof of runtime behavior)')
+    assert old.count(b'adreno: gpu: dump:') > 0, 'D2 lost D1 dump diagnostics'
     assert new.count(b'adreno: gpu: dump:') == old.count(b'adreno: gpu: dump:'), 'D1 dump diagnostics changed'
     old_dump = sorted(re.findall(rb'adreno: gpu: dump:[\\x20-\\x7e]*', old))
     new_dump = sorted(re.findall(rb'adreno: gpu: dump:[\\x20-\\x7e]*', new))
