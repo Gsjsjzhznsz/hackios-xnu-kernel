@@ -1,5 +1,7 @@
 # HackiOS · 小米 Redmi K20 Pro（raphael）XNU 内核移植
 
+新项目为(New Project)(https://github.com/Gsjsjzhznsz/UniXNU-raphael-jacky-archive)
+
 **iOS 16 用户态 + XNU（Darwin 22.5）内核，运行于小米 Redmi K20 Pro（代号 `raphael`，骁龙 855 / SM8150）。**
 
 > 本仓库是 [oosexgang/hackios-xnu-kernel](https://github.com/oosexgang/hackios-xnu-kernel) 的 **raphael 机型适配线**（fork）：
